@@ -27,6 +27,7 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "./guest-write-watch-state.js";
+import { workerDebugLog } from "./worker-debug-log.js";
 import { createKernelShareGroup } from "./kernel-share.js";
 import {
   alignUp,
@@ -498,9 +499,9 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     }
     const heapPtr = handle.kernel.kernel_heap_ptr?.() ?? handle.kernelState.heapPtr;
     const entry = `${stage}:heap=0x${heapPtr.toString(16)}:mem=0x${handle.kernelState.memStatePtr.toString(16)}:${brkBase.toString()}:${brkCurrent.toString()}:${mmapNext.toString()}`;
-    handle.workerDebugLog.push(entry);
-    if (handle.workerDebugLog.length > 256) {
-      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 256);
+    workerDebugLog(handle).push(entry);
+    if (workerDebugLog(handle).length > 256) {
+      workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 256);
     }
     handle.lastDebugMessage = handle.lastDebugMessage
       ? `${handle.lastDebugMessage} ${entry}`
@@ -670,7 +671,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       onExit: options.onExit,
       onError: options.onError,
       onStdout: options.onStdout,
-      workerDebugLog: [],
       workerMessageDebugStats: createWorkerMessageDebugStats(),
       transferDebugStats: createTransferDebugStats(),
       memoryOwnership,

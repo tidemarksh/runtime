@@ -7,6 +7,7 @@ import {
 import { createWorkerKernelRpcSocketHelpers } from "../../../../src/worker/kernel-rpc/socket.js";
 import { networkPendingConnectFds } from "../../../../src/worker/network-socket-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -160,7 +161,7 @@ test("resumeConnectViaKernelWorker adopts kernel-worker connect resume state", a
   const applySocketStateFromKernelWorker = vi.fn();
   const helpers = createWorkerKernelRpcSocketHelpers({
     appendWorkerDebugLog(handle, event) {
-      handle.workerDebugLog.push(event);
+      workerDebugLog(handle).push(event);
     },
     processHandles: new Map([[7, handle]]),
     threadWorkerStates: threadWorkerStates as never,
@@ -191,7 +192,7 @@ test("resumeConnectViaKernelWorker adopts kernel-worker connect resume state", a
     socketUsed: resumedState.socketUsed,
     netBufUsed: resumedState.netBufUsed,
   });
-  expect(handle.workerDebugLog).toEqual([
+  expect(workerDebugLog(handle)).toEqual([
     expect.stringContaining("connect-rpc-start:7"),
     expect.stringContaining("connect-rpc-adopted:7"),
   ]);

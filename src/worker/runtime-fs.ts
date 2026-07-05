@@ -3,6 +3,7 @@ import type { FsSnapshotEntry } from "../fs/types.js";
 import { detachedKernelScratchBase } from "./kernel-scratch.js";
 import { normalizePath, preloadSnapshotEntries } from "./process-fs.js";
 import { isProcessMemfsDirty } from "./process-memfs-state.js";
+import { workerDebugLog } from "./worker-debug-log.js";
 import type {
   KernelShareGroup,
   KernelSyncHandle,
@@ -51,11 +52,11 @@ function appendRuntimeFsSnapshotDebug(
     }
     return `${entry.path}:size=${entry.size ?? entry.data?.length ?? 0}:head=${headHex(entry.data)}`;
   });
-  representative.workerDebugLog.push(
+  workerDebugLog(representative).push(
     `runtime-fs-snapshot:runtime=${runtimeId}:pid=${representative.pid}:${details.join(",")}`,
   );
-  if (representative.workerDebugLog.length > 4096) {
-    representative.workerDebugLog.splice(0, representative.workerDebugLog.length - 4096);
+  if (workerDebugLog(representative).length > 4096) {
+    workerDebugLog(representative).splice(0, workerDebugLog(representative).length - 4096);
   }
 }
 

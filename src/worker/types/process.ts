@@ -113,7 +113,6 @@ export interface ProcessHandle {
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;
-  workerDebugLog: string[];
   workerMessageDebugStats: WorkerMessageDebugStats;
   transferDebugStats: TransferDebugStats;
   memoryOwnership?: RuntimeMemoryOwnership;

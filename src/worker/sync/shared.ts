@@ -3,6 +3,7 @@ import {
   readKernelRuntimeState,
   supervisorPipeReconcileControl,
 } from "../../abi.js";
+import { workerDebugLog } from "../worker-debug-log.js";
 import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
@@ -160,9 +161,9 @@ export function appendSocketSyncDebug(handle: ProcessHandle, event: string): voi
   if (!socketSyncDebugLogEnabled) {
     return;
   }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  workerDebugLog(handle).push(event);
+  if (workerDebugLog(handle).length > 4096) {
+    workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
   }
 }
 

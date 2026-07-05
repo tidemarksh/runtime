@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { workerDebugLog } from "../worker-debug-log.js";
 import {
   attachKernelRuntimeState,
   guestAddressProfileForProcessCreation,
@@ -608,7 +609,7 @@ export async function handleVforkExecve(
     if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
       return;
     }
-    const childLogTail = childHandle.workerDebugLog.slice(-12).join(", ");
+    const childLogTail = workerDebugLog(childHandle).slice(-12).join(", ");
     deps.failProcess(handle, new Error(
       `child-debug:${childPid}:${childHandle.lastDebugMessage ?? "last-debug-unavailable"}`
       + ` worker_log=[${childLogTail}]`

@@ -1,5 +1,6 @@
 import { hostExecutionState } from "./host-execution-state.js";
 import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
+import { workerDebugLog } from "./worker-debug-log.js";
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
 import { readInodeRecord } from "../fs/sab-page-cache.js";
@@ -2010,7 +2011,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `exit_trace=${formatExitTrace(handle, exitVmPtr)}`,
       `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
       `cmd=${JSON.stringify(handle.debugCommand)}`,
-      `worker_log=[${handle.workerDebugLog.join(", ")}]`,
+      `worker_log=[${workerDebugLog(handle).join(", ")}]`,
       `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
       handle.lastDebugMessage ?? "debug=n/a",
     ].join(" ");
@@ -2150,7 +2151,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `exit_trace=${formatExitTrace(handle)}`,
       `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
       `cmd=${JSON.stringify(handle.debugCommand)}`,
-      `worker_log=[${handle.workerDebugLog.join(", ")}]`,
+      `worker_log=[${workerDebugLog(handle).join(", ")}]`,
       `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
       handle.lastDebugMessage ?? "debug=n/a",
     ].join(" ");

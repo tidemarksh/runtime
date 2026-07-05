@@ -28,6 +28,7 @@ import {
 } from "../../../fs/supervisor-pipe-refresh.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
 import { networkConnections } from "../../network-socket-state.js";
+import { workerDebugLog } from "../../worker-debug-log.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 import {
   pollSupervisorFdControlDiagnostic,
@@ -187,7 +188,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       assertHandleWorkerProcessIdentity(handle, deps.threadWorkerStates, context, {
         status,
         threadVmPtr: thread.vmPtr,
-        workerLogTail: handle.workerDebugLog.slice(-16),
+        workerLogTail: workerDebugLog(handle).slice(-16),
         skipVmPtrs: [hostExecutionState(handle).vforkSnapshot?.vmPtr ?? 0].filter((vmPtr) => vmPtr !== 0),
       });
     };

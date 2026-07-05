@@ -30,6 +30,7 @@ import {
 } from "../ownership/ofd-metadata.js";
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import { networkConnections } from "../network-socket-state.js";
+import { workerDebugLog } from "../worker-debug-log.js";
 import {
   getHandleForkSharedSync,
   getKernelShareForkSharedSync,
@@ -786,7 +787,7 @@ export function summarizeProcessWorkerLogFocus(
       waitingInWorkerStatus: number | null;
     } => entry !== null);
   const attachedVmPtrs = new Set(attachedStates.map((entry) => entry.vmPtr));
-  const detachedStates = collectLoggedWorkerVmPtrs(handle.workerDebugLog)
+  const detachedStates = collectLoggedWorkerVmPtrs(workerDebugLog(handle))
     .filter((vmPtr) => !attachedVmPtrs.has(vmPtr))
     .map((vmPtr) => ({
       vmPtr,
@@ -796,25 +797,25 @@ export function summarizeProcessWorkerLogFocus(
 
   return [...attachedStates, ...detachedStates]
     .map((state) => {
-      const eventTail = collectWorkerEventTail(handle.workerDebugLog, state.vmPtr);
-      const statusTail = collectWorkerStatusTail(handle.workerDebugLog, state.vmPtr);
+      const eventTail = collectWorkerEventTail(workerDebugLog(handle), state.vmPtr);
+      const statusTail = collectWorkerStatusTail(workerDebugLog(handle), state.vmPtr);
       return {
         vmPtr: state.vmPtr,
         ownerState: state.ownerState,
         waitingInWorkerStatus: state.waitingInWorkerStatus,
         threadState: formatWorkerThreadState(handle, state.vmPtr),
-        lastCredibleState: findLastCredibleWorkerState(handle.workerDebugLog, state.vmPtr),
-        lastStatus: findLastWorkerLogEntry(handle.workerDebugLog, "status", state.vmPtr),
-        lastStatusDebug: findLastWorkerLogEntry(handle.workerDebugLog, "status_debug", state.vmPtr),
-        lastReady: findLastWorkerLogEntry(handle.workerDebugLog, "ready", state.vmPtr),
-        lastReadyDebug: findLastWorkerLogEntry(handle.workerDebugLog, "ready-debug", state.vmPtr),
-        lastStep: findLastWorkerLogEntry(handle.workerDebugLog, "step", state.vmPtr),
-        lastWait20: findLastWorkerLogEntry(handle.workerDebugLog, "wait", state.vmPtr),
-        lastResume20: findLastWorkerLogEntry(handle.workerDebugLog, "resume", state.vmPtr),
-        lastWrite: findLastWorkerLogEntry(handle.workerDebugLog, "write", state.vmPtr),
-        lastSleep: findLastWorkerLogEntry(handle.workerDebugLog, "sleep", state.vmPtr),
-        lastYield: findLastWorkerLogEntry(handle.workerDebugLog, "yield", state.vmPtr),
-        lastFaultDebug: findLastWorkerLogEntry(handle.workerDebugLog, "fault_debug", state.vmPtr),
+        lastCredibleState: findLastCredibleWorkerState(workerDebugLog(handle), state.vmPtr),
+        lastStatus: findLastWorkerLogEntry(workerDebugLog(handle), "status", state.vmPtr),
+        lastStatusDebug: findLastWorkerLogEntry(workerDebugLog(handle), "status_debug", state.vmPtr),
+        lastReady: findLastWorkerLogEntry(workerDebugLog(handle), "ready", state.vmPtr),
+        lastReadyDebug: findLastWorkerLogEntry(workerDebugLog(handle), "ready-debug", state.vmPtr),
+        lastStep: findLastWorkerLogEntry(workerDebugLog(handle), "step", state.vmPtr),
+        lastWait20: findLastWorkerLogEntry(workerDebugLog(handle), "wait", state.vmPtr),
+        lastResume20: findLastWorkerLogEntry(workerDebugLog(handle), "resume", state.vmPtr),
+        lastWrite: findLastWorkerLogEntry(workerDebugLog(handle), "write", state.vmPtr),
+        lastSleep: findLastWorkerLogEntry(workerDebugLog(handle), "sleep", state.vmPtr),
+        lastYield: findLastWorkerLogEntry(workerDebugLog(handle), "yield", state.vmPtr),
+        lastFaultDebug: findLastWorkerLogEntry(workerDebugLog(handle), "fault_debug", state.vmPtr),
         execTrace: formatWorkerExecTrace(handle, state.vmPtr),
         eventTail,
         statusTail,
@@ -947,7 +948,7 @@ export function debugRuntimeExecutionStats(
           lastEvents: handle.workerMessageDebugStats.lastEvents.slice(-16),
         },
         transferDebugStats: { ...handle.transferDebugStats },
-        memoryLogTail: handle.workerDebugLog
+        memoryLogTail: workerDebugLog(handle)
           .filter((entry) =>
             entry.startsWith("memory-state:")
             || entry.startsWith("plain-fork-memory:")
@@ -1539,11 +1540,11 @@ export function debugRuntimeProcessHandles(
           ].join("/");
         }).filter(Boolean).join(" ");
         const networkLogSummary = [
-          `inject=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-inject:")).length}`,
-          `drain_write=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-drain:") && entry.endsWith(":write")).length}`,
-          `drain_empty=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-drain:") && entry.includes(":n=0:")).length}`,
-          `close=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-close:")).length}`,
-          `samples=${handle.workerDebugLog
+          `inject=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-inject:")).length}`,
+          `drain_write=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-drain:") && entry.endsWith(":write")).length}`,
+          `drain_empty=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-drain:") && entry.includes(":n=0:")).length}`,
+          `close=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-close:")).length}`,
+          `samples=${workerDebugLog(handle)
             .filter((entry) => (
               entry.startsWith("net-read-")
               || entry.startsWith("net-inbound:")
@@ -1649,7 +1650,7 @@ export function debugRuntimeProcessHandles(
           `network_fds=[${networkFdSummary}]`,
           `network_closed_fds=[${[...networkClosedFds(handle)].sort((left, right) => left - right).join(",")}]`,
           `socket_fds=[${socketFdSummary}]`,
-          `worker_log=[${handle.workerDebugLog.slice(-48).join(", ")}]`,
+          `worker_log=[${workerDebugLog(handle).slice(-48).join(", ")}]`,
           `debug=${handle.lastDebugMessage ?? "n/a"}`,
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,

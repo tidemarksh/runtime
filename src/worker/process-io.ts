@@ -26,6 +26,7 @@ import {
 } from "./network-socket-state.js";
 import { getRuntimeStateSyncPromise, runtimeStateSyncInFlight } from "./state-sync-inflight.js";
 import { createTransferDebugStats, type ProcessHandle } from "./types.js";
+import { workerDebugLog } from "./worker-debug-log.js";
 
 interface WorkerProcessIoDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -59,9 +60,9 @@ function appendNetworkLifecycle(handle: ProcessHandle, event: string): void {
   if (!NETWORK_LIFECYCLE_LOG_ENABLED) {
     return;
   }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  workerDebugLog(handle).push(event);
+  if (workerDebugLog(handle).length > 4096) {
+    workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
   }
   depsAppendNetworkLifecycle(handle, event);
 }

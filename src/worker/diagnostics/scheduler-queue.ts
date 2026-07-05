@@ -3,6 +3,7 @@ import type {
   KernelWorkerOfdSlotSnapshot,
 } from "../../messages.js";
 import type { ProcessHandle } from "../types.js";
+import { workerDebugLog } from "../worker-debug-log.js";
 import {
   supervisorOfdFdType,
   supervisorOfdIno,
@@ -175,7 +176,7 @@ export function appendSchedulerQueueDebugLog(
   if (!SCHEDULER_QUEUE_DEBUG_LOG_ENABLED) {
     return;
   }
-  const queueDebugCount = handle.workerDebugLog.reduce(
+  const queueDebugCount = workerDebugLog(handle).reduce(
     (count, entry) => count + (
       entry.startsWith("pump-") || entry.startsWith("step:") || entry.startsWith("ready:") || entry.startsWith("runnable-")
         ? 1
@@ -184,15 +185,15 @@ export function appendSchedulerQueueDebugLog(
     0,
   );
   if (queueDebugCount >= SCHEDULER_QUEUE_DEBUG_LOG_LIMIT) {
-    const oldestQueueDebugIndex = handle.workerDebugLog.findIndex((entry) =>
+    const oldestQueueDebugIndex = workerDebugLog(handle).findIndex((entry) =>
       SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES.some((prefix) => entry.startsWith(prefix)));
     if (oldestQueueDebugIndex !== -1) {
-      handle.workerDebugLog.splice(oldestQueueDebugIndex, 1);
+      workerDebugLog(handle).splice(oldestQueueDebugIndex, 1);
     } else {
-      handle.workerDebugLog.shift();
+      workerDebugLog(handle).shift();
     }
   }
-  handle.workerDebugLog.push(event);
+  workerDebugLog(handle).push(event);
 }
 
 export function incrementBoundedSchedulerCounter(

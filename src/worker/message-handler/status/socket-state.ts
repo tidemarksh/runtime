@@ -32,6 +32,7 @@ import {
   formatGuestMemoryWriteWatchOverlap,
 } from "../../guest-memory-writes.js";
 import { guestWriteWatchRegions } from "../../guest-write-watch-state.js";
+import { workerDebugLog } from "../../worker-debug-log.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
 import { supervisorProcessStatusIsExecveSpawn } from "../../supervisor-status.js";
 import {
@@ -79,9 +80,9 @@ export function applyThreadGuestMemoryWrites(
       writeBytes,
     );
     if (overlap !== null) {
-      handle.workerDebugLog.push(overlap);
-      if (handle.workerDebugLog.length > 4096) {
-        handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+      workerDebugLog(handle).push(overlap);
+      if (workerDebugLog(handle).length > 4096) {
+        workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
       }
     }
     memory.set(writeBytes, start);

@@ -2,6 +2,7 @@ import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
 import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 import { getThreadActivityState } from "../thread-activity-state.js";
+import { workerDebugLog } from "../worker-debug-log.js";
 
 export type ParentProcessSnapshot = {
   processPtr: number;
@@ -139,7 +140,7 @@ export function appendPlainForkMemoryDebug(
 ): void {
   const ownership = handle.memoryOwnership;
   const processCommittedBytes = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
-  handle.workerDebugLog.push([
+  workerDebugLog(handle).push([
     "plain-fork-memory",
     `parent=${handle.pid}`,
     `child=${childPid}`,
@@ -165,7 +166,7 @@ export function appendPlainForkMemoryDebug(
     `artifactMaterializationBudgetBytes=${formatNullableBytes(ownership?.artifactMaterializationBudgetBytes)}`,
     `artifactMaterializedBytes=${formatNullableBytes(ownership?.artifactMaterializedBytes)}`,
   ].join(":"));
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  if (workerDebugLog(handle).length > 4096) {
+    workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
   }
 }

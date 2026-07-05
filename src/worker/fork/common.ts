@@ -78,7 +78,6 @@ export function createForkChildHandle({
       (pid) => deps.processHandles.get(pid),
       deps.failProcess,
     ),
-    workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     transferDebugStats: createTransferDebugStats(),
     ...(parent.memoryOwnership ? { memoryOwnership: { ...parent.memoryOwnership } } : {}),

@@ -24,6 +24,7 @@ import {
   networkRecvHeadWatermarks,
   networkRecvTailWatermarks,
 } from "../../../../src/worker/network-socket-state.js";
+import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { seedNetworkSocketState } from "./helpers.js";
@@ -36,7 +37,7 @@ const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   networkConnections(handle);
-  handle.workerDebugLog ??= [];
+  workerDebugLog(handle);
   handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
   hostExecutionState(handle).vforkSnapshot ??= null;
   return handle;

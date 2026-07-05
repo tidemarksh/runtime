@@ -11,6 +11,7 @@ import {
 import { supervisorProcessStatusAllowsPidMismatch } from "./supervisor-status.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
+import { workerDebugLog } from "./worker-debug-log.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
 import {
   getThreadGeneration,
@@ -35,8 +36,8 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     );
     const thread = deps.threadWorkerStates.get(worker);
     const vmPtr = thread?.vmPtr ?? 0;
-    const workerLogTail = handle.workerDebugLog.slice(-12).join(", ");
-    const plainForkLog = handle.workerDebugLog
+    const workerLogTail = workerDebugLog(handle).slice(-12).join(", ");
+    const plainForkLog = workerDebugLog(handle)
       .filter((entry) => entry.includes("plain-fork"))
       .slice(-12)
       .join(", ");
