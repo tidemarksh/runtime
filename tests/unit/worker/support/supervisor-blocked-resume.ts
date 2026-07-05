@@ -110,6 +110,14 @@ const SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY_WITH_HOST_PROGR
 const SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT = 1;
 const SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT_WAIT4 = 2;
+const SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_NOT_PIPE = 0;
+const SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_NONE = 1;
+const SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_SYNC_SOCKET = 2;
+const SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_FLAG_KERNEL_WORKER_AVAILABLE = 1;
+const SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_FLAG_PROCESS_OWNER_MISMATCH = 2;
+const SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_FORK_SHARED = 1;
+const SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_SOCKET = 2;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -264,6 +272,17 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_stale_retry_result_action_none"
   | "supervisor_blocked_stale_retry_result_action_handle_current_result"
   | "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4"
+  | "supervisor_blocked_rpc_pipe_sync_action"
+  | "supervisor_blocked_rpc_pipe_sync_action_not_pipe"
+  | "supervisor_blocked_rpc_pipe_sync_action_none"
+  | "supervisor_blocked_rpc_pipe_sync_action_sync_socket"
+  | "supervisor_blocked_rpc_preserve_canonical_eof"
+  | "supervisor_blocked_rpc_post_resume_sync_action"
+  | "supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available"
+  | "supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch"
+  | "supervisor_blocked_rpc_post_resume_sync_action_none"
+  | "supervisor_blocked_rpc_post_resume_sync_action_fork_shared"
+  | "supervisor_blocked_rpc_post_resume_sync_action_socket"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -510,6 +529,17 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_blocked_wait_network_pump_action"
     | "supervisor_complete_blocked_wait_network_pump"
     | "supervisor_clear_blocked_wait_network_pump"
+    | "supervisor_blocked_rpc_pipe_sync_action"
+    | "supervisor_blocked_rpc_pipe_sync_action_not_pipe"
+    | "supervisor_blocked_rpc_pipe_sync_action_none"
+    | "supervisor_blocked_rpc_pipe_sync_action_sync_socket"
+    | "supervisor_blocked_rpc_preserve_canonical_eof"
+    | "supervisor_blocked_rpc_post_resume_sync_action"
+    | "supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available"
+    | "supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch"
+    | "supervisor_blocked_rpc_post_resume_sync_action_none"
+    | "supervisor_blocked_rpc_post_resume_sync_action_fork_shared"
+    | "supervisor_blocked_rpc_post_resume_sync_action_socket"
     | "supervisor_blocked_retry_action"
     | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
     | "supervisor_blocked_retry_action_flag_rpc_pending"
@@ -1295,6 +1325,22 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT;
   nextKernel.supervisor_blocked_stale_retry_result_action_handle_current_result_wait4 ??= () =>
     SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT_WAIT4;
+  nextKernel.supervisor_blocked_rpc_pipe_sync_action_not_pipe ??= () =>
+    SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_NOT_PIPE;
+  nextKernel.supervisor_blocked_rpc_pipe_sync_action_none ??= () =>
+    SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_NONE;
+  nextKernel.supervisor_blocked_rpc_pipe_sync_action_sync_socket ??= () =>
+    SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_SYNC_SOCKET;
+  nextKernel.supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch ??= () =>
+    SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_FLAG_PROCESS_OWNER_MISMATCH;
+  nextKernel.supervisor_blocked_rpc_post_resume_sync_action_none ??= () =>
+    SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_NONE;
+  nextKernel.supervisor_blocked_rpc_post_resume_sync_action_fork_shared ??= () =>
+    SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_FORK_SHARED;
+  nextKernel.supervisor_blocked_rpc_post_resume_sync_action_socket ??= () =>
+    SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_SOCKET;
   nextKernel.supervisor_blocked_initial_action ??= (vmPtr: number, blockedStatus: number, flags: number) => {
     if (vmPtr === 0) {
       return -14;
@@ -1366,6 +1412,35 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       return SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT_WAIT4;
     }
     return SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT;
+  };
+  nextKernel.supervisor_blocked_rpc_pipe_sync_action ??= (vmPtr: number, blockedStatus: number) => {
+    if (blockedStatus !== kernel.abi_status_pipe_wait?.()) {
+      return SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_NOT_PIPE;
+    }
+    if (vmPtr === 0) {
+      return -14;
+    }
+    return pollWaitHasSocket(vmPtr)
+      ? SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_SYNC_SOCKET
+      : SUPERVISOR_BLOCKED_RPC_PIPE_SYNC_ACTION_NONE;
+  };
+  nextKernel.supervisor_blocked_rpc_preserve_canonical_eof ??= (blockedStatus: number) =>
+    blockedStatus === kernel.abi_status_pipe_wait?.() ? 1 : 0;
+  nextKernel.supervisor_blocked_rpc_post_resume_sync_action ??= (blockedStatus: number, flags: number) => {
+    if ((flags & SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_FLAG_PROCESS_OWNER_MISMATCH) !== 0) {
+      return SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_NONE;
+    }
+    let action = SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_NONE;
+    if (
+      (flags & SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_FLAG_KERNEL_WORKER_AVAILABLE) !== 0
+      && blockedStatus !== kernel.abi_status_epoll_wait?.()
+    ) {
+      action |= SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_FORK_SHARED;
+    }
+    if (toNumber(nextKernel.supervisor_blocked_status_syncs_socket_after_resume?.(blockedStatus)) !== 0) {
+      action |= SUPERVISOR_BLOCKED_RPC_POST_RESUME_SYNC_ACTION_SOCKET;
+    }
+    return action;
   };
   nextKernel.supervisor_blocked_retry_action ??= (vmPtr: number, flags: number) => {
     if (vmPtr === 0) {

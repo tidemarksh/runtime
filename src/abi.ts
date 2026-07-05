@@ -600,6 +600,17 @@ export interface KernelExports {
   supervisor_blocked_stale_retry_result_action_none?(): number;
   supervisor_blocked_stale_retry_result_action_handle_current_result?(): number;
   supervisor_blocked_stale_retry_result_action_handle_current_result_wait4?(): number;
+  supervisor_blocked_rpc_pipe_sync_action?(vmPtr: number, blockedStatus: number): number;
+  supervisor_blocked_rpc_pipe_sync_action_not_pipe?(): number;
+  supervisor_blocked_rpc_pipe_sync_action_none?(): number;
+  supervisor_blocked_rpc_pipe_sync_action_sync_socket?(): number;
+  supervisor_blocked_rpc_preserve_canonical_eof?(blockedStatus: number): number;
+  supervisor_blocked_rpc_post_resume_sync_action?(blockedStatus: number, flags: number): number;
+  supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available?(): number;
+  supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch?(): number;
+  supervisor_blocked_rpc_post_resume_sync_action_none?(): number;
+  supervisor_blocked_rpc_post_resume_sync_action_fork_shared?(): number;
+  supervisor_blocked_rpc_post_resume_sync_action_socket?(): number;
   supervisor_blocked_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_retry_action_flag_supervisor_timer_armed?(): number;
   supervisor_blocked_retry_action_flag_rpc_pending?(): number;
@@ -2038,6 +2049,17 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_stale_retry_result_action_none",
   "supervisor_blocked_stale_retry_result_action_handle_current_result",
   "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4",
+  "supervisor_blocked_rpc_pipe_sync_action",
+  "supervisor_blocked_rpc_pipe_sync_action_not_pipe",
+  "supervisor_blocked_rpc_pipe_sync_action_none",
+  "supervisor_blocked_rpc_pipe_sync_action_sync_socket",
+  "supervisor_blocked_rpc_preserve_canonical_eof",
+  "supervisor_blocked_rpc_post_resume_sync_action",
+  "supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available",
+  "supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch",
+  "supervisor_blocked_rpc_post_resume_sync_action_none",
+  "supervisor_blocked_rpc_post_resume_sync_action_fork_shared",
+  "supervisor_blocked_rpc_post_resume_sync_action_socket",
   "supervisor_blocked_retry_action",
   "supervisor_blocked_retry_action_flag_supervisor_timer_armed",
   "supervisor_blocked_retry_action_flag_rpc_pending",

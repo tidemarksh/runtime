@@ -7,12 +7,11 @@ import {
 } from "../../abi.js";
 import {
   resumeBlockedSyscallBySupervisor,
-  supervisorBlockedPollWaitHasSocket,
   supervisorBlockedResumeWritebacks,
   supervisorBlockedPipeResumeAction,
-  supervisorBlockedStatusIsEpollWait,
-  supervisorBlockedStatusIsPipeWait,
-  supervisorBlockedStatusSyncsSocketAfterResume,
+  supervisorBlockedRpcPipeSyncAction,
+  supervisorBlockedRpcPostResumeSyncAction,
+  supervisorBlockedRpcPreserveCanonicalEof,
 } from "../../supervisor-blocked-resume.js";
 import { forceNetworkClosedFds } from "../network-socket-close.js";
 import { supervisorProcessOwnerMismatch } from "../process-identity.js";
@@ -142,7 +141,7 @@ async function executeHostBlockedSyscallResume(
   let canonicalEofReadyAtStart = false;
   let preserveCanonicalEofReadyOnFinish = false;
   const preserveCanonicalEofReadyForDeferredRetry = (): void => {
-    if (canonicalEofReadyAtStart && supervisorBlockedStatusIsPipeWait(handle.kernel, blockedStatus)) {
+    if (canonicalEofReadyAtStart && supervisorBlockedRpcPreserveCanonicalEof(handle.kernel, blockedStatus)) {
       preserveCanonicalEofReadyOnFinish = true;
     }
   };
@@ -195,7 +194,6 @@ async function executeHostBlockedSyscallResume(
       emitResumeLifecycleEvent: boolean;
       includeStageInDoneEvent: boolean;
       requireBlockedBeforeDone: boolean;
-      syncSocketAfterResume: boolean;
     }): Promise<void> => {
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       forceNetworkClosedFds(handle, vmPtr);
@@ -211,21 +209,22 @@ async function executeHostBlockedSyscallResume(
       }
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       const transientProcessOwnerMismatch = supervisorProcessOwnerMismatch(handle.kernel, vmPtr, handle.pid);
-      if (
-        !transientProcessOwnerMismatch
-        && processHasKernelWorkerOwnership(handle)
-        && !supervisorBlockedStatusIsEpollWait(handle.kernel, blockedStatus)
-      ) {
+      const postResumeSyncAction = supervisorBlockedRpcPostResumeSyncAction(
+        handle.kernel,
+        blockedStatus,
+        {
+          kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+          processOwnerMismatch: transientProcessOwnerMismatch,
+        },
+      );
+      if (postResumeSyncAction.syncForkShared) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:${options.syncAfterResumeStage}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(blockedStatus));
         if (abortIfStaleBlockedRpc()) {
           return;
         }
       }
-      if (
-        !transientProcessOwnerMismatch
-        && options.syncSocketAfterResume
-      ) {
+      if (postResumeSyncAction.syncSocket) {
         await syncSocketStatePreservingNetworkBridge(
           handle,
           blockedRpcSyncCause(blockedStatus),
@@ -252,18 +251,26 @@ async function executeHostBlockedSyscallResume(
       emitBlockedRpcRetryResult(doneStatus);
     };
     const applySupervisorPipeAction = async (): Promise<boolean> => {
-      if (!supervisorBlockedStatusIsPipeWait(handle.kernel, blockedStatus)) {
-        return false;
-      }
-      if (supervisorBlockedPollWaitHasSocket(handle.kernel, vmPtr)) {
-        deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket-supervisor-pipe:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
-        await syncSocketStatePreservingNetworkBridge(
-          handle,
-          blockedRpcSyncCause(blockedStatus),
-          deps.syncSocketStateViaKernelWorker,
-        );
-        if (abortIfStaleBlockedRpc()) {
-          return true;
+      const pipeSyncAction = supervisorBlockedRpcPipeSyncAction(handle.kernel, vmPtr, blockedStatus);
+      switch (pipeSyncAction) {
+        case "not-pipe":
+          return false;
+        case "sync-socket":
+          deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:sync-socket-supervisor-pipe:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
+          await syncSocketStatePreservingNetworkBridge(
+            handle,
+            blockedRpcSyncCause(blockedStatus),
+            deps.syncSocketStateViaKernelWorker,
+          );
+          if (abortIfStaleBlockedRpc()) {
+            return true;
+          }
+          break;
+        case "none":
+          break;
+        default: {
+          const exhaustive: never = pipeSyncAction;
+          throw new Error(`unhandled supervisor blocked RPC pipe sync action: ${exhaustive}`);
         }
       }
       const supervisorPipeAction = supervisorBlockedPipeResumeAction(handle.kernel, vmPtr);
@@ -283,7 +290,6 @@ async function executeHostBlockedSyscallResume(
             emitResumeLifecycleEvent: true,
             includeStageInDoneEvent: true,
             requireBlockedBeforeDone: false,
-            syncSocketAfterResume: false,
           });
           return true;
         default: {
@@ -302,7 +308,6 @@ async function executeHostBlockedSyscallResume(
       emitResumeLifecycleEvent: false,
       includeStageInDoneEvent: false,
       requireBlockedBeforeDone: true,
-      syncSocketAfterResume: supervisorBlockedStatusSyncsSocketAfterResume(handle.kernel, blockedStatus),
     });
   } catch (error) {
     finishBlockedRpc();

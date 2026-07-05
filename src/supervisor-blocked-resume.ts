@@ -69,6 +69,16 @@ export type SupervisorBlockedStaleRetryResultAction =
   | "handle-current-result"
   | "handle-current-result-wait4";
 
+export type SupervisorBlockedRpcPipeSyncAction =
+  | "not-pipe"
+  | "none"
+  | "sync-socket";
+
+export interface SupervisorBlockedRpcPostResumeSyncAction {
+  syncForkShared: boolean;
+  syncSocket: boolean;
+}
+
 export type SupervisorBlockedRetryActionFlag =
   | "supervisor-timer-armed"
   | "rpc-pending"
@@ -132,6 +142,14 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_stale_retry_result_action_none"
   | "supervisor_blocked_stale_retry_result_action_handle_current_result"
   | "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4"
+  | "supervisor_blocked_rpc_pipe_sync_action_not_pipe"
+  | "supervisor_blocked_rpc_pipe_sync_action_none"
+  | "supervisor_blocked_rpc_pipe_sync_action_sync_socket"
+  | "supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available"
+  | "supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch"
+  | "supervisor_blocked_rpc_post_resume_sync_action_none"
+  | "supervisor_blocked_rpc_post_resume_sync_action_fork_shared"
+  | "supervisor_blocked_rpc_post_resume_sync_action_socket"
   | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
   | "supervisor_blocked_retry_action_flag_rpc_pending"
   | "supervisor_blocked_retry_action_flag_owner_async"
@@ -1088,6 +1106,135 @@ export function supervisorBlockedStaleRetryResultAction(
     throw new Error(`kernel supervisor blocked stale retry result action failed: ${result}`);
   }
   return normalizeSupervisorBlockedStaleRetryResultAction(kernel, result);
+}
+
+function supervisorBlockedRpcPipeSyncActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedRpcPipeSyncAction,
+): number {
+  switch (action) {
+    case "not-pipe":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_rpc_pipe_sync_action_not_pipe");
+    case "none":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_rpc_pipe_sync_action_none");
+    case "sync-socket":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_rpc_pipe_sync_action_sync_socket");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedRpcPipeSyncAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedRpcPipeSyncAction {
+  const actions: SupervisorBlockedRpcPipeSyncAction[] = [
+    "not-pipe",
+    "none",
+    "sync-socket",
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedRpcPipeSyncActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked RPC pipe sync action is unknown: ${result}`);
+}
+
+export function supervisorBlockedRpcPipeSyncAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  blockedStatus: number,
+): SupervisorBlockedRpcPipeSyncAction {
+  const readAction = kernel.supervisor_blocked_rpc_pipe_sync_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_rpc_pipe_sync_action");
+  }
+  const result = readAction.call(kernel, vmPtr, blockedStatus);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked RPC pipe sync action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedRpcPipeSyncAction(kernel, result);
+}
+
+export function supervisorBlockedRpcPreserveCanonicalEof(
+  kernel: KernelExports,
+  blockedStatus: number,
+): boolean {
+  const readAction = kernel.supervisor_blocked_rpc_preserve_canonical_eof;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_rpc_preserve_canonical_eof");
+  }
+  const result = readAction.call(kernel, blockedStatus);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked RPC canonical EOF action failed: ${result}`);
+  }
+  return result !== 0;
+}
+
+function supervisorBlockedRpcPostResumeSyncFlags(
+  kernel: KernelExports,
+  options: {
+    kernelWorkerAvailable: boolean;
+    processOwnerMismatch: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.kernelWorkerAvailable) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available",
+    );
+  }
+  if (options.processOwnerMismatch) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch",
+    );
+  }
+  return flags;
+}
+
+export function supervisorBlockedRpcPostResumeSyncAction(
+  kernel: KernelExports,
+  blockedStatus: number,
+  options: {
+    kernelWorkerAvailable: boolean;
+    processOwnerMismatch: boolean;
+  },
+): SupervisorBlockedRpcPostResumeSyncAction {
+  const readAction = kernel.supervisor_blocked_rpc_post_resume_sync_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_rpc_post_resume_sync_action");
+  }
+  const result = readAction.call(
+    kernel,
+    blockedStatus,
+    supervisorBlockedRpcPostResumeSyncFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked RPC post-resume sync action failed: ${result}`);
+  }
+  const none = readSupervisorNumberConst(kernel, "supervisor_blocked_rpc_post_resume_sync_action_none");
+  const known =
+    none
+    | readSupervisorNumberConst(kernel, "supervisor_blocked_rpc_post_resume_sync_action_fork_shared")
+    | readSupervisorNumberConst(kernel, "supervisor_blocked_rpc_post_resume_sync_action_socket");
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor blocked RPC post-resume sync action is unknown: ${result}`);
+  }
+  return {
+    syncForkShared: (result & readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_rpc_post_resume_sync_action_fork_shared",
+    )) !== 0,
+    syncSocket: (result & readSupervisorNumberConst(
+      kernel,
+      "supervisor_blocked_rpc_post_resume_sync_action_socket",
+    )) !== 0,
+  };
 }
 
 export function supervisorBlockedRetryAction(
