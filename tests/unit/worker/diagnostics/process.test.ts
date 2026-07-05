@@ -155,7 +155,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
       sharedOfdIds: new Set(),
     },
     networkConnections: new Map(),
-    networkClosedFds: new Set(),
     vforkSnapshot: null,
     stdinPipe: 0,
     stdoutPipe: 1,

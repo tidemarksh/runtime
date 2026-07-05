@@ -47,6 +47,7 @@ import {
   pendingPipeSlotsForNextStepCount,
 } from "../thread-step-payload.js";
 import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
+import { networkClosedFds } from "../network-socket-state.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -1652,7 +1653,7 @@ export function debugRuntimeProcessHandles(
           `fds=[${fdSummary}]`,
           `worker_net=[${networkLogSummary}]`,
           `network_fds=[${networkFdSummary}]`,
-          `network_closed_fds=[${[...handle.networkClosedFds].sort((left, right) => left - right).join(",")}]`,
+          `network_closed_fds=[${[...networkClosedFds(handle)].sort((left, right) => left - right).join(",")}]`,
           `socket_fds=[${socketFdSummary}]`,
           `worker_log=[${handle.workerDebugLog.slice(-48).join(", ")}]`,
           `debug=${handle.lastDebugMessage ?? "n/a"}`,

@@ -17,8 +17,14 @@ import { getThreadActivityState } from "../../../../src/worker/thread-activity-s
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending-pipe-slot-state.js";
 import { setProcessMemfsDirty } from "../../../../src/worker/process-memfs-state.js";
+import {
+  networkConnectionOfds,
+  networkRecvHeadWatermarks,
+  networkRecvTailWatermarks,
+} from "../../../../src/worker/network-socket-state.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+import { seedNetworkSocketState } from "./helpers.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
@@ -28,12 +34,6 @@ const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   handle.networkConnections ??= new Map();
-  handle.networkConnectionOfds ??= new Map();
-  handle.networkPendingConnectFds ??= new Set();
-  handle.networkClosedFds ??= new Set();
-  handle.networkRecvHeadWatermarks ??= new Map();
-  handle.networkRecvTailWatermarks ??= new Map();
-  handle.networkRecvPayloadWatermarks ??= new Map();
   handle.workerDebugLog ??= [];
   handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
   handle.vforkSnapshot ??= null;
@@ -799,11 +799,6 @@ test("status handler preserves network recv buffers while owner async status is 
       read: () => undefined,
       write: () => {},
     }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
   } as never;
 
   const handler = createWorkerStatusMessageHandler({
@@ -2215,8 +2210,6 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     kernelState,
     runningWorker: worker,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
   };
 
   setThreadGeneration(thread as never, 1);
@@ -2762,11 +2755,6 @@ test("status handler preserves host-injected network recv buffer when applying t
       read: () => undefined,
       write: () => {},
     }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
   } as never;
 
   const handler = createWorkerStatusMessageHandler({
@@ -2907,11 +2895,6 @@ test("status handler keeps newer thread recv payload when producer tail is not a
       read: () => undefined,
       write: () => {},
     }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
   } as never;
 
   const handler = createWorkerStatusMessageHandler({
@@ -3056,12 +3039,9 @@ test("status handler preserves host recv payload when producer tail wraps", () =
       read: () => undefined,
       write: () => {},
     }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkRecvPayloadWatermarks: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    recvPayloadWatermarks: [[7, {
       recvBufIdx,
       head: staleTail,
       tail: wrappedTail,
@@ -3070,8 +3050,8 @@ test("status handler preserves host recv payload when producer tail wraps", () =
       availableBytes,
       deliveredBytes: staleTail + availableBytes,
       data: bytes.slice(recvBufBase + 16, recvBufBase + netBufferBytes),
-    }]]),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -3208,12 +3188,10 @@ test("status handler preserves closed network socket recv head when fd no longer
     onStdout: null,
     runningWorker: worker,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map([[7, { offset: 0, data: closedSlot }]]),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
   } as never;
+  seedNetworkSocketState(handle, {
+    closedSocketSlots: [[7, { offset: 0, data: closedSlot }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -3338,13 +3316,12 @@ test("status handler closes stale network bridge when supervisor reports no acti
     onStdout: null,
     runningWorker: worker,
     networkConnections: new Map([[3, { close, read: () => undefined, write: () => {} }]]),
-    networkConnectionOfds: new Map([[3, 11]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map([[3, 4096]]),
-    networkRecvTailWatermarks: new Map([[3, 8192]]),
   } as never;
+  seedNetworkSocketState(handle, {
+    connectionOfds: [[3, 11]],
+    recvHeadWatermarks: [[3, 4096]],
+    recvTailWatermarks: [[3, 8192]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -3409,9 +3386,9 @@ test("status handler closes stale network bridge when supervisor reports no acti
   );
 
   expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkConnectionOfds.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkConnectionOfds(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
   expect(close).toHaveBeenCalledTimes(1);
   expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 3, 11, 0);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(

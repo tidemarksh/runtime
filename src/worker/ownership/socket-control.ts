@@ -5,6 +5,17 @@ import type {
   KernelWorkerSocketStateSnapshot,
 } from "../../messages.js";
 import { OFD_TYPE_OFFSET } from "../../layout/ofd.js";
+import {
+  networkClosedFds,
+  networkClosedSocketSlots,
+  networkConnectionOfds as networkConnectionOfdsState,
+  networkOfdSlotWatermarks,
+  networkRecvHeadWatermarks,
+  networkPendingConnectFds,
+  networkRecvPayloadWatermarks,
+  networkRecvTailWatermarks,
+  networkSocketSlotWatermarks,
+} from "../network-socket-state.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
 
@@ -15,11 +26,11 @@ export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): bool
 export function runtimeNetworkFds(handle: ProcessHandle): Set<number> {
   return new Set([
     ...(handle.networkConnections?.keys() ?? []),
-    ...(handle.networkPendingConnectFds ?? []),
-    ...(handle.networkClosedFds ?? []),
-    ...(handle.networkClosedSocketSlots?.keys() ?? []),
-    ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
-    ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
+    ...networkPendingConnectFds(handle),
+    ...networkClosedFds(handle),
+    ...networkClosedSocketSlots(handle).keys(),
+    ...networkSocketSlotWatermarks(handle).keys(),
+    ...networkRecvPayloadWatermarks(handle).keys(),
   ]);
 }
 
@@ -111,8 +122,7 @@ function supervisorHeldSocketOfdIds(handle: ProcessHandle, vmPtr: number): numbe
 }
 
 export function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
-  handle.networkConnectionOfds ??= new Map();
-  return handle.networkConnectionOfds;
+  return networkConnectionOfdsState(handle);
 }
 
 function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
@@ -205,8 +215,8 @@ export function restoreNetworkOfdSlotWatermarks(
   handle: ProcessHandle,
   appendStatusSocketDebug?: SocketStatusDebug,
 ): void {
-  const watermarks = handle.networkOfdSlotWatermarks;
-  if (!watermarks || watermarks.size === 0) {
+  const watermarks = networkOfdSlotWatermarks(handle);
+  if (watermarks.size === 0) {
     return;
   }
   const maxFds = handle.kernel.abi_max_fds();
@@ -234,15 +244,13 @@ function clearNetworkRecvWatermarks(
   fd: number,
   appendStatusSocketDebug?: SocketStatusDebug,
 ): void {
-  if (handle.networkRecvPayloadWatermarks?.has(fd)) {
+  if (networkRecvPayloadWatermarks(handle).has(fd)) {
     appendStatusSocketDebug?.(handle, `net-status-watermark-clear:${handle.pid}:fd=${fd}`);
   }
-  handle.networkRecvHeadWatermarks.delete(fd);
-  handle.networkRecvTailWatermarks.delete(fd);
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  handle.networkRecvPayloadWatermarks.delete(fd);
-  handle.networkSocketSlotWatermarks ??= new Map();
-  handle.networkSocketSlotWatermarks.delete(fd);
+  networkRecvHeadWatermarks(handle).delete(fd);
+  networkRecvTailWatermarks(handle).delete(fd);
+  networkRecvPayloadWatermarks(handle).delete(fd);
+  networkSocketSlotWatermarks(handle).delete(fd);
 }
 
 function moveNetworkRecvWatermarks(
@@ -254,24 +262,22 @@ function moveNetworkRecvWatermarks(
   if (fromFd === toFd) {
     return;
   }
-  const head = handle.networkRecvHeadWatermarks.get(fromFd);
-  const tail = handle.networkRecvTailWatermarks.get(fromFd);
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  const payload = handle.networkRecvPayloadWatermarks.get(fromFd);
-  handle.networkSocketSlotWatermarks ??= new Map();
-  const socketSlot = handle.networkSocketSlotWatermarks.get(fromFd);
+  const head = networkRecvHeadWatermarks(handle).get(fromFd);
+  const tail = networkRecvTailWatermarks(handle).get(fromFd);
+  const payload = networkRecvPayloadWatermarks(handle).get(fromFd);
+  const socketSlot = networkSocketSlotWatermarks(handle).get(fromFd);
   clearNetworkRecvWatermarks(handle, fromFd, appendStatusSocketDebug);
   if (head !== undefined) {
-    handle.networkRecvHeadWatermarks.set(toFd, head);
+    networkRecvHeadWatermarks(handle).set(toFd, head);
   }
   if (tail !== undefined) {
-    handle.networkRecvTailWatermarks.set(toFd, tail);
+    networkRecvTailWatermarks(handle).set(toFd, tail);
   }
   if (payload !== undefined) {
-    handle.networkRecvPayloadWatermarks.set(toFd, payload);
+    networkRecvPayloadWatermarks(handle).set(toFd, payload);
   }
   if (socketSlot !== undefined) {
-    handle.networkSocketSlotWatermarks.set(toFd, socketSlot);
+    networkSocketSlotWatermarks(handle).set(toFd, socketSlot);
   }
 }
 
@@ -301,7 +307,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       vmPtr,
       preferredFd,
       expectedOfd,
-      handle.networkPendingConnectFds.has(preferredFd) ? 1 : 0,
+      networkPendingConnectFds(handle).has(preferredFd) ? 1 : 0,
     );
     return {
       fd: activeFd >= 0 ? activeFd : null,
@@ -339,7 +345,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       } else if (
         currentOfd > 0
         && supervisorSocketOfdIsSocket(handle, currentOfd)
-        && !handle.networkPendingConnectFds.has(fd)
+        && !networkPendingConnectFds(handle).has(fd)
       ) {
         ofds.set(fd, currentOfd);
         callbacks.appendWorkerDebugLog(handle, `net-status-rekey:${handle.pid}:fd=${fd}:ofd=${expectedOfd}->${currentOfd}`);
@@ -348,7 +354,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     }
     if (
       !supervisorDecidedClose
-      && !handle.networkClosedFds.has(fd)
+      && !networkClosedFds(handle).has(fd)
       && !(fdEntry?.ofdId === 0 && currentOfd === 0)
     ) {
       callbacks.appendWorkerDebugLog(handle, `net-status-keep:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
@@ -356,7 +362,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     }
     handle.networkConnections.delete(fd);
     ofds.delete(fd);
-    handle.networkPendingConnectFds.delete(fd);
+    networkPendingConnectFds(handle).delete(fd);
     clearNetworkRecvWatermarks(handle, fd, callbacks.appendStatusSocketDebug);
     callbacks.appendWorkerDebugLog(handle, `net-status-close:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
     void Promise.resolve(connection.close?.()).catch((error) => {
@@ -419,14 +425,14 @@ export function restoreRuntimeNetworkSidecarForHandle(
         if (
           targetFd === null
           || handle.networkConnections.has(targetFd)
-          || handle.networkClosedFds.has(targetFd)
+          || networkClosedFds(handle).has(targetFd)
         ) {
           continue;
         }
         handle.networkConnections.set(targetFd, connection);
         networkConnectionOfds(handle).set(targetFd, sourceOfd);
-        handle.networkPendingConnectFds.delete(targetFd);
-        handle.networkClosedSocketSlots.delete(targetFd);
+        networkPendingConnectFds(handle).delete(targetFd);
+        networkClosedSocketSlots(handle).delete(targetFd);
       }
     }
   }
@@ -438,11 +444,11 @@ export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorke
     handle.kernelState.socketUsed === 0
     && handle.kernelState.netBufUsed === 0n
     && (handle.networkConnections?.size ?? 0) === 0
-    && (handle.networkPendingConnectFds?.size ?? 0) === 0
-    && (handle.networkClosedFds?.size ?? 0) === 0
-    && (handle.networkClosedSocketSlots?.size ?? 0) === 0
-    && (handle.networkSocketSlotWatermarks?.size ?? 0) === 0
-    && (handle.networkRecvPayloadWatermarks?.size ?? 0) === 0
+    && networkPendingConnectFds(handle).size === 0
+    && networkClosedFds(handle).size === 0
+    && networkClosedSocketSlots(handle).size === 0
+    && networkSocketSlotWatermarks(handle).size === 0
+    && networkRecvPayloadWatermarks(handle).size === 0
   ) {
     return undefined;
   }
@@ -479,7 +485,7 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
         ofdIds.add(ofdId);
       }
     };
-    for (const ofdId of handle.networkConnectionOfds?.values() ?? []) {
+    for (const ofdId of networkConnectionOfds(handle).values()) {
       addOfd(ofdId);
     }
     const networkFds = runtimeNetworkFds(handle);
@@ -488,7 +494,7 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
         addOfd(supervisorSocketOfdForFd(handle, handle.vmPtr, fd));
       }
     }
-    for (const [ofdId, slot] of handle.networkOfdSlotWatermarks ?? []) {
+    for (const [ofdId, slot] of networkOfdSlotWatermarks(handle)) {
       if (ofdId <= 0 || ofdId >= maxFds) {
         continue;
       }
@@ -509,11 +515,11 @@ export function hasKernelSocketFdState(handle: ProcessHandle): boolean {
 
 export function hasRuntimeNetworkSocketState(handle: ProcessHandle): boolean {
   return (handle.networkConnections?.size ?? 0) > 0
-    || (handle.networkPendingConnectFds?.size ?? 0) > 0
-    || handle.networkClosedFds.size > 0
-    || handle.networkClosedSocketSlots.size > 0
-    || (handle.networkSocketSlotWatermarks?.size ?? 0) > 0
-    || (handle.networkRecvPayloadWatermarks?.size ?? 0) > 0
+    || networkPendingConnectFds(handle).size > 0
+    || networkClosedFds(handle).size > 0
+    || networkClosedSocketSlots(handle).size > 0
+    || networkSocketSlotWatermarks(handle).size > 0
+    || networkRecvPayloadWatermarks(handle).size > 0
     || hasKernelSocketFdState(handle);
 }
 
@@ -550,7 +556,7 @@ export function preserveNetworkSocketSlots(
     });
   };
   for (const fd of runtimeNetworkFds(handle)) {
-    const closedSlot = handle.networkClosedSocketSlots.get(fd);
+    const closedSlot = networkClosedSocketSlots(handle).get(fd);
     if (closedSlot) {
       if (!preservedOffsets.has(closedSlot.offset)) {
         preservedOffsets.add(closedSlot.offset);
@@ -562,10 +568,9 @@ export function preserveNetworkSocketSlots(
       }
       continue;
     }
-    handle.networkSocketSlotWatermarks ??= new Map();
-    const watermarkedSlot = handle.networkSocketSlotWatermarks.get(fd);
+    const watermarkedSlot = networkSocketSlotWatermarks(handle).get(fd);
     const shouldPreserveWatermarkedSlot = preserveWatermarkedSlots === "all"
-      || (handle.networkRecvPayloadWatermarks?.has(fd) ?? false);
+      || networkRecvPayloadWatermarks(handle).has(fd);
     if (shouldPreserveWatermarkedSlot && watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
       preservedOffsets.add(watermarkedSlot.offset);
       preserved.push({
@@ -577,7 +582,7 @@ export function preserveNetworkSocketSlots(
     const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
     if (socketIdx < 0 || socketIdx >= maxSockets) {
       if (pruneMissingClosedFds) {
-        handle.networkClosedFds.delete(fd);
+        networkClosedFds(handle).delete(fd);
       }
       continue;
     }

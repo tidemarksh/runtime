@@ -1,6 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { applyStatusFdEntries } from "../../../../src/worker/message-handler/status/fd-entries.js";
-import { makeHandle, makeKernel, makeStatusMessage } from "./helpers.js";
+import { makeHandle, makeKernel, makeStatusMessage, seedNetworkSocketState } from "./helpers.js";
 
 test("status fd entries restore valid descriptor bindings through the status owner", () => {
   const fdEntries = new Map<number, { ofdId: number; fdFlags: number }>();
@@ -73,12 +73,14 @@ test("status fd entries preserve authoritative runtime network bindings", () => 
   const fdEntries = new Map<number, number>([[4, 11]]);
   const handle = makeHandle({
     networkConnections: new Map([[4, { close: () => undefined }]]),
-    networkConnectionOfds: new Map([[4, 11]]),
     kernel: makeKernel({
       process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
         fdEntries.set(fd, ofdId);
       },
     }),
+  });
+  seedNetworkSocketState(handle, {
+    connectionOfds: [[4, 11]],
   });
 
   applyStatusFdEntries(handle as never, makeStatusMessage({

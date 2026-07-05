@@ -5,6 +5,7 @@ import {
   readPublishedKernelRuntimeState,
 } from "../../../../src/bridge/runtime-state.js";
 import { createWorkerKernelRpcSocketHelpers } from "../../../../src/worker/kernel-rpc/socket.js";
+import { networkPendingConnectFds } from "../../../../src/worker/network-socket-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -150,10 +151,10 @@ test("resumeConnectViaKernelWorker adopts kernel-worker connect resume state", a
     kernelState: baseState,
     runtimeBridge,
     workers: new Set([worker]),
-    networkPendingConnectFds: new Set([6]),
     workerDebugLog: [],
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
+  networkPendingConnectFds(handle).add(6);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const applySocketStateFromKernelWorker = vi.fn();

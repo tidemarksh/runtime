@@ -16,6 +16,13 @@ import {
   kernelSocketState,
   runtimeNetworkFds,
 } from "./ownership/socket-control.js";
+import {
+  networkClosedFds,
+  networkClosedSocketSlots,
+  networkRecvHeadWatermarks,
+  networkRecvPayloadWatermarks,
+  networkRecvTailWatermarks,
+} from "./network-socket-state.js";
 import type { ProcessHandle } from "./types.js";
 
 const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;
@@ -111,9 +118,9 @@ export function counterAhead(sourceValue: number, targetValue: number, capacity:
 }
 
 export function rememberNetworkRecvTail(handle: ProcessHandle, fd: number, tail: number, capacity: number): number {
-  const previous = handle.networkRecvTailWatermarks.get(fd) ?? 0;
+  const previous = networkRecvTailWatermarks(handle).get(fd) ?? 0;
   const next = counterAhead(tail, previous, capacity) ? tail : previous;
-  handle.networkRecvTailWatermarks.set(fd, next);
+  networkRecvTailWatermarks(handle).set(fd, next);
   return next;
 }
 
@@ -142,8 +149,7 @@ export function networkRecvPayloadWatermark(
   capacity: number,
   debug?: NetworkRecvBufferDebugOptions,
 ): { head: number; tail: number; data: Uint8Array } | null {
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  const payload = handle.networkRecvPayloadWatermarks.get(fd);
+  const payload = networkRecvPayloadWatermarks(handle).get(fd);
   if (payload === undefined || payload.capacity !== capacity) {
     return null;
   }
@@ -255,8 +261,7 @@ export function preserveNetworkRecvBuffers(
   const preservedOffsets = new Set<number>();
   const memory = new Uint8Array(handle.memory.buffer);
   const preserveWatermarkedRecvBuffer = (fd: number): boolean => {
-    handle.networkRecvPayloadWatermarks ??= new Map();
-    const payload = handle.networkRecvPayloadWatermarks.get(fd);
+    const payload = networkRecvPayloadWatermarks(handle).get(fd);
     if (payload === undefined || payload.recvBufIdx < 0 || payload.recvBufIdx >= netBufferCount) {
       return false;
     }
@@ -264,9 +269,9 @@ export function preserveNetworkRecvBuffers(
     if (preservedOffsets.has(offset)) {
       return true;
     }
-    handle.networkRecvHeadWatermarks.set(fd, payload.head);
+    networkRecvHeadWatermarks(handle).set(fd, payload.head);
     const watermarkHead = payload.head;
-    handle.networkRecvTailWatermarks.set(fd, payload.tail);
+    networkRecvTailWatermarks(handle).set(fd, payload.tail);
     const watermarkTail = payload.tail;
     preservedOffsets.add(offset);
     preserved.push({
@@ -316,18 +321,18 @@ export function preserveNetworkRecvBuffers(
       );
     const watermarkHead = fd === null ? mergedHead : mergedHead;
     if (fd !== null) {
-      handle.networkRecvHeadWatermarks.set(fd, watermarkHead);
+      networkRecvHeadWatermarks(handle).set(fd, watermarkHead);
     }
     const watermarkTail = (() => {
       if (fd === null) {
         return currentTail;
       }
       if (payload !== null) {
-        handle.networkRecvTailWatermarks.set(fd, preservedTail);
+        networkRecvTailWatermarks(handle).set(fd, preservedTail);
         return preservedTail;
       }
       if (terminalRecv) {
-        handle.networkRecvTailWatermarks.set(fd, watermarkHead);
+        networkRecvTailWatermarks(handle).set(fd, watermarkHead);
         return watermarkHead;
       }
       return rememberNetworkRecvTail(handle, fd, preservedTail, capacity);
@@ -349,7 +354,7 @@ export function preserveNetworkRecvBuffers(
     const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       if (!preserveWatermarkedRecvBuffer(fd)) {
-        handle.networkClosedFds.delete(fd);
+        networkClosedFds(handle).delete(fd);
       }
       continue;
     }
@@ -451,7 +456,7 @@ export function preservedSocketRecvBufferIndices(preserved: Iterable<{ data: Uin
 
 export function closedSocketRecvBufferIndices(handle: ProcessHandle): number[] {
   const indices: number[] = [];
-  for (const slot of handle.networkClosedSocketSlots.values()) {
+  for (const slot of networkClosedSocketSlots(handle).values()) {
     const recvBufIdx = networkSocketSlotRecvBufferIndex(slot);
     if (recvBufIdx >= 0) {
       indices.push(recvBufIdx);
@@ -522,7 +527,7 @@ export function preserveNetworkRecvHeadWatermarks(
   for (const fd of fds) {
     const socketIdx = kernelSocketIndexForFd(handle, handle.vmPtr, fd);
     if (socketIdx < 0) {
-      handle.networkClosedFds?.delete(fd);
+      networkClosedFds(handle)?.delete(fd);
       continue;
     }
     const recvBufIdx = kernelSocketRecvBufferIndex(handle, socketIdx);
@@ -553,11 +558,11 @@ export function preserveNetworkRecvHeadWatermarks(
       head: mergedHead,
       tail: (() => {
         if (payload !== null) {
-          handle.networkRecvTailWatermarks.set(fd, preservedTail);
+          networkRecvTailWatermarks(handle).set(fd, preservedTail);
           return preservedTail;
         }
         if (terminalRecv) {
-          handle.networkRecvTailWatermarks.set(fd, mergedHead);
+          networkRecvTailWatermarks(handle).set(fd, mergedHead);
           return mergedHead;
         }
         return rememberNetworkRecvTail(handle, fd, preservedTail, capacity);
@@ -568,7 +573,7 @@ export function preserveNetworkRecvHeadWatermarks(
       forceHead: true,
       forceTail: payload !== null || terminalRecv,
     });
-    handle.networkRecvHeadWatermarks.set(fd, mergedHead);
+    networkRecvHeadWatermarks(handle).set(fd, mergedHead);
   }
   return preserved;
 }

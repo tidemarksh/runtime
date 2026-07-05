@@ -110,24 +110,6 @@ export interface ProcessHandle {
   kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;
   networkConnections: Map<number, RuntimeNetworkConnection>;
-  networkConnectionOfds?: Map<number, number>;
-  networkOfdSlotWatermarks?: Map<number, Uint8Array>;
-  networkPendingConnectFds: Set<number>;
-  networkClosedFds: Set<number>;
-  networkClosedSocketSlots: Map<number, { offset: number; data: Uint8Array }>;
-  networkSocketSlotWatermarks: Map<number, { offset: number; data: Uint8Array }>;
-  networkRecvHeadWatermarks: Map<number, number>;
-  networkRecvTailWatermarks: Map<number, number>;
-  networkRecvPayloadWatermarks: Map<number, {
-    recvBufIdx: number;
-    head: number;
-    tail: number;
-    capacity: number;
-    readBytes?: number;
-    availableBytes?: number;
-    deliveredBytes?: number;
-    data: Uint8Array;
-  }>;
   workers: Set<Worker>;
   // Worker host queues. Runnable/thread authority comes from the supervisor;
   // these collections only track host execution, parking, and diagnostics.

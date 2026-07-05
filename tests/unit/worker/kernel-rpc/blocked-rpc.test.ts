@@ -118,7 +118,6 @@ function makeHandle(
       vmPtr: 0x1234,
       status: kernel.thread_status(0x1234),
     }]]),
-    networkClosedFds: new Set(),
     networkConnections: new Map(),
     workerDebugLog: [],
     kernelShare: {

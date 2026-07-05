@@ -7,6 +7,7 @@ import {
 } from "../kernel-state.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import { networkPendingConnectFds } from "../network-socket-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
@@ -23,8 +24,9 @@ export function createWorkerKernelRpcSocketHelpers(
   ): Promise<KernelRpcResumeOutcome> {
     const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeConnectViaKernelWorker");
     const blockedFd = handle.kernel.thread_blocked_fd(vmPtr);
-    const pendingConnectFd = handle.networkPendingConnectFds.size === 1
-      ? [...handle.networkPendingConnectFds][0]
+    const pendingConnectFds = networkPendingConnectFds(handle);
+    const pendingConnectFd = pendingConnectFds.size === 1
+      ? [...pendingConnectFds][0]
       : 0;
     const connectFd = blockedFd !== 0 ? blockedFd : pendingConnectFd;
     const { fdEntries, ofdSlots } = deps.snapshotProcessFdOfdStateForKernelWorker(handle, vmPtr);
@@ -45,14 +47,14 @@ export function createWorkerKernelRpcSocketHelpers(
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     const fd = connectFd > 0 ? connectFd : Number(BigInt.asUintN(32, handle.kernel.thread_a0(vmPtr)));
-    const restorePendingFd = handle.networkPendingConnectFds.has(fd);
+    const restorePendingFd = pendingConnectFds.has(fd);
     if (response.socketState) {
-      handle.networkPendingConnectFds.delete(fd);
+      pendingConnectFds.delete(fd);
       try {
         deps.applySocketStateFromKernelWorker(handle, response.socketState);
       } finally {
         if (restorePendingFd) {
-          handle.networkPendingConnectFds.add(fd);
+          pendingConnectFds.add(fd);
         }
       }
     }

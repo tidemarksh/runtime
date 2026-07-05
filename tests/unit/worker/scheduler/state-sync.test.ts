@@ -5,6 +5,7 @@ import {
   setBlockedRpcGeneration,
   setBlockedRpcPending,
 } from "../../../../src/worker/host-blocked-state.js";
+import { networkRecvPayloadWatermarks } from "../../../../src/worker/network-socket-state.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -156,12 +157,6 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     kernelShare: { members: new Set(), sharedOfdIds: new Set(), ofdSlotSnapshots: new Map() },
     workers: new Set(),
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkRecvPayloadWatermarks: new Map(),
     transferDebugStats: createTransferDebugStats(),
     vforkSnapshot: null,
     vforkWorker: null,
@@ -742,7 +737,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
   memory[netBufBase + 16] = 0xab;
   memory[netBufBase + 17] = 0xcd;
   handle.networkConnections.set(3, { read: () => undefined, write: () => {} } as never);
-  handle.networkRecvPayloadWatermarks.set(3, {
+  networkRecvPayloadWatermarks(handle as never).set(3, {
     recvBufIdx: 0,
     head: staleTail,
     tail: wrappedTail,

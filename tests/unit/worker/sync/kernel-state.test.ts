@@ -16,6 +16,7 @@ import {
   collectRuntimeNetworkSocketOfdIds,
   hasKernelSocketFdState,
 } from "../../../../src/worker/ownership/socket-control.js";
+import { networkConnectionOfds } from "../../../../src/worker/network-socket-state.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -541,15 +542,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       };
     }),
     networkConnections: new Map(),
-    networkConnectionOfds: new Map(),
-    networkOfdSlotWatermarks: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkSocketSlotWatermarks: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkRecvPayloadWatermarks: new Map(),
     workers: new Set(),
     vforkReadyWorkers: [],
     runningWorker: null,
@@ -755,7 +747,7 @@ test("runtime network OFD collection excludes unrelated local socket OFDs", () =
     read: vi.fn(),
     write: vi.fn(),
   } as never);
-  handle.networkConnectionOfds?.set(3, 11);
+  networkConnectionOfds(handle).set(3, 11);
 
   expect([...collectRuntimeNetworkSocketOfdIds([handle])].sort((left, right) => left - right))
     .toEqual([11]);

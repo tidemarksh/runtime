@@ -307,7 +307,6 @@ function makeHandle(
     runningWorker: null,
     hostBlockedWorkers: new Map(),
     networkConnections: new Map(),
-    networkClosedFds: new Set(),
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],

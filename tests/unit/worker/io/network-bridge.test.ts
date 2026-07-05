@@ -1,4 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
+import {
+  networkClosedFds,
+  networkPendingConnectFds,
+  networkRecvHeadWatermarks,
+  networkRecvTailWatermarks,
+} from "../../../../src/worker/network-socket-state.js";
 import { createWorkerProcessIoHelpers } from "../../../../src/worker/process-io.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -147,11 +153,6 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
     memory,
     networkBridge: bridge,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -194,11 +195,6 @@ test("resolveNetworkConnect reads IPv4 connect endpoint from supervisor socket c
     memory,
     networkBridge: bridge,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -250,11 +246,6 @@ test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers
     memory,
     networkBridge: bridge,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -301,11 +292,6 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
     pid: 42,
     memory,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set<number>(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     networkBridge: {
       connect: vi.fn(() => new Promise((resolve) => {
         finishConnect = resolve;
@@ -326,12 +312,12 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
 
   const pending = helpers.resolveNetworkConnect(handle, 0x2000);
   await vi.waitFor(() => {
-    expect(handle.networkPendingConnectFds.has(7)).toBe(true);
+    expect(networkPendingConnectFds(handle).has(7)).toBe(true);
   });
 
   finishConnect?.(undefined);
   await expect(pending).resolves.toBe(0n);
-  expect(handle.networkPendingConnectFds.has(7)).toBe(false);
+  expect(networkPendingConnectFds(handle).has(7)).toBe(false);
 });
 
 test("commitNetworkConnect adopts a successful bridge connection after the local status advances", async () => {
@@ -356,11 +342,6 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set([3]),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map([[3, 4096]]),
-    networkRecvTailWatermarks: new Map([[3, 8192]]),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -413,6 +394,9 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  networkClosedFds(handle).add(3);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 8192);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
@@ -424,10 +408,10 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
     0n,
   );
   expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkPendingConnectFds.has(3)).toBe(false);
-  expect(handle.networkClosedFds.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkPendingConnectFds(handle).has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
   expect(netBufHeader.getUint32(0, true)).toBe(4096);
   expect(netBufHeader.getUint32(4, true)).toBe(4096);
   expect(connection.close).not.toHaveBeenCalled();
@@ -450,11 +434,6 @@ test("commitNetworkConnect drops bridge connection when supervisor rejects the c
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernelState: {},
     kernel: {
       kernel_heap_ptr: () => 0x100,
@@ -485,7 +464,7 @@ test("commitNetworkConnect drops bridge connection when supervisor rejects the c
     0n,
   );
   expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkPendingConnectFds.has(3)).toBe(false);
+  expect(networkPendingConnectFds(handle).has(3)).toBe(false);
   expect(connection.close).toHaveBeenCalledTimes(1);
 });
 
@@ -510,11 +489,6 @@ test("commitNetworkConnect adopts bridge connection when supervisor accepts the 
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernelState: {
       ofdTablePtr: 0,
       netBufBase: 0,
@@ -568,7 +542,7 @@ test("commitNetworkConnect adopts bridge connection when supervisor accepts the 
     0n,
   );
   expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkPendingConnectFds.has(3)).toBe(false);
+  expect(networkPendingConnectFds(handle).has(3)).toBe(false);
   expect(connection.close).not.toHaveBeenCalled();
 });
 
@@ -579,11 +553,6 @@ test("resolveNetworkConnect normalizes bridge errno to negative Linux result", a
     pid: 42,
     memory,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     networkBridge: {
       connect: vi.fn(async () => ({ errno: 13 })),
     },
@@ -626,11 +595,6 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
         }),
       }],
     ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -685,11 +649,6 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
         }),
       }],
     ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkClosedSocketSlots: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -742,11 +701,6 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
         }),
       }],
     ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkClosedSocketSlots: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -800,11 +754,6 @@ test("async inbound read resumes pump with the source thread vm", async () => {
         }),
       }],
     ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -864,20 +813,11 @@ test("async inbound read adopts the current process handle before injecting", as
     vmPtr: 0x2000,
     memory,
     networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel,
   } as unknown as ProcessHandle;
   const activeHandle = {
     ...oldHandle,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set([7]),
-    networkRecvHeadWatermarks: new Map([[7, 4096]]),
-    networkRecvTailWatermarks: new Map([[7, 8192]]),
     kernel: {
       ...kernel,
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
@@ -888,6 +828,9 @@ test("async inbound read adopts the current process handle before injecting", as
   deps.getActiveHandle = vi.fn(() => activeHandle);
   withSupervisorSocketDefaults(kernel);
   withSupervisorSocketDefaults(activeHandle.kernel);
+  networkClosedFds(activeHandle).add(7);
+  networkRecvHeadWatermarks(activeHandle).set(7, 4096);
+  networkRecvTailWatermarks(activeHandle).set(7, 8192);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(oldHandle, 0x3000)).resolves.toBe(false);
@@ -898,9 +841,9 @@ test("async inbound read adopts the current process handle before injecting", as
   });
 
   expect(activeHandle.networkConnections.get(7)).toBe(connection);
-  expect(activeHandle.networkClosedFds.has(7)).toBe(false);
-  expect(activeHandle.networkRecvHeadWatermarks.has(7)).toBe(false);
-  expect(activeHandle.networkRecvTailWatermarks.has(7)).toBe(false);
+  expect(networkClosedFds(activeHandle).has(7)).toBe(false);
+  expect(networkRecvHeadWatermarks(activeHandle).has(7)).toBe(false);
+  expect(networkRecvTailWatermarks(activeHandle).has(7)).toBe(false);
   expect(deps.requestSocketStateSync).toHaveBeenCalledWith(activeHandle, true);
   expect(deps.notifyHostIoProgress).toHaveBeenCalledWith(activeHandle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(activeHandle);
@@ -941,11 +884,6 @@ test("pending async empty read does not drop the next inbound response", async (
         }),
       }],
     ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1002,11 +940,6 @@ test("post-write pump starts a response read after an async empty pre-read clear
         }),
       }],
     ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1058,11 +991,6 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
     vmPtr: 0x3000,
     memory,
     networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1092,7 +1020,7 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
 
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(7)).toBe(false);
+  expect(networkClosedFds(handle).has(7)).toBe(false);
   expect(handle.networkConnections.get(7)).toBe(connection);
   expect(connection.close).not.toHaveBeenCalled();
 });
@@ -1116,11 +1044,6 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
     vmPtr: 0x3000,
     memory,
     networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1164,11 +1087,6 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
     vmPtr: 0x3000,
     memory,
     networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map([[7, 0]]),
-    networkRecvTailWatermarks: new Map([[7, 4096]]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1190,6 +1108,8 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
     },
   } as unknown as ProcessHandle;
   withSupervisorSocketDefaults(handle.kernel);
+  networkRecvHeadWatermarks(handle).set(7, 0);
+  networkRecvTailWatermarks(handle).set(7, 4096);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -1198,8 +1118,8 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
   expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(handle.networkConnections.get(7)).toBe(connection);
-  expect(handle.networkRecvHeadWatermarks.has(7)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(7)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(7)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(7)).toBe(false);
 });
 
 test("partial inbound is drained before bridge EOF closes the socket", async () => {
@@ -1221,11 +1141,6 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
     vmPtr: 0x3000,
     memory,
     networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -1290,11 +1205,6 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1352,20 +1262,20 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
   withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
   expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 
   currentOfd = 20;
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(connection.close).not.toHaveBeenCalled();
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
   expect(handle.networkConnections.get(3)).toBe(connection);
 });
 
@@ -1388,11 +1298,6 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1467,18 +1372,18 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
 
   fd3Ofd = 20;
   fd5Ofd = 19;
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
   expect(connection.close).not.toHaveBeenCalled();
   expect(handle.networkConnections.has(3)).toBe(false);
   expect(handle.networkConnections.get(5)).toBe(connection);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.get(5)).toBe(4096);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.get(5)).toBe(188416);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).get(5)).toBe(4096);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).get(5)).toBe(188416);
 });
 
 test("stale network OFD closes when supervisor reports no active fd", async () => {
@@ -1499,11 +1404,6 @@ test("stale network OFD closes when supervisor reports no active fd", async () =
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1600,11 +1500,6 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
       })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1667,17 +1562,17 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
   expect(handle.networkConnections.get(3)).toBe(oldConnection);
 
   currentOfd = 20;
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(oldConnection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
   expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 });
 
 test("stale network OFD cleanup closes bridge immediately when the fd disappeared", async () => {
@@ -1698,11 +1593,6 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
       connect: vi.fn(async () => ({ connection })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1760,8 +1650,8 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
   withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
   expect(handle.networkConnections.get(3)).toBe(connection);
@@ -1771,10 +1661,10 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
 
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
   expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 });
 
 test("not-connected drain during pending reconnect closes only the stale bridge", async () => {
@@ -1802,11 +1692,6 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
       })),
     },
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1873,6 +1758,6 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
 
   expect(oldConnection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
   expect(handle.networkConnections.has(3)).toBe(false);
 });

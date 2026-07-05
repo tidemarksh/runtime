@@ -1,5 +1,6 @@
 import type { KernelWorkerFdEntrySnapshot } from "../../messages.js";
 import type { ProcessHandle } from "../types.js";
+import { networkClosedFds } from "../network-socket-state.js";
 import {
   networkConnectionOfds,
   restoreNetworkOfdSlotWatermarks,
@@ -205,7 +206,7 @@ export function applyThreadFdEntries(
       expectedNetworkOfd !== undefined
       && entry.ofdId !== 0
       && entry.ofdId !== expectedNetworkOfd
-      && !handle.networkClosedFds.has(entry.fd)
+      && !networkClosedFds(handle).has(entry.fd)
     ) {
       continue;
     }

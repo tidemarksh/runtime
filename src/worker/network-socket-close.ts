@@ -1,5 +1,6 @@
 import type { ProcessHandle } from "./types.js";
 import { requireKernelSocketCount } from "../kernel-socket-layout.js";
+import { networkClosedFds } from "./network-socket-state.js";
 import {
   SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
   SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
@@ -35,10 +36,11 @@ export function forceNetworkClosedFd(handle: ProcessHandle, vmPtr: number, fd: n
 }
 
 export function forceNetworkClosedFds(handle: ProcessHandle, vmPtr = handle.vmPtr): void {
-  if (handle.networkClosedFds.size === 0) {
+  const closedFds = networkClosedFds(handle);
+  if (closedFds.size === 0) {
     return;
   }
-  for (const fd of handle.networkClosedFds) {
+  for (const fd of closedFds) {
     forceNetworkClosedFd(handle, vmPtr, fd);
   }
 }

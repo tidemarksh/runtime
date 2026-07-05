@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
+import { networkConnectionOfds } from "../../../../src/worker/network-socket-state.js";
 import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
@@ -232,11 +233,6 @@ function makeHandle(worker: Worker) {
     stdoutPipe: 0,
     stderrPipe: 0,
     networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       ...makeSupervisorAbiStubs(),
       abi_status_ok: () => 0,
@@ -986,7 +982,7 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
   });
   expect(handle.networkBridge).toBe(bridge);
   expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkConnectionOfds?.get(3)).toBe(12);
+  expect(networkConnectionOfds(handle as never).get(3)).toBe(12);
   expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
 });
 

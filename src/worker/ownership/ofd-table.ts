@@ -11,6 +11,7 @@ import {
 import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
 import { regularFileOfdOffsetSnapshotEntries } from "../regular-file-ofd-offset-state.js";
+import { networkOfdSlotWatermarks } from "../network-socket-state.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
 import {
   supervisorOfdFdType,
@@ -156,7 +157,7 @@ export function snapshotOfdSlotsForThread(
     if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    const watermarked = networkOfdSlotWatermarks(handle).get(ofdId);
     if (watermarked && watermarked.length === slotBytes) {
       ofdSlots.push({
         ofdId,
@@ -362,7 +363,7 @@ export function snapshotRuntimeNetworkOfdSlots(
       snapshots.set(ofdId, memory.slice(slotOffset, slotOffset + slotBytes));
       continue;
     }
-    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    const watermarked = networkOfdSlotWatermarks(handle).get(ofdId);
     if (watermarked && watermarked.length === slotBytes) {
       snapshots.set(ofdId, watermarked.slice());
     }

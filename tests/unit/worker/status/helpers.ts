@@ -10,7 +10,70 @@ import {
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import {
+  networkClosedFds,
+  networkClosedSocketSlots,
+  networkConnectionOfds,
+  networkPendingConnectFds,
+  networkRecvHeadWatermarks,
+  networkRecvPayloadWatermarks,
+  networkRecvTailWatermarks,
+  networkSocketSlotWatermarks,
+  type NetworkRecvPayloadWatermark,
+  type NetworkSocketSlotSnapshot,
+} from "../../../../src/worker/network-socket-state.js";
+import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+
+type NetworkPayloadSeed = Omit<NetworkRecvPayloadWatermark, "recvBufIdx"> & {
+  recvBufIdx?: number;
+};
+
+export function seedNetworkSocketState(handle: unknown, seed: {
+  connectionOfds?: Iterable<readonly [number, number]>;
+  pendingConnectFds?: Iterable<number>;
+  closedFds?: Iterable<number>;
+  closedSocketSlots?: Iterable<readonly [number, NetworkSocketSlotSnapshot]>;
+  socketSlotWatermarks?: Iterable<readonly [number, NetworkSocketSlotSnapshot]>;
+  recvHeadWatermarks?: Iterable<readonly [number, number]>;
+  recvTailWatermarks?: Iterable<readonly [number, number]>;
+  recvPayloadWatermarks?: Iterable<readonly [number, NetworkPayloadSeed]>;
+}): void {
+  const processHandle = handle as ProcessHandle;
+  for (const [fd, ofdId] of seed.connectionOfds ?? []) {
+    networkConnectionOfds(processHandle).set(fd, ofdId);
+  }
+  for (const fd of seed.pendingConnectFds ?? []) {
+    networkPendingConnectFds(processHandle).add(fd);
+  }
+  for (const fd of seed.closedFds ?? []) {
+    networkClosedFds(processHandle).add(fd);
+  }
+  for (const [fd, slot] of seed.closedSocketSlots ?? []) {
+    networkClosedSocketSlots(processHandle).set(fd, slot);
+  }
+  for (const [fd, slot] of seed.socketSlotWatermarks ?? []) {
+    networkSocketSlotWatermarks(processHandle).set(fd, slot);
+  }
+  for (const [fd, head] of seed.recvHeadWatermarks ?? []) {
+    networkRecvHeadWatermarks(processHandle).set(fd, head);
+  }
+  for (const [fd, tail] of seed.recvTailWatermarks ?? []) {
+    networkRecvTailWatermarks(processHandle).set(fd, tail);
+  }
+  for (const [fd, snapshot] of seed.recvPayloadWatermarks ?? []) {
+    networkRecvPayloadWatermarks(processHandle).set(fd, {
+      recvBufIdx: snapshot.recvBufIdx ?? 0,
+      head: snapshot.head,
+      tail: snapshot.tail,
+      capacity: snapshot.capacity,
+      readBytes: snapshot.readBytes,
+      availableBytes: snapshot.availableBytes,
+      deliveredBytes: snapshot.deliveredBytes,
+      data: snapshot.data,
+    });
+  }
+}
 
 export function makeKernelState(overrides: Record<string, unknown> = {}) {
   return {
@@ -109,14 +172,6 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     hostBlockedWorkers: new Map(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     networkConnections: new Map(),
-    networkConnectionOfds: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkRecvPayloadWatermarks: new Map(),
-    networkSocketSlotWatermarks: new Map(),
-    networkClosedSocketSlots: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),

@@ -3,8 +3,13 @@ import {
   deriveNetBufUsedFromSocketSlots,
   pruneStatusNetworkConnectionsFromFdEntries,
 } from "../../../../src/worker/message-handler/status/network-recv.js";
+import {
+  networkConnectionOfds,
+  networkRecvHeadWatermarks,
+  networkRecvTailWatermarks,
+} from "../../../../src/worker/network-socket-state.js";
 import { runtimeNetworkFds } from "../../../../src/worker/ownership/socket-control.js";
-import { makeHandle, makeKernel, makeStatusMessage } from "./helpers.js";
+import { makeHandle, makeKernel, makeStatusMessage, seedNetworkSocketState } from "./helpers.js";
 
 test("status network recv derives used net buffers from live socket slots", () => {
   const handle = makeHandle({
@@ -20,15 +25,17 @@ test("status network recv derives used net buffers from live socket slots", () =
 test("status network recv lists runtime network fds", () => {
   const handle = makeHandle({
     networkConnections: new Map([[3, {}]]),
-    networkPendingConnectFds: new Set([4]),
-    networkClosedFds: new Set([5]),
-    networkSocketSlotWatermarks: new Map([[6, new Uint8Array(1)]]),
-    networkRecvPayloadWatermarks: new Map([[7, {
+  });
+  seedNetworkSocketState(handle, {
+    pendingConnectFds: [4],
+    closedFds: [5],
+    socketSlotWatermarks: [[6, { offset: 0, data: new Uint8Array(1) }]],
+    recvPayloadWatermarks: [[7, {
       capacity: 8,
       data: new Uint8Array(8),
       head: 0,
       tail: 1,
-    }]]),
+    }]],
   });
 
   expect(runtimeNetworkFds(handle as never)).toEqual(new Set([3, 4, 5, 6, 7]));
@@ -41,13 +48,15 @@ test("status network recv closes stale runtime network bridges when supervisor r
   const supervisorSocketBridgeActiveFd = vi.fn(() => -2);
   const handle = makeHandle({
     networkConnections: new Map([[4, { close }]]),
-    networkConnectionOfds: new Map([[4, 11]]),
-    networkClosedFds: new Set([4]),
     kernel: makeKernel({
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       kernel_ofd_fd_type: () => 8,
       supervisor_socket_bridge_active_fd: supervisorSocketBridgeActiveFd,
     }),
+  });
+  seedNetworkSocketState(handle, {
+    connectionOfds: [[4, 11]],
+    closedFds: [4],
   });
   fdMap.delete(4);
 
@@ -82,14 +91,16 @@ test("status network recv rekeys stale runtime network bridges from supervisor a
   const supervisorSocketBridgeActiveFd = vi.fn(() => 6);
   const handle = makeHandle({
     networkConnections: new Map([[4, connection]]),
-    networkConnectionOfds: new Map([[4, 11]]),
-    networkRecvHeadWatermarks: new Map([[4, 4096]]),
-    networkRecvTailWatermarks: new Map([[4, 8192]]),
     kernel: makeKernel({
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 || ofdId === 12 ? 8 : 0,
       supervisor_socket_bridge_active_fd: supervisorSocketBridgeActiveFd,
     }),
+  });
+  seedNetworkSocketState(handle, {
+    connectionOfds: [[4, 11]],
+    recvHeadWatermarks: [[4, 4096]],
+    recvTailWatermarks: [[4, 8192]],
   });
 
   pruneStatusNetworkConnectionsFromFdEntries(
@@ -108,12 +119,12 @@ test("status network recv rekeys stale runtime network bridges from supervisor a
 
   expect((handle.networkConnections as Map<number, unknown>).has(4)).toBe(false);
   expect((handle.networkConnections as Map<number, unknown>).get(6)).toBe(connection);
-  expect(handle.networkConnectionOfds.has(4)).toBe(false);
-  expect(handle.networkConnectionOfds.get(6)).toBe(11);
-  expect(handle.networkRecvHeadWatermarks.has(4)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.get(6)).toBe(4096);
-  expect(handle.networkRecvTailWatermarks.has(4)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.get(6)).toBe(8192);
+  expect(networkConnectionOfds(handle as never).has(4)).toBe(false);
+  expect(networkConnectionOfds(handle as never).get(6)).toBe(11);
+  expect(networkRecvHeadWatermarks(handle as never).has(4)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle as never).get(6)).toBe(4096);
+  expect(networkRecvTailWatermarks(handle as never).has(4)).toBe(false);
+  expect(networkRecvTailWatermarks(handle as never).get(6)).toBe(8192);
   expect(connection.close).not.toHaveBeenCalled();
   expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 4, 11, 0);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -129,12 +140,14 @@ test("status network recv keeps runtime network bridges from supervisor active f
   const supervisorSocketBridgeActiveFd = vi.fn(() => 4);
   const handle = makeHandle({
     networkConnections: new Map([[4, connection]]),
-    networkConnectionOfds: new Map([[4, 11]]),
     kernel: makeKernel({
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 ? 8 : 0,
       supervisor_socket_bridge_active_fd: supervisorSocketBridgeActiveFd,
     }),
+  });
+  seedNetworkSocketState(handle, {
+    connectionOfds: [[4, 11]],
   });
 
   pruneStatusNetworkConnectionsFromFdEntries(
@@ -149,7 +162,7 @@ test("status network recv keeps runtime network bridges from supervisor active f
   );
 
   expect((handle.networkConnections as Map<number, unknown>).get(4)).toBe(connection);
-  expect(handle.networkConnectionOfds.get(4)).toBe(11);
+  expect(networkConnectionOfds(handle as never).get(4)).toBe(11);
   expect(connection.close).not.toHaveBeenCalled();
   expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 4, 11, 0);
   expect(appendWorkerDebugLog).not.toHaveBeenCalledWith(

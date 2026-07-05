@@ -27,6 +27,15 @@ import {
   PIPE_WRITE_OPEN_OFFSET as PIPE_DEBUG_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import { SOCKET_STATE_SHUTDOWN } from "../../layout/socket.js";
+import {
+  networkClosedFds,
+  networkClosedSocketSlots,
+  networkConnectionOfds,
+  networkOfdSlotWatermarks,
+  networkPendingConnectFds,
+  networkRecvPayloadWatermarks,
+  networkSocketSlotWatermarks,
+} from "../network-socket-state.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -698,11 +707,11 @@ export function snapshotNonEmptyHostOutputPipeSlots(
 export function formatNetworkSocketDebug(handle: ProcessHandle): string {
   const fds = [...new Set([
     ...(handle.networkConnections?.keys() ?? []),
-    ...(handle.networkPendingConnectFds ?? []),
-    ...(handle.networkClosedFds ?? []),
-    ...(handle.networkClosedSocketSlots?.keys() ?? []),
-    ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
-    ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
+    ...(networkPendingConnectFds(handle) ?? []),
+    ...(networkClosedFds(handle) ?? []),
+    ...(networkClosedSocketSlots(handle)?.keys() ?? []),
+    ...(networkSocketSlotWatermarks(handle)?.keys() ?? []),
+    ...(networkRecvPayloadWatermarks(handle)?.keys() ?? []),
   ])];
   return fds
     .sort((left, right) => left - right)
@@ -766,10 +775,10 @@ export function closeNetworkClosedFdPeers(handle: ProcessHandle): void {
 }
 
 export function restoreClosedNetworkSocketSlots(handle: ProcessHandle): void {
-  if ((handle.networkClosedSocketSlots?.size ?? 0) === 0) {
+  if ((networkClosedSocketSlots(handle)?.size ?? 0) === 0) {
     return;
   }
-  for (const slot of handle.networkClosedSocketSlots?.values() ?? []) {
+  for (const slot of networkClosedSocketSlots(handle)?.values() ?? []) {
     restoreNetworkSocketSlotSnapshot(handle, slot);
   }
 }
@@ -856,7 +865,7 @@ export function applyKernelWorkerNetBuffers(
 export function networkBridgeOutboundAvailable(handle: ProcessHandle): boolean {
   const fds = [...new Set([
     ...(handle.networkConnections?.keys() ?? []),
-    ...(handle.networkPendingConnectFds ?? []),
+    ...(networkPendingConnectFds(handle) ?? []),
   ])];
   return fds.some((fd) => kernelSocketOutboundAvailable(handle, handle.vmPtr, fd) > 0);
 }
@@ -893,11 +902,11 @@ export function snapshotNetworkBridgeSocketState(
   for (const handle of handles) {
     if (
       (handle.networkConnections?.size ?? 0) === 0
-      && (handle.networkPendingConnectFds?.size ?? 0) === 0
-      && (handle.networkClosedFds?.size ?? 0) === 0
-      && (handle.networkClosedSocketSlots?.size ?? 0) === 0
-      && (handle.networkSocketSlotWatermarks?.size ?? 0) === 0
-      && (handle.networkRecvPayloadWatermarks?.size ?? 0) === 0
+      && (networkPendingConnectFds(handle)?.size ?? 0) === 0
+      && (networkClosedFds(handle)?.size ?? 0) === 0
+      && (networkClosedSocketSlots(handle)?.size ?? 0) === 0
+      && (networkSocketSlotWatermarks(handle)?.size ?? 0) === 0
+      && (networkRecvPayloadWatermarks(handle)?.size ?? 0) === 0
     ) {
       continue;
     }
@@ -912,11 +921,11 @@ export function snapshotNetworkBridgeSocketState(
     const ofdSlotBytes = Math.floor(handle.kernel.kernel_ofd_table_bytes() / handle.kernel.abi_max_fds());
     const ofdSlots: NetworkBridgeSocketStateSnapshot["ofdSlots"] = [];
     const connectionFds = [...(handle.networkConnections?.keys() ?? [])];
-    const pendingConnectFds = [...(handle.networkPendingConnectFds ?? [])];
-    const closedFds = [...(handle.networkClosedFds ?? [])];
-    const closedSlotFds = [...(handle.networkClosedSocketSlots?.keys() ?? [])];
-    const watermarkedSocketFds = [...(handle.networkSocketSlotWatermarks?.keys() ?? [])];
-    const watermarkedRecvFds = [...(handle.networkRecvPayloadWatermarks?.keys() ?? [])];
+    const pendingConnectFds = [...(networkPendingConnectFds(handle) ?? [])];
+    const closedFds = [...(networkClosedFds(handle) ?? [])];
+    const closedSlotFds = [...(networkClosedSocketSlots(handle)?.keys() ?? [])];
+    const watermarkedSocketFds = [...(networkSocketSlotWatermarks(handle)?.keys() ?? [])];
+    const watermarkedRecvFds = [...(networkRecvPayloadWatermarks(handle)?.keys() ?? [])];
     const fdStats = [...new Set([
       ...connectionFds,
       ...pendingConnectFds,
@@ -1041,13 +1050,13 @@ export function restoreNetworkBridgeSocketState(
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       continue;
     }
-    const pendingConnectFdsStillAuthoritative = snapshot.pendingConnectFds.every((fd) => handle.networkPendingConnectFds?.has(fd) ?? false);
+    const pendingConnectFdsStillAuthoritative = snapshot.pendingConnectFds.every((fd) => networkPendingConnectFds(handle)?.has(fd) ?? false);
     if (!pendingConnectFdsStillAuthoritative) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       continue;
     }
-    const closedFdsStillAuthoritative = snapshot.closedFds.every((fd) => handle.networkClosedFds.has(fd));
+    const closedFdsStillAuthoritative = snapshot.closedFds.every((fd) => networkClosedFds(handle).has(fd));
     if (!closedFdsStillAuthoritative) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -1138,11 +1147,11 @@ export function snapshotRuntimeNetworkFdEntries(
   if (
     runtimeNetworkSocketOfdIds.size === 0
     && networkFds.size === 0
-    && (handle.networkOfdSlotWatermarks?.size ?? 0) === 0
+    && (networkOfdSlotWatermarks(handle)?.size ?? 0) === 0
   ) {
     return [];
   }
-  const connectionOfds = handle.networkConnectionOfds ?? new Map<number, number>();
+  const connectionOfds = networkConnectionOfds(handle) ?? new Map<number, number>();
   return snapshotProcessFdEntries(handle, vmPtr)
     .filter((entry) => {
       if (entry.ofdId <= 0) {
@@ -1151,7 +1160,7 @@ export function snapshotRuntimeNetworkFdEntries(
       return runtimeNetworkSocketOfdIds.has(entry.ofdId)
         || networkFds.has(entry.fd)
         || connectionOfds.get(entry.fd) === entry.ofdId
-        || (handle.networkOfdSlotWatermarks?.has(entry.ofdId) ?? false);
+        || (networkOfdSlotWatermarks(handle)?.has(entry.ofdId) ?? false);
     });
 }
 
