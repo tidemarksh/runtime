@@ -7,6 +7,7 @@ import {
   readResidentFileData,
 } from "../../../../src/fs/sab-page-cache.js";
 import { createWorkerProcessFactory } from "../../../../src/worker/create-process.js";
+import { guestWriteWatchRegions } from "../../../../src/worker/guest-write-watch-state.js";
 import { destroyWorkerPool } from "../../../../src/worker/pool.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { AutoPreparedFakeWorker } from "../../../support/fake-worker.js";
@@ -442,7 +443,7 @@ test("createProcess configures debug guest write watch before attaching the work
     },
   );
 
-  expect(handle.guestWriteWatchRegions).toEqual([
+  expect(guestWriteWatchRegions(handle)).toEqual([
     { slot: 0, start: 0x1000, end: 0x1020 },
     { slot: 1, start: 0x2000, end: 0x2010 },
   ]);

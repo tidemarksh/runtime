@@ -45,6 +45,11 @@ import {
   readOpfsBackingSourceRange,
   type OpfsBackingFileHandle,
 } from "./kernel-worker/opfs-backing-source.js";
+import {
+  clearGuestWriteWatchRegions,
+  guestWriteWatchRegions,
+  setGuestWriteWatchRegions,
+} from "./worker/guest-write-watch-state.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -846,9 +851,9 @@ export class Process {
   }
 
   configureGuestWriteWatch(regions: GuestWriteWatchRegion[]): void {
-    this.handle.guestWriteWatchRegions = regions.map((region) => ({ ...region }));
+    setGuestWriteWatchRegions(this.handle, regions);
     this.handle.kernel.debug_clear_guest_write_watch_trace?.();
-    for (const region of this.handle.guestWriteWatchRegions) {
+    for (const region of guestWriteWatchRegions(this.handle)) {
       this.handle.kernel.debug_configure_guest_write_watch?.(
         region.slot,
         toKernelU64(region.start),
@@ -858,7 +863,7 @@ export class Process {
   }
 
   clearGuestWriteWatch(): void {
-    this.handle.guestWriteWatchRegions = [];
+    clearGuestWriteWatchRegions(this.handle);
     this.handle.kernel.debug_clear_guest_write_watch_trace?.();
   }
 

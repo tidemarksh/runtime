@@ -1,4 +1,5 @@
 import { hostExecutionState } from "./host-execution-state.js";
+import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
 import { readInodeRecord } from "../fs/sab-page-cache.js";
@@ -641,7 +642,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     if (end <= start) {
       return false;
     }
-    for (const region of handle.guestWriteWatchRegions) {
+    for (const region of guestWriteWatchRegions(handle)) {
       const regionStart = BigInt(region.start);
       const regionEnd = BigInt(region.end);
       if (start < regionEnd && end > regionStart) {
@@ -685,7 +686,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function formatWatchedMemorySyscalls(handle: ProcessHandle, vmPtr: number): string {
-    if (handle.guestWriteWatchRegions.length === 0) {
+    if (guestWriteWatchRegions(handle).length === 0) {
       return "";
     }
     const len = handle.kernel.debug_memory_syscall_trace_len?.() ?? 0;
@@ -742,7 +743,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function formatWatchedRiscvFlushIcache(handle: ProcessHandle): string {
-    if (handle.guestWriteWatchRegions.length === 0) {
+    if (guestWriteWatchRegions(handle).length === 0) {
       return "";
     }
     const len = handle.kernel.debug_riscv_syscall_trace_len?.() ?? 0;

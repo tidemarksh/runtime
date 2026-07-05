@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { guestWriteWatchRegions } from "../guest-write-watch-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -1174,7 +1175,7 @@ function applyFsGuestMemoryWrites(
     }
     const overlap = formatGuestMemoryWriteWatchOverlap(
       "fs-guest-write",
-      handle.guestWriteWatchRegions,
+      guestWriteWatchRegions(handle),
       write.guestPtr,
       write.bytes,
     );

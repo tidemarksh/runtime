@@ -7,6 +7,7 @@ import {
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { createSupervisorResumeHostBoundary } from "./supervisor-resume.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
+import { guestWriteWatchRegions } from "../guest-write-watch-state.js";
 import {
   clearForkSharedSyncIfCurrent,
   getKernelShareForkSharedSync,
@@ -314,7 +315,7 @@ export function createWorkerSchedulerQueueHelpers(
       runtimeEpoch,
       preserveMemoryBytes,
       preserveMemoryRanges,
-      guestWriteWatchRegions: handle.guestWriteWatchRegions,
+      guestWriteWatchRegions: guestWriteWatchRegions(handle),
       kernelState: handle.kernelState,
       sabPageCache: handle.sabPageCache,
       runtimeNotify: handle.runtimeBridge.notifySab,

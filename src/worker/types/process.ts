@@ -9,7 +9,6 @@ import type {
   GuestMemoryPolicyLimitInput,
 } from "../memory-policy.js";
 import type {
-  GuestWriteWatchRegion,
   KernelWorkerOutbound,
   KernelWorkerRequest,
   ThreadWorkerMemoryPreserveRange,
@@ -118,7 +117,6 @@ export interface ProcessHandle {
   workerDebugLog: string[];
   workerMessageDebugStats: WorkerMessageDebugStats;
   transferDebugStats: TransferDebugStats;
-  guestWriteWatchRegions: GuestWriteWatchRegion[];
   memoryOwnership?: RuntimeMemoryOwnership;
 }
 

@@ -31,6 +31,7 @@ import {
 import {
   formatGuestMemoryWriteWatchOverlap,
 } from "../../guest-memory-writes.js";
+import { guestWriteWatchRegions } from "../../guest-write-watch-state.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
 import { supervisorProcessStatusIsExecveSpawn } from "../../supervisor-status.js";
 import {
@@ -73,7 +74,7 @@ export function applyThreadGuestMemoryWrites(
     const writeBytes = maskRegularFileFdEntryRollbackGuestWrite(handle, msg, write.guestPtr, write.bytes);
     const overlap = formatGuestMemoryWriteWatchOverlap(
       "status-guest-write",
-      handle.guestWriteWatchRegions,
+      guestWriteWatchRegions(handle),
       write.guestPtr,
       writeBytes,
     );

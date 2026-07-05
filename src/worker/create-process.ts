@@ -23,6 +23,10 @@ import {
 } from "./process-fs.js";
 import type { KernelWorkerFileLayerEntry } from "../messages.js";
 import type { GuestWriteWatchRegion } from "../messages.js";
+import {
+  guestWriteWatchRegions,
+  setGuestWriteWatchRegions,
+} from "./guest-write-watch-state.js";
 import { createKernelShareGroup } from "./kernel-share.js";
 import {
   alignUp,
@@ -109,9 +113,9 @@ function configureInitialGuestWriteWatch(
   if (regions.length === 0) {
     return;
   }
-  handle.guestWriteWatchRegions = regions.map((region) => ({ ...region }));
+  setGuestWriteWatchRegions(handle, regions);
   exports.debug_clear_guest_write_watch_trace?.();
-  for (const region of handle.guestWriteWatchRegions) {
+  for (const region of guestWriteWatchRegions(handle)) {
     exports.debug_configure_guest_write_watch?.(
       region.slot,
       BigInt(Math.trunc(region.start)),
@@ -670,7 +674,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       workerDebugLog: [],
       workerMessageDebugStats: createWorkerMessageDebugStats(),
       transferDebugStats: createTransferDebugStats(),
-      guestWriteWatchRegions: [],
       memoryOwnership,
     };
   }
