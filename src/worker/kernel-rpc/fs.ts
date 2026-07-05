@@ -107,12 +107,10 @@ const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
 export interface KernelRpcFsEffects {
   memfsMutation: number;
   memfsFileData: number;
-  sharedOfdState: number;
 }
 
 const KERNEL_RPC_FS_EFFECTS: KernelRpcFsEffects = {
   memfsMutation: 1 << 0,
-  sharedOfdState: 1 << 1,
   memfsFileData: 1 << 2,
 };
 

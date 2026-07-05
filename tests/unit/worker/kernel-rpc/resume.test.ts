@@ -1356,7 +1356,6 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
     memfsMutation: 1,
     memfsFileData: 4,
-    sharedOfdState: 2,
   });
 
   expect(processFsRequests).toHaveLength(1);
@@ -1537,7 +1536,6 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
     memfsMutation: 1,
     memfsFileData: 4,
-    sharedOfdState: 2,
   });
 
   expect(processFsRequests).toHaveLength(1);
@@ -1684,7 +1682,6 @@ test("resumeFsViaKernelWorker routes execve spawn before parent fd integrity che
   const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
     memfsMutation: 1,
     memfsFileData: 4,
-    sharedOfdState: 2,
   });
 
   expect(processFsRequests).toHaveLength(1);
@@ -1812,7 +1809,6 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
   await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, {
     memfsMutation: 1,
     memfsFileData: 4,
-    sharedOfdState: 2,
   });
 
   expect(processFsRequests).toHaveLength(1);

@@ -302,7 +302,7 @@ test("kernel-rpc fs helper uses kernel-worker resume and returns a typed outcome
     rehydrateForkSharedStateViaKernelWorker: vi.fn(async () => {}),
     publishRuntimeKernelState: vi.fn(),
   });
-  const effects = { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 };
+  const effects = { memfsMutation: 1, memfsFileData: 2 };
 
   await expect(helpers.resumeFsViaKernelWorker(handle, worker, 0x1234, effects)).resolves.toMatchObject({
     kind: "completed",
@@ -369,7 +369,7 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   )).resolves.toMatchObject({
     kind: "blocked",
     status: 31,
@@ -434,7 +434,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
@@ -518,7 +518,7 @@ test("kernel-worker fs outcome follows supervisor publication decision", async (
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -593,7 +593,7 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -671,7 +671,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
@@ -760,7 +760,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
@@ -859,7 +859,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
@@ -953,7 +953,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -1030,7 +1030,7 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -1104,7 +1104,7 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
@@ -1207,7 +1207,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
       handle,
       worker,
       0x1234,
-      { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+      { memfsMutation: 1, memfsFileData: 2 },
     )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
     expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
@@ -1220,7 +1220,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(fdTable.get(17)).toEqual({ ofdId: 0, fdFlags: 0 });
@@ -1300,7 +1300,7 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
@@ -1390,7 +1390,7 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(fdTable.get(5)).toEqual({ ofdId: 6, fdFlags: 0 });
@@ -1495,7 +1495,7 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   )).resolves.toMatchObject({ kind: "completed", status: 0 });
 
   expect(memory[slotOffset]).toBe(9);
@@ -1572,7 +1572,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(syncSharedOfdStateAfterFs).not.toHaveBeenCalled();
@@ -1650,7 +1650,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(syncSharedOfdStateAfterFs).toHaveBeenCalledWith(handle, [target], { sourceVmPtr: 0x1234 });
@@ -1730,7 +1730,7 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(rehydrateForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
@@ -1818,7 +1818,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     handle,
     worker,
     0x1234,
-    { memfsMutation: 1, memfsFileData: 2, sharedOfdState: 4 },
+    { memfsMutation: 1, memfsFileData: 2 },
   );
 
   expect(syncDirtyMemfsPeerViaKernelWorker).not.toHaveBeenCalled();
