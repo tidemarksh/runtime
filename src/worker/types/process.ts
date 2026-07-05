@@ -11,7 +11,6 @@ import type {
 import type {
   GuestWriteWatchRegion,
   KernelWorkerOutbound,
-  KernelWorkerPipeSlotSnapshot,
   KernelWorkerRequest,
   ThreadWorkerMemoryPreserveRange,
 } from "../../messages.js";
@@ -144,7 +143,6 @@ export interface ProcessHandle {
   lastSupervisorFdControlSeq?: bigint;
   lastSupervisorFsControlSeq?: bigint;
   lastSupervisorSignalControlSeq?: bigint;
-  pendingPipeSlotSnapshots: KernelWorkerPipeSlotSnapshot[];
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
   processMemfsDeletedPaths?: Set<string>;

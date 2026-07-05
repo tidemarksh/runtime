@@ -9,6 +9,10 @@ import {
   settleVisibleProcessOutput,
 } from "../../../../src/worker/stdio.js";
 import { releaseSharedHostStdioViaKernelWorker } from "../../../../src/worker/sync.js";
+import {
+  pendingPipeSlotSnapshotCount,
+  snapshotPendingPipeSlotSnapshots,
+} from "../../../../src/worker/pending-pipe-slot-state.js";
 import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
@@ -232,13 +236,18 @@ test("drainProcessOutput queues stdout read progress for the next pipe sync", ()
   expect(drainProcessOutput(handle)).toBe(true);
 
   expect(drainedChunks).toEqual(["stdout-tail\n"]);
-  expect(handle.pendingPipeSlotSnapshots).toHaveLength(1);
-  expect(handle.pendingPipeSlotSnapshots[0].pipeSlot).toBe(handle.stdoutPipe);
-  expect(handle.pendingPipeSlotSnapshots[0].mode).toBe(1);
-  const snapshotView = new DataView(handle.pendingPipeSlotSnapshots[0].slot.buffer);
+  const pendingSnapshots = snapshotPendingPipeSlotSnapshots(handle);
+  expect(pendingSnapshots).toHaveLength(1);
+  expect(pendingSnapshots[0].pipeSlot).toBe(handle.stdoutPipe);
+  expect(pendingSnapshots[0].mode).toBe(1);
+  const snapshotView = new DataView(
+    pendingSnapshots[0].slot.buffer,
+    pendingSnapshots[0].slot.byteOffset,
+    pendingSnapshots[0].slot.byteLength,
+  );
   expect(snapshotView.getUint32(0, true)).toBe(snapshotView.getUint32(4, true));
   expect(drainProcessOutput(handle)).toBe(false);
-  expect(handle.pendingPipeSlotSnapshots).toHaveLength(1);
+  expect(pendingPipeSlotSnapshotCount(handle)).toBe(1);
 });
 
 test("drainProcessOutput does not emit visible bytes from child handles owned by the parent", () => {

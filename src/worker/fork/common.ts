@@ -106,7 +106,6 @@ export function createForkChildHandle({
     runningWorker: null,
     hostBlockedWorkers: new Map(),
     pendingChildSpawnRecords: 0,
-    pendingPipeSlotSnapshots: [],
     processMemfsDirty: false,
     processMemfsPublishPending: false,
     processMemfsDeletedPaths: new Set(),

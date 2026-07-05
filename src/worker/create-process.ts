@@ -676,7 +676,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       runningWorker: null,
       hostBlockedWorkers: new Map(),
       pendingChildSpawnRecords: 0,
-      pendingPipeSlotSnapshots: [],
       processMemfsDirty: false,
       processMemfsPublishPending: false,
       processMemfsDeletedPaths: new Set(),

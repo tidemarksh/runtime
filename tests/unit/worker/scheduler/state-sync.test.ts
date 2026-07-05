@@ -154,7 +154,6 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     vforkReadyWorkers: [],
     stdioOwner: null,
     hostBlockedWorkers: new Map(),
-    pendingPipeSlotSnapshots: [],
     kernelShare: { members: new Set(), sharedOfdIds: new Set(), ofdSlotSnapshots: new Map() },
     workers: new Set(),
     networkConnections: new Map(),

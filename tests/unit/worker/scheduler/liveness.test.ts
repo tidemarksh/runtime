@@ -938,7 +938,6 @@ function makeHandle(
     runningWorker: null,
     hostBlockedWorkers: new Map(),
     pendingChildSpawnRecords: 1,
-    pendingPipeSlotSnapshots: [],
     processMemfsDirty: false,
     networkConnections: new Map(),
     networkPendingConnectFds: new Set(),

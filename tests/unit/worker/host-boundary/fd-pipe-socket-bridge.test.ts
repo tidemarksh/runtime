@@ -9,6 +9,7 @@ import {
   drainProcessOutput,
   settleVisibleProcessOutput,
 } from "../../../../src/worker/stdio.js";
+import { pendingPipeSlotSnapshotCount } from "../../../../src/worker/pending-pipe-slot-state.js";
 import {
   makeHostBoundaryHandle,
   makeHostBoundaryKernel,
@@ -105,7 +106,7 @@ test("fd pipe bridge follows supervisor read-progress action while draining stdo
 
   expect(readProgressAction).toHaveBeenCalledWith(handle.vmPtr, handle.stdoutPipe, 1);
   expect(drainedChunks).toEqual(["stdout-tail\n"]);
-  expect(handle.pendingPipeSlotSnapshots).toHaveLength(0);
+  expect(pendingPipeSlotSnapshotCount(handle)).toBe(0);
 });
 
 test("fd pipe bridge follows supervisor visible-output settle plan", async () => {

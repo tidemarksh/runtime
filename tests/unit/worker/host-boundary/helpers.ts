@@ -240,7 +240,6 @@ export function makeHostBoundaryHandle(
     runningWorker: null,
     hostBlockedWorkers: new Map(),
     pendingChildSpawnRecords: 0,
-    pendingPipeSlotSnapshots: [],
     processMemfsDirty: false,
     networkConnections: new Map(),
     networkPendingConnectFds: new Set(),

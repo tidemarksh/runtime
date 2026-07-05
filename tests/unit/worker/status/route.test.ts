@@ -15,6 +15,7 @@ import {
 import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending-pipe-slot-state.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
@@ -36,8 +37,11 @@ function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
   handle.vforkSnapshot ??= null;
   handle.processMemfsDirty ??= false;
-  handle.pendingPipeSlotSnapshots ??= [];
   return handle;
+}
+
+function pendingPipeSlotSnapshots(handle: Record<string, unknown>) {
+  return snapshotPendingPipeSlotSnapshots(withHandleDefaults(handle) as never);
 }
 
 function createWorkerStatusMessageHandler(deps: Parameters<typeof createRawWorkerStatusMessageHandler>[0]) {
@@ -2234,7 +2238,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   const applied = new Uint8Array(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
   const appliedView = new DataView(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
   expect(applied[32]).toBe(0x7a);
-  expect(withHandleDefaults(handle).pendingPipeSlotSnapshots).toHaveLength(1);
+  expect(pendingPipeSlotSnapshots(handle)).toHaveLength(1);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 
   appliedView.setUint32(0, 9, true);
@@ -2270,7 +2274,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(appliedView.getUint32(4, true)).toBe(9);
   expect(applied[32]).toBe(0x7a);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[1].slot.buffer, pending[1].slot.byteOffset, pending[1].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(9);
@@ -2308,7 +2312,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(applied[32 + 1]).toBe(0x7b);
   expect(applied[32 + 9]).toBe(0xab);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[2].slot.buffer, pending[2].slot.byteOffset, pending[2].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(12);
@@ -2343,7 +2347,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(appliedView.getUint32(4, true)).toBe(12);
   expect(applied[32 + 9]).toBe(0xab);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[3].slot.buffer, pending[3].slot.byteOffset, pending[3].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(12);
@@ -2379,7 +2383,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(appliedView.getUint32(0, true)).toBe(20);
   expect(appliedView.getUint32(4, true)).toBe(20);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[4].slot.buffer, pending[4].slot.byteOffset, pending[4].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(20);
     expect(pendingView.getUint32(4, true)).toBe(20);

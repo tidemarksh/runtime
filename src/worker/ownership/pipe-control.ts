@@ -15,6 +15,7 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
+import { appendPendingPipeSlotSnapshots } from "../pending-pipe-slot-state.js";
 import {
   collectProcessHeldOfds,
   syncPipeOfdGenerationsForSlot,
@@ -523,7 +524,7 @@ export function applyThreadPipeSlots(
     });
     syncPipeOfdGenerationsForSlot(handle, snapshot.pipeSlot);
   }
-  handle.pendingPipeSlotSnapshots.push(...appliedSnapshots);
+  appendPendingPipeSlotSnapshots(handle, appliedSnapshots);
 }
 
 export function snapshotProcessPipeSlotsForThreadStep(

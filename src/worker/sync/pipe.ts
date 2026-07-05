@@ -47,6 +47,10 @@ import {
 } from "../ownership/process-state.js";
 import { collectRuntimeNetworkSocketOfdIds } from "../ownership/socket-control.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import {
+  dropPendingPipeSlotSnapshotPrefix,
+  snapshotPendingPipeSlotSnapshots,
+} from "../pending-pipe-slot-state.js";
 import type {
   ProcessHandle,
   SyncCause
@@ -98,7 +102,7 @@ export async function syncPipeStateViaKernelWorker(
   )));
   const ofdSlots = [...snapshotKernelShareOfdSlots(handle, pipeOfdIds)]
     .map(([ofdId, slot]) => ({ ofdId, slot }));
-  const pendingPipeSlots = handle.pendingPipeSlotSnapshots.slice();
+  const pendingPipeSlots = snapshotPendingPipeSlotSnapshots(handle);
   const hostOutputPipeSlots = snapshotNonEmptyHostOutputPipeSlots(handle, pendingPipeSlots);
   const pendingAndHostPipeSlots = [...pendingPipeSlots, ...hostOutputPipeSlots];
   const pipeSlots = [
@@ -156,9 +160,7 @@ export async function syncPipeStateViaKernelWorker(
     handle,
     `pipe-sync-response-slots:${handle.pid}:${formatPipeSnapshotDebug("slots", response.pipeSlots ?? [])}`,
   );
-  if (pendingPipeSlots.length > 0) {
-    handle.pendingPipeSlotSnapshots.splice(0, pendingPipeSlots.length);
-  }
+  dropPendingPipeSlotSnapshotPrefix(handle, pendingPipeSlots.length);
   handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);

@@ -15,6 +15,7 @@ import {
   supervisorProcessPipeSlotForFd,
 } from "../ownership/pipe-slot.js";
 import { supervisorProcessFdIsOpen } from "../ownership/fd-table.js";
+import { replacePendingPipeSlotSnapshotForSlot } from "../pending-pipe-slot-state.js";
 import type { ProcessHandle, SharedHostStdio } from "../types.js";
 
 function flushOutputBacklog(handle: ProcessHandle): void {
@@ -193,14 +194,7 @@ function queueDrainedPipeReadProgress(handle: ProcessHandle, pipeSlot: number): 
   if (snapshot === null) {
     return;
   }
-  handle.pendingPipeSlotSnapshots ??= [];
-  const existingIndex = handle.pendingPipeSlotSnapshots.findIndex((pending) => (
-    pending.pipeSlot === pipeSlot
-  ));
-  if (existingIndex >= 0) {
-    handle.pendingPipeSlotSnapshots.splice(existingIndex, 1);
-  }
-  handle.pendingPipeSlotSnapshots.push(snapshot);
+  replacePendingPipeSlotSnapshotForSlot(handle, snapshot);
 }
 
 export function stdioPipeSlotForFd(handle: ProcessHandle, fd: number): number {

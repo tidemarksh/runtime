@@ -558,7 +558,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       status: 0,
     }]]),
     pendingChildSpawnRecords: 0,
-    pendingPipeSlotSnapshots: [],
     processMemfsDirty: false,
     regularFileOfdOffsets: new Map(),
     vforkSnapshot: null,

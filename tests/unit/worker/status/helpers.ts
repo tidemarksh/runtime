@@ -117,7 +117,6 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     networkRecvPayloadWatermarks: new Map(),
     networkSocketSlotWatermarks: new Map(),
     networkClosedSocketSlots: new Map(),
-    pendingPipeSlotSnapshots: [],
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
