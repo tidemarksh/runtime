@@ -198,6 +198,12 @@ const SUPERVISOR_WORKER_STATUS_TRANSITION_ACTION_ENQUEUE = 0;
 const SUPERVISOR_WORKER_STATUS_TRANSITION_ACTION_CONNECT_WAIT = 1;
 const SUPERVISOR_WORKER_STATUS_TRANSITION_ACTION_PARK_FUTEX = 2;
 const SUPERVISOR_WORKER_STATUS_TRANSITION_ACTION_HOST_WAIT = 3;
+const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_NONE = 0;
+const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_PIPE = 1;
+const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_SOCKET = 2;
+const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_LIFECYCLE = 4;
+const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_WAKE_SIGNAL_WAITERS = 8;
+const SUPERVISOR_WORKER_STATUS_SYNC_FLAG_WROTE_OR_DRAINED_PIPE = 1;
 const POLLFD_BYTES = 8;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
@@ -408,6 +414,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_worker_status_transition_action_connect_wait"
   | "supervisor_worker_status_transition_action_park_futex"
   | "supervisor_worker_status_transition_action_host_wait"
+  | "supervisor_worker_status_sync_action"
+  | "supervisor_worker_status_sync_action_none"
+  | "supervisor_worker_status_sync_action_sync_pipe"
+  | "supervisor_worker_status_sync_action_sync_socket"
+  | "supervisor_worker_status_sync_action_sync_lifecycle"
+  | "supervisor_worker_status_sync_action_wake_signal_waiters"
+  | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe"
   | "supervisor_state_sync_kind_pipe"
   | "supervisor_state_sync_kind_epoll"
   | "supervisor_state_sync_kind_socket"
@@ -785,6 +798,37 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     return SUPERVISOR_WORKER_STATUS_TRANSITION_ACTION_ENQUEUE;
   };
+  const workerStatusSyncAction = (
+    status: number,
+    completedSyncEffects: number,
+    flags: number,
+  ): number => {
+    const syncEffectPipeState = 1 << 0;
+    const syncEffectSocketState = 1 << 1;
+    const syncEffectProcessLifecycle = 1 << 4;
+    const syncEffectSignalWaiters = 1 << 5;
+    const wroteOrDrainedPipe =
+      (flags & SUPERVISOR_WORKER_STATUS_SYNC_FLAG_WROTE_OR_DRAINED_PIPE) !== 0;
+    let action = SUPERVISOR_WORKER_STATUS_SYNC_ACTION_NONE;
+    if (
+      kernel.abi_status_fs?.() !== status
+      && (wroteOrDrainedPipe || (completedSyncEffects & syncEffectPipeState) !== 0)
+    ) {
+      action |= SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_PIPE;
+    }
+    if (kernel.abi_status_ok?.() === status) {
+      if ((completedSyncEffects & syncEffectSocketState) !== 0) {
+        action |= SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_SOCKET;
+      }
+      if ((completedSyncEffects & syncEffectProcessLifecycle) !== 0) {
+        action |= SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_LIFECYCLE;
+      }
+      if ((completedSyncEffects & syncEffectSignalWaiters) !== 0) {
+        action |= SUPERVISOR_WORKER_STATUS_SYNC_ACTION_WAKE_SIGNAL_WAITERS;
+      }
+    }
+    return action;
+  };
   const retryStatusAction = (status: number): number => {
     if (kernel.abi_status_pipe_wait?.() === status) {
       return SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_PIPE_RETRY_DIAGNOSTICS
@@ -1024,6 +1068,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_worker_status_transition_action_connect_wait"
     | "supervisor_worker_status_transition_action_park_futex"
     | "supervisor_worker_status_transition_action_host_wait"
+    | "supervisor_worker_status_sync_action"
+    | "supervisor_worker_status_sync_action_none"
+    | "supervisor_worker_status_sync_action_sync_pipe"
+    | "supervisor_worker_status_sync_action_sync_socket"
+    | "supervisor_worker_status_sync_action_sync_lifecycle"
+    | "supervisor_worker_status_sync_action_wake_signal_waiters"
+    | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe"
     | "supervisor_state_sync_kind_pipe"
     | "supervisor_state_sync_kind_epoll"
     | "supervisor_state_sync_kind_socket"
@@ -2147,6 +2198,23 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_WORKER_STATUS_TRANSITION_ACTION_HOST_WAIT;
   nextKernel.supervisor_worker_status_transition_action ??= (status: number) =>
     workerStatusTransitionAction(status);
+  nextKernel.supervisor_worker_status_sync_action_none ??= () =>
+    SUPERVISOR_WORKER_STATUS_SYNC_ACTION_NONE;
+  nextKernel.supervisor_worker_status_sync_action_sync_pipe ??= () =>
+    SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_PIPE;
+  nextKernel.supervisor_worker_status_sync_action_sync_socket ??= () =>
+    SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_SOCKET;
+  nextKernel.supervisor_worker_status_sync_action_sync_lifecycle ??= () =>
+    SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_LIFECYCLE;
+  nextKernel.supervisor_worker_status_sync_action_wake_signal_waiters ??= () =>
+    SUPERVISOR_WORKER_STATUS_SYNC_ACTION_WAKE_SIGNAL_WAITERS;
+  nextKernel.supervisor_worker_status_sync_flag_wrote_or_drained_pipe ??= () =>
+    SUPERVISOR_WORKER_STATUS_SYNC_FLAG_WROTE_OR_DRAINED_PIPE;
+  nextKernel.supervisor_worker_status_sync_action ??= (
+    status: number,
+    completedSyncEffects: number,
+    flags: number,
+  ) => workerStatusSyncAction(status, completedSyncEffects, flags);
   nextKernel.supervisor_state_sync_kind_pipe ??= () => SUPERVISOR_STATE_SYNC_KIND_PIPE;
   nextKernel.supervisor_state_sync_kind_epoll ??= () => SUPERVISOR_STATE_SYNC_KIND_EPOLL;
   nextKernel.supervisor_state_sync_kind_socket ??= () => SUPERVISOR_STATE_SYNC_KIND_SOCKET;

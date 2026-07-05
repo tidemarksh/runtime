@@ -305,6 +305,12 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_worker_status_transition_action_connect_wait: 1,
   supervisor_worker_status_transition_action_park_futex: 2,
   supervisor_worker_status_transition_action_host_wait: 3,
+  supervisor_worker_status_sync_action_none: 0,
+  supervisor_worker_status_sync_action_sync_pipe: 1,
+  supervisor_worker_status_sync_action_sync_socket: 2,
+  supervisor_worker_status_sync_action_sync_lifecycle: 4,
+  supervisor_worker_status_sync_action_wake_signal_waiters: 8,
+  supervisor_worker_status_sync_flag_wrote_or_drained_pipe: 1,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -881,6 +887,38 @@ export function makeSupervisorAbiStubs(
       return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_host_wait;
     }
     return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_enqueue;
+  };
+  const supervisorWorkerStatusSyncAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    completedSyncEffects: number,
+    flags: number,
+  ): number => {
+    const syncEffectPipeState = 1 << 0;
+    const syncEffectSocketState = 1 << 1;
+    const syncEffectProcessLifecycle = 1 << 4;
+    const syncEffectSignalWaiters = 1 << 5;
+    const wroteOrDrainedPipe =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_flag_wrote_or_drained_pipe) !== 0;
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_none;
+    if (
+      status !== callOptionalNumber(receiver, "abi_status_fs")
+      && (wroteOrDrainedPipe || (completedSyncEffects & syncEffectPipeState) !== 0)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_sync_pipe;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_ok")) {
+      if ((completedSyncEffects & syncEffectSocketState) !== 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_sync_socket;
+      }
+      if ((completedSyncEffects & syncEffectProcessLifecycle) !== 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_sync_lifecycle;
+      }
+      if ((completedSyncEffects & syncEffectSignalWaiters) !== 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_wake_signal_waiters;
+      }
+    }
+    return action;
   };
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
@@ -2803,6 +2841,14 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_worker_status_transition_action(this: KernelExports | undefined, status: number) {
       return supervisorWorkerStatusTransitionAction(currentExports(this), status);
+    },
+    supervisor_worker_status_sync_action(
+      this: KernelExports | undefined,
+      status: number,
+      completedSyncEffects: number,
+      flags: number,
+    ) {
+      return supervisorWorkerStatusSyncAction(currentExports(this), status, completedSyncEffects, flags);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {

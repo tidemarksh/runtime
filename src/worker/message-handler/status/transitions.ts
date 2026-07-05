@@ -51,6 +51,7 @@ import {
 import {
   supervisorBlockedStatusNeedsNetworkSidecarRestore,
   supervisorBlockedWaitTimerRequired,
+  supervisorWorkerStatusSyncActions,
   supervisorWorkerStatusTransitionAction,
 } from "../../../supervisor-blocked-resume.js";
 import {
@@ -239,14 +240,15 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       return deps.requestSocketStateSync(handle, true);
     };
+    const statusSyncActions = supervisorWorkerStatusSyncActions(handle.kernel, status, completedSyncEffects, {
+      wroteOrDrainedPipe: wroteToPipe || drainedPipe,
+    });
 
     if (status === handle.kernel.abi_status_ok()) {
-      const shouldSyncPipeState = wroteToPipe
-        || drainedPipe
-        || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
-      const shouldSyncSocketState = (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
-      const shouldSyncLifecycle = (completedSyncEffects & syncEffects.syncEffectProcessLifecycle) !== 0;
-      const shouldWakeSignalWaiters = (completedSyncEffects & syncEffects.syncEffectSignalWaiters) !== 0;
+      const shouldSyncPipeState = statusSyncActions.syncPipeState;
+      const shouldSyncSocketState = statusSyncActions.syncSocketState;
+      const shouldSyncLifecycle = statusSyncActions.syncLifecycle;
+      const shouldWakeSignalWaiters = statusSyncActions.wakeSignalWaiters;
       if (shouldSyncPipeState || shouldSyncSocketState || shouldSyncLifecycle) {
         deps.appendWorkerDebugLog(handle, `ok-sync-start:0x${thread.vmPtr.toString(16)}`);
         setThreadOwnerAsyncStatus(thread, status);
@@ -415,7 +417,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deleteProcessWorker(handle, worker);
         deps.threadWorkerStates.delete(worker);
         releaseWorker(worker);
-        if (wroteToPipe || drainedPipe || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0) {
+        if (statusSyncActions.syncPipeState) {
           void deps.requestPipeStateSync(handle, true)
             .then(() => {
               deps.notifyWorkerStatusProgress(handle);
@@ -432,11 +434,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    const shouldSyncPipeState = wroteToPipe
-      || drainedPipe
-      || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
-    const pendingHostResume = status === handle.kernel.abi_status_fs();
-    if (shouldSyncPipeState && !pendingHostResume) {
+    if (statusSyncActions.syncPipeState) {
       void deps.requestPipeStateSync(handle, true).catch((error) => {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       });

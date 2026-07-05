@@ -111,6 +111,13 @@ export type SupervisorWorkerStatusTransitionAction =
   | "park-futex"
   | "host-wait";
 
+export interface SupervisorWorkerStatusSyncActions {
+  syncPipeState: boolean;
+  syncSocketState: boolean;
+  syncLifecycle: boolean;
+  wakeSignalWaiters: boolean;
+}
+
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
@@ -320,7 +327,13 @@ type SupervisorNumberConstExportName =
   | "supervisor_worker_status_transition_action_enqueue"
   | "supervisor_worker_status_transition_action_connect_wait"
   | "supervisor_worker_status_transition_action_park_futex"
-  | "supervisor_worker_status_transition_action_host_wait";
+  | "supervisor_worker_status_transition_action_host_wait"
+  | "supervisor_worker_status_sync_action_none"
+  | "supervisor_worker_status_sync_action_sync_pipe"
+  | "supervisor_worker_status_sync_action_sync_socket"
+  | "supervisor_worker_status_sync_action_sync_lifecycle"
+  | "supervisor_worker_status_sync_action_wake_signal_waiters"
+  | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1767,6 +1780,76 @@ export function supervisorWorkerStatusTransitionAction(
     }
   }
   throw new Error(`kernel supervisor worker status transition action is unknown: ${result}`);
+}
+
+function supervisorWorkerStatusSyncFlags(
+  kernel: KernelExports,
+  options: {
+    wroteOrDrainedPipe: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.wroteOrDrainedPipe) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_worker_status_sync_flag_wrote_or_drained_pipe",
+    );
+  }
+  return flags;
+}
+
+export function supervisorWorkerStatusSyncActions(
+  kernel: KernelExports,
+  status: number,
+  completedSyncEffects: number,
+  options: {
+    wroteOrDrainedPipe: boolean;
+  },
+): SupervisorWorkerStatusSyncActions {
+  const readAction = kernel.supervisor_worker_status_sync_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_worker_status_sync_action");
+  }
+  const result = readAction.call(
+    kernel,
+    status,
+    completedSyncEffects,
+    supervisorWorkerStatusSyncFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor worker status sync action failed: ${result}`);
+  }
+
+  const syncPipeState = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_status_sync_action_sync_pipe",
+  );
+  const syncSocketState = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_status_sync_action_sync_socket",
+  );
+  const syncLifecycle = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_status_sync_action_sync_lifecycle",
+  );
+  const wakeSignalWaiters = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_status_sync_action_wake_signal_waiters",
+  );
+  const known = readSupervisorNumberConst(kernel, "supervisor_worker_status_sync_action_none")
+    | syncPipeState
+    | syncSocketState
+    | syncLifecycle
+    | wakeSignalWaiters;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor worker status sync action is unknown: ${result}`);
+  }
+  return {
+    syncPipeState: (result & syncPipeState) !== 0,
+    syncSocketState: (result & syncSocketState) !== 0,
+    syncLifecycle: (result & syncLifecycle) !== 0,
+    wakeSignalWaiters: (result & wakeSignalWaiters) !== 0,
+  };
 }
 
 function supervisorBlockedPostNetworkPumpActionValue(

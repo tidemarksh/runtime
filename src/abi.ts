@@ -731,6 +731,13 @@ export interface KernelExports {
   supervisor_worker_status_transition_action_connect_wait?(): number;
   supervisor_worker_status_transition_action_park_futex?(): number;
   supervisor_worker_status_transition_action_host_wait?(): number;
+  supervisor_worker_status_sync_action?(status: number, completedSyncEffects: number, flags: number): number;
+  supervisor_worker_status_sync_action_none?(): number;
+  supervisor_worker_status_sync_action_sync_pipe?(): number;
+  supervisor_worker_status_sync_action_sync_socket?(): number;
+  supervisor_worker_status_sync_action_sync_lifecycle?(): number;
+  supervisor_worker_status_sync_action_wake_signal_waiters?(): number;
+  supervisor_worker_status_sync_flag_wrote_or_drained_pipe?(): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2252,6 +2259,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_worker_status_transition_action_connect_wait",
   "supervisor_worker_status_transition_action_park_futex",
   "supervisor_worker_status_transition_action_host_wait",
+  "supervisor_worker_status_sync_action",
+  "supervisor_worker_status_sync_action_none",
+  "supervisor_worker_status_sync_action_sync_pipe",
+  "supervisor_worker_status_sync_action_sync_socket",
+  "supervisor_worker_status_sync_action_sync_lifecycle",
+  "supervisor_worker_status_sync_action_wake_signal_waiters",
+  "supervisor_worker_status_sync_flag_wrote_or_drained_pipe",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",
