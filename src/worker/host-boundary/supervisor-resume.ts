@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import type {
   ProcessHandle,
@@ -282,7 +283,7 @@ export function createSupervisorResumeHostBoundary(
     if (result === 0) {
       deps.appendWorkerDebugLog(
         handle,
-        `supervisor-resume:runnable:none:ready=${handle.vforkReadyWorkers.length}`,
+        `supervisor-resume:runnable:none:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
       );
       return null;
     }

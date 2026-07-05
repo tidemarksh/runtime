@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
@@ -158,7 +159,7 @@ export function createBlockedRetryCoordinator(
       case "stale":
         return;
       case "blocked": {
-        const blocked = handle.hostBlockedWorkers.get(worker);
+        const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           blocked.status = outcome.status;
         }
@@ -199,7 +200,7 @@ export function createBlockedRetryCoordinator(
       consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
       afterOutcome?.(outcome);
     }).catch((error) => {
-      const latestBlocked = handle.hostBlockedWorkers.get(worker);
+      const latestBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
         setBlockedRpcPending(latestBlocked, false);
       }
@@ -250,7 +251,7 @@ export function createBlockedRetryCoordinator(
     handle: ProcessHandle,
   ): SupervisorBlockedRetryActionFlags {
     const flags: SupervisorBlockedRetryActionFlag[] = ["wait-timer-already-checked"];
-    if (handle.runningWorker !== null) {
+    if (hostExecutionState(handle).runningWorker !== null) {
       flags.push("running-worker");
     }
     if (handle.kernelWorkerRequest && handle.pid > 0) {
@@ -507,7 +508,7 @@ export function createBlockedRetryCoordinator(
     vmPtr: number,
     status: number,
   ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked || blocked.vmPtr !== vmPtr) {
       return;
     }
@@ -553,8 +554,8 @@ export function createBlockedRetryCoordinator(
         + `:owner_pid=${ownerPid}:owner_process=0x${ownerProcessPtr.toString(16)}`
         + `:owner_count=${ownerThreadCount}:owner_threads=[${formatProcessThreadSlots(handle, handle.vmPtr)}]`;
       deps.appendWorkerDebugLog(handle, `fault:0x${vmPtr.toString(16)} remaining=${remainingThreads}`);
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
       }
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -594,12 +595,12 @@ export function createBlockedRetryCoordinator(
 
     if (status === handle.kernel.abi_status_futex_wait()) {
       deps.clearBlockedWorker(handle, worker);
-      const readyIndex = handle.vforkReadyWorkers.indexOf(worker);
+      const readyIndex = hostExecutionState(handle).vforkReadyWorkers.indexOf(worker);
       if (readyIndex >= 0) {
-        handle.vforkReadyWorkers.splice(readyIndex, 1);
+        hostExecutionState(handle).vforkReadyWorkers.splice(readyIndex, 1);
       }
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
       }
       const thread = deps.threadWorkerStates.get(worker);
       if (thread !== undefined && thread.vmPtr === vmPtr) {
@@ -658,7 +659,7 @@ export function createBlockedRetryCoordinator(
     if (getKernelShareForkSharedSync(handle.kernelShare) !== null) {
       flags.push("fork-shared-sync-pending");
     }
-    if (handle.runningWorker !== null) {
+    if (hostExecutionState(handle).runningWorker !== null) {
       flags.push("running-worker");
     }
     if (handle.kernelWorkerRequest && handle.pid > 0) {
@@ -938,9 +939,10 @@ export function createBlockedRetryCoordinator(
         if (supervisorBlockedStatusIsEpollWait(handle.kernel, blocked.status)) {
           wakeRuntimeBridge(handle.runtimeBridge);
         }
-        const runningThread = handle.runningWorker === null
+        const runningWorker = hostExecutionState(handle).runningWorker;
+        const runningThread = runningWorker === null
           ? undefined
-          : deps.threadWorkerStates.get(handle.runningWorker);
+          : deps.threadWorkerStates.get(runningWorker);
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `blocked-retry-skip:${handle.pid}:running=1`
@@ -1021,7 +1023,7 @@ export function createBlockedRetryCoordinator(
             consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
           })
           .catch((error) => {
-            const latestBlocked = handle.hostBlockedWorkers.get(worker);
+            const latestBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
             if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
               setBlockedRpcPending(latestBlocked, false);
             }
@@ -1064,7 +1066,7 @@ export function createBlockedRetryCoordinator(
   }
 
   function retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }

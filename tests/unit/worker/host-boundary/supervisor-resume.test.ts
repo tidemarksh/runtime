@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 
 vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
@@ -103,7 +104,7 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
   expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
   expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(unselectedThread as never)).toBeNull();
-  expect(handle.runningWorker).toBe(selectedWorker);
+  expect(hostExecutionState(handle).runningWorker).toBe(selectedWorker);
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
   expect(debugEvents).toContain(
@@ -142,8 +143,8 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
   handle.workers.add(unselectedWorker);
-  handle.vforkReadyWorkers = [unselectedWorker];
-  handle.hostBlockedWorkers.set(selectedWorker, {
+  hostExecutionState(handle).vforkReadyWorkers = [unselectedWorker];
+  hostExecutionState(handle).hostBlockedWorkers.set(selectedWorker, {
     vmPtr: selectedThread.vmPtr,
     status: kernel.abi_status_futex_wait(),
   });
@@ -152,9 +153,9 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
 
   expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
-  expect(handle.runningWorker).toBe(selectedWorker);
-  expect(handle.vforkReadyWorkers).toEqual([unselectedWorker]);
-  expect(handle.hostBlockedWorkers.has(selectedWorker)).toBe(false);
+  expect(hostExecutionState(handle).runningWorker).toBe(selectedWorker);
+  expect(hostExecutionState(handle).vforkReadyWorkers).toEqual([unselectedWorker]);
+  expect(hostExecutionState(handle).hostBlockedWorkers.has(selectedWorker)).toBe(false);
   expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
   expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
   expect(unselectedWorker.postMessage).not.toHaveBeenCalled();
@@ -203,7 +204,7 @@ test("host boundary includes supervisor thread snapshot in resume diagnostics", 
     return 64;
   });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
-  handle.vforkReadyWorkers = [selectedWorker];
+  hostExecutionState(handle).vforkReadyWorkers = [selectedWorker];
   const debugEvents: string[] = [];
 
   makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);

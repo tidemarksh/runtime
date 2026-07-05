@@ -1,3 +1,4 @@
+import { hostExecutionState } from "./host-execution-state.js";
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
 import { readInodeRecord } from "../fs/sab-page-cache.js";
@@ -534,7 +535,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     } catch {
       // Best-effort diagnostics only.
     }
-    for (const blocked of handle.hostBlockedWorkers.values()) {
+    for (const blocked of hostExecutionState(handle).hostBlockedWorkers.values()) {
       add(blocked.vmPtr);
     }
     return [...vmPtrs].slice(0, 24);
@@ -1532,7 +1533,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function invalidateBlockedParentRpcsForChildExit(parent: ProcessHandle, childPid: number): void {
-    for (const blocked of parent.hostBlockedWorkers.values()) {
+    for (const blocked of hostExecutionState(parent).hostBlockedWorkers.values()) {
       if (!isBlockedRpcPending(blocked)) {
         continue;
       }
@@ -1661,9 +1662,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
   }
 
   function exitProcessHasActiveOwnerWork(handle: ProcessHandle): boolean {
-    return handle.runningWorker !== null
-      || handle.vforkReadyWorkers.length > 0
-      || handle.hostBlockedWorkers.size > 0;
+    return hostExecutionState(handle).runningWorker !== null
+      || hostExecutionState(handle).vforkReadyWorkers.length > 0
+      || hostExecutionState(handle).hostBlockedWorkers.size > 0;
   }
 
   function exitProcessHasNoLiveThreadSlots(handle: ProcessHandle): boolean {
@@ -1921,9 +1922,9 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     } catch (error) {
       parts.push(`state_error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
     }
-    parts.push(`running=${child.runningWorker === null ? 0 : 1}`);
-    parts.push(`ready=${child.vforkReadyWorkers.length}`);
-    parts.push(`blocked=${child.hostBlockedWorkers.size}`);
+    parts.push(`running=${hostExecutionState(child).runningWorker === null ? 0 : 1}`);
+    parts.push(`ready=${hostExecutionState(child).vforkReadyWorkers.length}`);
+    parts.push(`blocked=${hostExecutionState(child).hostBlockedWorkers.size}`);
     parts.push(`exit=${child.exitInProgress ? 1 : 0}`);
     return parts.join("/");
   }

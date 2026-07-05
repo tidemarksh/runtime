@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   publishKernelRuntimeState,
 } from "../../bridge/runtime-state.js";
@@ -74,10 +75,11 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function hasActiveVforkChildOwnerMismatch(handle: ProcessHandle): boolean {
-    if (handle.vforkWorker == null || handle.pid <= 0) {
+    const executionState = hostExecutionState(handle);
+    if (executionState.vforkWorker == null || handle.pid <= 0) {
       return false;
     }
-    const thread = deps.threadWorkerStates.get(handle.vforkWorker);
+    const thread = deps.threadWorkerStates.get(executionState.vforkWorker);
     if (!thread || thread.vmPtr === 0) {
       return false;
     }
@@ -132,7 +134,7 @@ export function createWorkerSchedulerStateSyncHelpers(
       if (shouldWake) {
         publishKernelRuntimeState(member.runtimeBridge, member.kernelState, true);
       }
-      for (const [blockedWorker, blocked] of member.hostBlockedWorkers) {
+      for (const [blockedWorker, blocked] of hostExecutionState(member).hostBlockedWorkers) {
         if (supervisorBlockedWaitStatusMatchesWakeSource(member.kernel, blocked.status, wakeSource)) {
           if (supervisorBlockedStatusIsPipeWait(member.kernel, blocked.status)) {
             if (isBlockedRpcPending(blocked)) {
@@ -152,12 +154,12 @@ export function createWorkerSchedulerStateSyncHelpers(
               `epoll-wake-retry:${member.pid}:vm=${vmPtr}:status=${blocked.status}`,
             );
           }
-          const runningBeforePump = member.runningWorker;
+          const runningBeforePump = hostExecutionState(member).runningWorker;
           deps.pumpProcess?.(member);
-          if (!member.hostBlockedWorkers.has(blockedWorker)) {
+          if (!hostExecutionState(member).hostBlockedWorkers.has(blockedWorker)) {
             continue;
           }
-          if (runningBeforePump === null && member.runningWorker !== null) {
+          if (runningBeforePump === null && hostExecutionState(member).runningWorker !== null) {
             continue;
           }
           deps.retryHostBlockedWorker(member, blockedWorker);

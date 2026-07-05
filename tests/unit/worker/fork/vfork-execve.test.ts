@@ -17,8 +17,10 @@ import {
 } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
+type HostExecutionStateReader = typeof import("../../../../src/worker/host-execution-state.js").hostExecutionState;
 
 let workerModule: WorkerModule | null = null;
+let hostExecutionState: HostExecutionStateReader;
 
 interface MockThreadStatus {
   status: number;
@@ -758,6 +760,7 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  ({ hostExecutionState } = await import("../../../../src/worker/host-execution-state.js"));
   createdWorkers.length = 0;
   createdKernelStatuses.length = 0;
   createdKernelExports.length = 0;
@@ -827,7 +830,7 @@ test("vfork child fault records wait status and resumes parent on the same worke
   });
   await flushMicrotasks();
 
-  expect(handle.vforkSnapshot?.vmPtr).toBe(0x1234);
+  expect(hostExecutionState(handle).vforkSnapshot?.vmPtr).toBe(0x1234);
 
   worker.clearPostedMessages();
   worker.emit({
@@ -844,7 +847,7 @@ test("vfork child fault records wait status and resumes parent on the same worke
 
   expect(kernel.recordedChildExits).toEqual([[55, 253 << 8]]);
   expect(resumeVforkParent).toHaveBeenCalledWith(0x1234, 55);
-  expect(handle.vforkSnapshot).toBeNull();
+  expect(hostExecutionState(handle).vforkSnapshot).toBeNull();
   expect(worker.terminated).toBe(false);
   expect(worker.postedMessages).toEqual([
     {
@@ -931,7 +934,7 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
   await flushMicrotasks();
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  expect(handle.vforkSnapshot?.vmPtr).toBe(0x1234);
+  expect(hostExecutionState(handle).vforkSnapshot?.vmPtr).toBe(0x1234);
 
   worker.clearPostedMessages();
   worker.emit({
@@ -952,7 +955,7 @@ test("vfork child fault delegates wait status bookkeeping and parent resume to k
   expect(readVforkChildPid).toHaveBeenCalled();
   expect(resumeVforkParent).toHaveBeenCalledWith(0x1234, 56);
   expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x24);
-  expect(handle.vforkSnapshot).toBeNull();
+  expect(hostExecutionState(handle).vforkSnapshot).toBeNull();
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
@@ -2594,8 +2597,8 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
     siblingWorker.clearPostedMessages();
     parentWorker.clearPostedMessages();
 
-    handle.runningWorker = siblingWorker as unknown as Worker;
-    handle.vforkReadyWorkers.length = 0;
+    hostExecutionState(handle).runningWorker = siblingWorker as unknown as Worker;
+    hostExecutionState(handle).vforkReadyWorkers.length = 0;
     parentKernel.thread_vfork_child_pid = () => 55;
     parentKernel.thread_spawn_kind = () => parentKernel.abi_spawn_kind_execve();
     installVforkExecveSpawnChildPid(parentKernel);
@@ -2623,8 +2626,8 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
     await flushMicrotasks(40);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(handle.vforkReadyWorkers).toEqual([]);
-    expect(handle.runningWorker).toBe(siblingWorker as unknown as Worker);
+    expect(hostExecutionState(handle).vforkReadyWorkers).toEqual([]);
+    expect(hostExecutionState(handle).runningWorker).toBe(siblingWorker as unknown as Worker);
     expect(parentWorker.postedMessages).toEqual([
       expect.objectContaining({
         type: "init",
@@ -2660,8 +2663,8 @@ test("vfork execve handoff failure reinitializes the restored parent while a sib
     });
     await flushMicrotasks();
 
-    expect(handle.runningWorker).toBe(null);
-    expect(handle.vforkReadyWorkers).toEqual([]);
+    expect(hostExecutionState(handle).runningWorker).toBe(null);
+    expect(hostExecutionState(handle).vforkReadyWorkers).toEqual([]);
     expect(parentWorker.postedMessages).toHaveLength(1);
   } finally {
     restoreDefaultInstantiate();
@@ -3254,7 +3257,7 @@ test("vfork child runs exclusively until the parent thread is resumed", async ()
   });
   await flushMicrotasks();
 
-  expect(handle.vforkWorker).toBe(parentWorker);
+  expect(hostExecutionState(handle).vforkWorker).toBe(parentWorker);
   expect(parentWorker.postedMessages).toEqual([
     expect.objectContaining({ type: "step", budget: 20_000 }),
   ]);

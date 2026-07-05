@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -147,7 +148,7 @@ async function executeHostBlockedSyscallResume(
     mode.emitRetryResult(status);
   };
   const finishBlockedRpc = (): void => {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (
       !blocked
       || blocked.vmPtr !== vmPtr
@@ -163,7 +164,7 @@ async function executeHostBlockedSyscallResume(
     deps.appendWorkerDebugLog(handle, `blocked-rpc-start:${blockedStatus}:0x${vmPtr.toString(16)}`);
     deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:start:pid=${handle.pid}:0x${vmPtr.toString(16)}`);
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-start:${handle.pid}:${blockedStatus}`);
-    const blockedAtStart = handle.hostBlockedWorkers.get(worker);
+    const blockedAtStart = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (blockedAtStart && blockedAtStart.vmPtr === vmPtr) {
       rpcGeneration = beginHostBlockedRpc(blockedAtStart);
     } else {
@@ -171,7 +172,7 @@ async function executeHostBlockedSyscallResume(
     }
     canonicalEofReadyAtStart = isPipeCanonicalEofReady(blockedAtStart);
     const isCurrentBlockedRpc = (): boolean => {
-      const blocked = handle.hostBlockedWorkers.get(worker);
+      const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       return blocked !== undefined
         && blocked.vmPtr === vmPtr
         && rpcGeneration !== null
@@ -234,7 +235,7 @@ async function executeHostBlockedSyscallResume(
         }
       }
       if (options.requireBlockedBeforeDone) {
-        const blocked = handle.hostBlockedWorkers.get(worker);
+        const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
         if (!blocked || blocked.vmPtr !== vmPtr) {
           return;
         }
@@ -354,7 +355,7 @@ ${debug}`));
     if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone" };
     }
-    if (!handle.hostBlockedWorkers.has(worker)) {
+    if (!hostExecutionState(handle).hostBlockedWorkers.has(worker)) {
       return { kind: "queued-in-worker" };
     }
     if (collectedRetryResult.status !== undefined) {

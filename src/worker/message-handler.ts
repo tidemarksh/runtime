@@ -1,3 +1,4 @@
+import { hostExecutionState } from "./host-execution-state.js";
 import { createWorkerControlMessageHandler } from "./message-handler/control.js";
 import { readProcessPidField } from "./diagnostics/format.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status/route.js";
@@ -130,7 +131,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       );
       return false;
     }
-    const isActiveVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
+    const isActiveVforkWorker = hostExecutionState(handle).vforkSnapshot !== null && hostExecutionState(handle).vforkWorker === worker;
     const messageAllowsTransientKernelPidMismatch = isActiveVforkWorker || (
       msg.type === "status"
       && supervisorProcessStatusAllowsPidMismatch(handle.kernel, msg.status)
@@ -211,8 +212,8 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     const messageProcessPidField = "debug" in msg ? readProcessPidField(msg.debug) : null;
     const thread = deps.threadWorkerStates.get(worker);
     const isActiveVforkWorker = thread !== undefined
-      && handle.vforkSnapshot !== null
-      && handle.vforkWorker === worker;
+      && hostExecutionState(handle).vforkSnapshot !== null
+      && hostExecutionState(handle).vforkWorker === worker;
     const workerOwnerMatchesHandle = thread !== undefined && getThreadOwnerPid(thread) === handle.pid;
     if (
       !isActiveVforkWorker

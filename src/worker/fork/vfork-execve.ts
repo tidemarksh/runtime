@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   guestAddressProfileForProcessCreation,
@@ -319,7 +320,7 @@ function assertVforkParentState(
   vmPtr: number,
   stage: string,
 ): void {
-  const snapshot = handle.vforkSnapshot;
+  const snapshot = hostExecutionState(handle).vforkSnapshot;
   if (!supervisorProcessOwnerMatches(handle.kernel, vmPtr, handle.pid)) {
     const currentPid = handle.kernel.process_current_pid(vmPtr);
     throw new Error(
@@ -399,7 +400,7 @@ export async function handleVforkExecve(
     );
     deps.appendWorkerDebugLog(handle, `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`);
     handle.lastDebugMessage = `vfork-execve:start child=${childPid}`;
-    const snapshot = handle.vforkSnapshot ?? captureVforkSnapshot(handle, parentThread);
+    const snapshot = hostExecutionState(handle).vforkSnapshot ?? captureVforkSnapshot(handle, parentThread);
     const parentActivity = getThreadActivityState(parentThread);
     const childLifecycle = readKernelChildLifecycle(handle.kernel, childPid);
     const inheritedSharedOfdIds = new Set(snapshot.inheritedSharedOfdIds);

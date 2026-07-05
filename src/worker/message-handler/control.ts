@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
@@ -149,10 +150,10 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
           return true;
         }
       }
-      const vforkSnapshot = handle.vforkSnapshot;
+      const vforkSnapshot = hostExecutionState(handle).vforkSnapshot;
       if (
         vforkSnapshot
-        && handle.vforkWorker === null
+        && hostExecutionState(handle).vforkWorker === null
         && thread.vmPtr === vforkSnapshot.vmPtr
       ) {
         const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
@@ -271,8 +272,8 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
 
     if (msg.type === "error") {
       handle.lastDebugMessage = msg.message;
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
       }
       deps.clearBlockedWorker(handle, worker);
       const {

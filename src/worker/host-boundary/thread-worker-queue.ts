@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   setWorkerErrorHandler,
   setWorkerMessageErrorHandler,
@@ -107,20 +108,20 @@ interface WorkerSchedulerQueueDeps {
 }
 
 function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
-  for (let index = handle.vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
-    if (handle.vforkReadyWorkers[index] === worker) {
-      handle.vforkReadyWorkers.splice(index, 1);
+  for (let index = hostExecutionState(handle).vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
+    if (hostExecutionState(handle).vforkReadyWorkers[index] === worker) {
+      hostExecutionState(handle).vforkReadyWorkers.splice(index, 1);
     }
   }
 }
 
 function clearBlockedWorker(deps: WorkerSchedulerQueueDeps, handle: ProcessHandle, worker: Worker): void {
-  const blocked = handle.hostBlockedWorkers.get(worker);
+  const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
   if (!blocked) {
     return;
   }
   deps.clearHostBlockedRetryTimer(handle, worker);
-  handle.hostBlockedWorkers.delete(worker);
+  hostExecutionState(handle).hostBlockedWorkers.delete(worker);
 }
 
 export function createWorkerSchedulerQueueHelpers(
@@ -150,7 +151,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function sanitizeRunningWorker(handle: ProcessHandle): Worker | null {
-    const runningWorker = handle.runningWorker;
+    const runningWorker = hostExecutionState(handle).runningWorker;
     if (runningWorker === null) {
       return null;
     }
@@ -162,7 +163,7 @@ export function createWorkerSchedulerQueueHelpers(
     ) {
       return runningWorker;
     }
-    handle.runningWorker = null;
+    hostExecutionState(handle).runningWorker = null;
     if (thread) {
       clearThreadRunningGeneration(thread);
     }
@@ -191,11 +192,11 @@ export function createWorkerSchedulerQueueHelpers(
     const thread = deps.threadWorkerStates.get(worker);
     clearBlockedWorker(deps, handle, worker);
     removeVforkReadyWorker(handle, worker);
-    if (handle.runningWorker === worker) {
-      handle.runningWorker = null;
+    if (hostExecutionState(handle).runningWorker === worker) {
+      hostExecutionState(handle).runningWorker = null;
     }
-    if (handle.vforkWorker === worker) {
-      handle.vforkWorker = null;
+    if (hostExecutionState(handle).vforkWorker === worker) {
+      hostExecutionState(handle).vforkWorker = null;
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
@@ -218,11 +219,11 @@ export function createWorkerSchedulerQueueHelpers(
       if (reinitWithinHandle) {
         clearBlockedWorker(deps, handle, worker);
         removeVforkReadyWorker(handle, worker);
-        if (handle.runningWorker === worker) {
-          handle.runningWorker = null;
+        if (hostExecutionState(handle).runningWorker === worker) {
+          hostExecutionState(handle).runningWorker = null;
         }
-        if (handle.vforkWorker === worker) {
-          handle.vforkWorker = null;
+        if (hostExecutionState(handle).vforkWorker === worker) {
+          hostExecutionState(handle).vforkWorker = null;
         }
       } else {
         const sourceHandle = transferFrom;
@@ -334,7 +335,7 @@ export function createWorkerSchedulerQueueHelpers(
       handle.runtimeId,
       `clone-child-init-post:${handle.pid}:vm=0x${vmPtr.toString(16)}`
         + `:generation=${generation}:force=${forcePrepare ? 1 : 0}`
-        + `:workers=${handle.workers.size}:ready=${handle.vforkReadyWorkers.length}`,
+        + `:workers=${handle.workers.size}:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
     );
     worker.postMessage(initMessage);
   }
@@ -345,7 +346,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const thread = deps.threadWorkerStates.get(worker);
     if (
-      handle.runningWorker === worker
+      hostExecutionState(handle).runningWorker === worker
       && handle.workers.has(worker)
       && thread !== undefined
     ) {
@@ -381,11 +382,11 @@ export function createWorkerSchedulerQueueHelpers(
       }
     }
     if (
-      handle.vforkSnapshot !== null
-      && handle.vforkWorker === worker
-      && !handle.vforkReadyWorkers.includes(worker)
+      hostExecutionState(handle).vforkSnapshot !== null
+      && hostExecutionState(handle).vforkWorker === worker
+      && !hostExecutionState(handle).vforkReadyWorkers.includes(worker)
     ) {
-      handle.vforkReadyWorkers.push(worker);
+      hostExecutionState(handle).vforkReadyWorkers.push(worker);
     }
     pumpProcess(handle);
   }
@@ -393,9 +394,9 @@ export function createWorkerSchedulerQueueHelpers(
   function completeFaultedProcessWithoutWorkers(handle: ProcessHandle): boolean {
     if (
       handle.workers.size !== 0
-      || handle.vforkReadyWorkers.length !== 0
-      || handle.runningWorker !== null
-      || handle.hostBlockedWorkers.size !== 0
+      || hostExecutionState(handle).vforkReadyWorkers.length !== 0
+      || hostExecutionState(handle).runningWorker !== null
+      || hostExecutionState(handle).hostBlockedWorkers.size !== 0
     ) {
       return false;
     }
@@ -440,7 +441,7 @@ export function createWorkerSchedulerQueueHelpers(
       if (staleGate !== null) {
         appendSchedulerQueueDebugLog(handle, `pump-cleared:${staleGate}`);
       } else {
-        appendSchedulerQueueDebugLog(handle, `pump-held:fork-shared-sync:ready=${handle.vforkReadyWorkers.length}`);
+        appendSchedulerQueueDebugLog(handle, `pump-held:fork-shared-sync:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`);
         observeForkSharedSyncGate(handle, forkSharedSyncPromise);
         return;
       }
@@ -450,7 +451,7 @@ export function createWorkerSchedulerQueueHelpers(
       const thread = deps.threadWorkerStates.get(runningWorker);
       appendSchedulerQueueDebugLog(
         handle,
-        `pump-held:running:ready=${handle.vforkReadyWorkers.length}`
+        `pump-held:running:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`
           + (thread ? `:vm=0x${thread.vmPtr.toString(16)}:status=${handle.kernel.thread_status(thread.vmPtr)}` : ""),
       );
       return;
@@ -466,21 +467,21 @@ export function createWorkerSchedulerQueueHelpers(
     } else {
       deps.appendWorkerDebugLog(
         handle,
-        `supervisor-resume:runnable:missing-export:ready=${handle.vforkReadyWorkers.length}`,
+        `supervisor-resume:runnable:missing-export:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
       );
       return;
     }
     if (!next) {
       return;
     }
-    handle.runningWorker = next;
+    hostExecutionState(handle).runningWorker = next;
     const thread = deps.threadWorkerStates.get(next);
     const stepBudget = SCHEDULER_STEP_BUDGET;
     const vmPtr = thread?.vmPtr;
     if (thread && vmPtr !== undefined) {
       appendSchedulerQueueDebugLog(
         handle,
-        `pump-run:ready=${handle.vforkReadyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
+        `pump-run:ready=${hostExecutionState(handle).vforkReadyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
       );
       restoreRegularFileOffsetsForStep(handle);
       reconcileKernelSharePipeControl(handle);

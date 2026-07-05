@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -27,7 +28,7 @@ export function createWorkerKernelRpcWait4Helpers(
     try {
       const localStatus = handle.kernel.thread_status(vmPtr);
       if (!supervisorBlockedStatusIsWait4(handle.kernel, localStatus)) {
-        const blocked = handle.hostBlockedWorkers.get(worker);
+        const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           finishBlockedRpc(blocked, null);
         }
@@ -48,7 +49,7 @@ export function createWorkerKernelRpcWait4Helpers(
         kernelState: handle.kernelState,
       }), "wait4-resumed", "resume-wait4");
 
-      const blocked = handle.hostBlockedWorkers.get(worker);
+      const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return { kind: "stale" };
       }
@@ -77,7 +78,7 @@ export function createWorkerKernelRpcWait4Helpers(
       const status = handle.kernel.thread_status(vmPtr);
       return completedKernelRpcOutcome(status);
     } catch (error) {
-      const blocked = handle.hostBlockedWorkers.get(worker);
+      const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (blocked && blocked.vmPtr === vmPtr) {
         finishBlockedRpc(blocked, null);
       }

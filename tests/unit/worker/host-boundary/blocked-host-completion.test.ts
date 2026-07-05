@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
   handleFutexWait,
@@ -214,7 +215,7 @@ test("host boundary arms supervisor timer for wait-in-worker futex waits", async
   threadWorkerStates.set(worker, thread);
   kernel.memory = memory;
   handle.memory = memory;
-  handle.runningWorker = worker;
+  hostExecutionState(handle).runningWorker = worker;
   kernel.supervisor_abi_version = () => 1;
   kernel.supervisor_host_op_record_bytes = () => 64;
   kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
@@ -271,7 +272,7 @@ test("host boundary arms supervisor timer for wait-in-worker futex waits", async
     true,
   );
 
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(parkSupervisorFutexWait).toHaveBeenCalledWith(
@@ -316,7 +317,7 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
   const handle = makeHostBoundaryHandle(kernel, runningWorker);
   handle.memory = memory;
   handle.workers.add(blockedWorker);
-  handle.runningWorker = runningWorker;
+  hostExecutionState(handle).runningWorker = runningWorker;
   const submittedEvents: Array<{
     kind: number;
     vmPtr: number;
@@ -396,7 +397,7 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     status: kernel.abi_status_pipe_wait(),
   };
   setBlockedRpcGeneration(blocked, 3);
-  handle.hostBlockedWorkers.set(blockedWorker, blocked);
+  hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, blocked);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},

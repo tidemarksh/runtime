@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -117,10 +118,10 @@ export async function syncPipeStateViaKernelWorker(
   );
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
-  const applyFdEntries = handle.runningWorker === null
-    && handle.vforkReadyWorkers.length === 0
+  const applyFdEntries = hostExecutionState(handle).runningWorker === null
+    && hostExecutionState(handle).vforkReadyWorkers.length === 0
     && handle.workers.size === 0
-    && handle.hostBlockedWorkers.size === 0;
+    && hostExecutionState(handle).hostBlockedWorkers.size === 0;
   appendSocketSyncDebug(
     handle,
     [
@@ -128,10 +129,10 @@ export async function syncPipeStateViaKernelWorker(
       formatSyncCause(cause),
       `vm=0x${handle.vmPtr.toString(16)}`,
       `applyFd=${applyFdEntries ? 1 : 0}`,
-      `running=${handle.runningWorker === null ? 0 : 1}`,
-      `ready=${handle.vforkReadyWorkers.length}`,
+      `running=${hostExecutionState(handle).runningWorker === null ? 0 : 1}`,
+      `ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
       `workers=${handle.workers.size}`,
-      `blocked=${handle.hostBlockedWorkers.size}`,
+      `blocked=${hostExecutionState(handle).hostBlockedWorkers.size}`,
       `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
       formatFdSnapshotDebug("fds", fdEntries),
       `pipeOfds=${formatOfdIdList(pipeOfdIds)}`,
@@ -167,7 +168,7 @@ export async function syncPipeStateViaKernelWorker(
   if (response.pipeSlots && response.pipeSlots.length > 0) {
     mergePipeSlotSnapshotsIntoHandle(handle, response.pipeSlots);
     for (const member of kernelShareOtherMembers(handle)) {
-      if (member.runningWorker !== null || member.exitInProgress) {
+      if (hostExecutionState(member).runningWorker !== null || member.exitInProgress) {
         continue;
       }
       mergePipeSlotSnapshotsIntoHandle(member, response.pipeSlots);
@@ -178,7 +179,7 @@ export async function syncPipeStateViaKernelWorker(
   }
   if (pipeSlots.length > 0) {
     for (const member of kernelShareOtherMembers(handle)) {
-      if (member.runningWorker !== null || member.exitInProgress) {
+      if (hostExecutionState(member).runningWorker !== null || member.exitInProgress) {
         continue;
       }
       mergePipeSlotSnapshotsIntoHandle(member, pipeSlots);

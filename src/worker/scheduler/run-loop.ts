@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -57,7 +58,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     vmPtr: number,
     rpcGeneration: number,
   ): HostBlockedWorkerState | null {
-    const latestBlocked = handle.hostBlockedWorkers.get(worker);
+    const latestBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (
       !latestBlocked
       || latestBlocked.vmPtr !== vmPtr
@@ -79,7 +80,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     observedForkSharedSyncPromises.add(promise);
     const onSettled = (): void => {
       clearForkSharedSyncIfCurrent(handle, promise);
-      const blocked = handle.hostBlockedWorkers.get(worker);
+      const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (!blocked) {
         return;
       }
@@ -94,12 +95,12 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
   }
 
   function clearStaleRunningWorker(handle: ProcessHandle, blockedWorker: Worker): boolean {
-    const runningWorker = handle.runningWorker;
+    const runningWorker = hostExecutionState(handle).runningWorker;
     if (runningWorker === null || runningWorker === blockedWorker) {
       return false;
     }
     if (!handle.workers.has(runningWorker)) {
-      handle.runningWorker = null;
+      hostExecutionState(handle).runningWorker = null;
       const detachedThread = deps.threadWorkerStates.get(runningWorker);
       if (detachedThread) {
         clearThreadRunningGeneration(detachedThread);
@@ -108,7 +109,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     const runningThread = deps.threadWorkerStates.get(runningWorker);
     if (!runningThread) {
-      handle.runningWorker = null;
+      hostExecutionState(handle).runningWorker = null;
       return true;
     }
     return false;

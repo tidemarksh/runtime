@@ -1,9 +1,11 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
 import {
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
   setThreadRunningGeneration,
 } from "../../../../src/worker/thread-host-state.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
@@ -230,6 +232,7 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
   const handler = createWorkerWaitInWorkerStatusHandler({
     appendWorkerDebugLog: () => {},
     clearBlockedWorker: () => {},
+    notifyWorkerStatusProgress: () => {},
     pumpProcess: () => {},
     blockWorker: () => {},
     failProcess: () => {},
@@ -253,6 +256,7 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
       outputBacklog: [],
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernel: {
+        ...makeSupervisorAbiStubs(),
         abi_status_futex_wait: () => 25,
         abi_status_epoll_wait: () => 22,
         abi_status_pipe_wait: () => 21,
@@ -306,6 +310,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
   setThreadRunningGeneration(thread as never, 12);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
+  setThreadHostIdentity(thread as never, 17, 9);
   const blockWorker = vi.fn();
   const requestPipeStateSync = vi.fn(async () => {});
   const notifyWorkerStatusProgress = vi.fn();
@@ -355,6 +360,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     workers: new Set([worker]),
     kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
     kernel: {
+      ...makeSupervisorAbiStubs(),
       abi_status_futex_wait: () => 25,
       abi_status_epoll_wait: () => 22,
       abi_status_pipe_wait: () => 21,
@@ -373,10 +379,8 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
       stateSab: new SharedArrayBuffer(176),
     },
     onStdout: null,
-    runningWorker: worker,
-    vforkSnapshot: null,
-    vforkWorker: null,
   } as never;
+  hostExecutionState(handle).runningWorker = worker;
 
   handler(
     handle,
@@ -396,7 +400,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     true,
   );
 
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(blockWorker).toHaveBeenCalledWith(handle, worker, 20, 0x4321);

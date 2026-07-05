@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import type { KernelExports } from "../../../../src/abi.js";
@@ -36,7 +37,7 @@ function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   handle.networkConnections ??= new Map();
   handle.workerDebugLog ??= [];
   handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
-  handle.vforkSnapshot ??= null;
+  hostExecutionState(handle).vforkSnapshot ??= null;
   return handle;
 }
 

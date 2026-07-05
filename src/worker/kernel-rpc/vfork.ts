@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -110,7 +111,7 @@ export function createWorkerKernelRpcVforkHelpers(
     vmPtr: number,
     provisionalChildPid: number,
   ): Promise<KernelRpcResumeOutcome> {
-    const snapshot = handle.vforkSnapshot;
+    const snapshot = hostExecutionState(handle).vforkSnapshot;
     if (!snapshot || snapshot.vmPtr !== vmPtr) {
       return { kind: "stale" };
     }

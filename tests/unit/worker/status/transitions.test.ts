@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
 import { networkConnectionOfds } from "../../../../src/worker/network-socket-state.js";
@@ -1031,7 +1032,7 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
 test("STATUS_SLEEP zero-duration yield reports progress before supervisor pump", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
-  handle.runningWorker = worker;
+  hostExecutionState(handle).runningWorker = worker;
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
   const transition = createWorkerStatusTransitionHandler(deps as never);
@@ -1057,7 +1058,7 @@ test("STATUS_SLEEP zero-duration yield reports progress before supervisor pump",
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(
     deps.notifyWorkerStatusProgress.mock.invocationCallOrder[0],
@@ -1068,7 +1069,7 @@ test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supe
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
-  handle.runningWorker = worker;
+  hostExecutionState(handle).runningWorker = worker;
   handle.kernelWorkerRequest = {} as never;
   const deps = makeDeps(worker);
   deps.syncEffectPipeState = 1;
@@ -1100,7 +1101,7 @@ test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supe
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
 });
 
@@ -1110,7 +1111,7 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
-  handle.runningWorker = worker;
+  hostExecutionState(handle).runningWorker = worker;
   handle.kernel.thread_sleep_nanoseconds = () => 1_000_000n;
   const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
   handle.memory = memory;
@@ -1168,7 +1169,7 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
   });
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBe(26);
   expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
@@ -1425,7 +1426,7 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
-  handle.runningWorker = worker;
+  hostExecutionState(handle).runningWorker = worker;
   const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
   handle.memory = memory;
   const kernel = handle.kernel as typeof handle.kernel & {
@@ -1484,7 +1485,7 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
   });
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
     handle,
@@ -1513,7 +1514,7 @@ test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", ()
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
-  handle.runningWorker = worker;
+  hostExecutionState(handle).runningWorker = worker;
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   handle.memory = memory;
   const kernel = handle.kernel as typeof handle.kernel & {
@@ -1552,7 +1553,7 @@ test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", ()
   });
 
   expect(deps.blockWorker).not.toHaveBeenCalled();
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
     handle,

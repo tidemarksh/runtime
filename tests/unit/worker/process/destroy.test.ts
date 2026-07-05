@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerDestroyHelpers } from "../../../../src/worker/destroy.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
@@ -95,11 +96,11 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   }
   const appendRuntimeLifecycleEvent = vi.fn();
   const clearBlockedWorker = vi.fn((targetHandle: ProcessHandle, worker: Worker) => {
-    targetHandle.hostBlockedWorkers.delete(worker);
+    hostExecutionState(targetHandle).hostBlockedWorkers.delete(worker);
   });
   const clearVforkSnapshot = vi.fn((targetHandle: ProcessHandle) => {
-    targetHandle.vforkSnapshot = null;
-    targetHandle.vforkWorker = null;
+    hostExecutionState(targetHandle).vforkSnapshot = null;
+    hostExecutionState(targetHandle).vforkWorker = null;
   });
   const unregisterProcessWithKernelWorker = vi.fn(async () => {});
   const releaseSharedHostStdio = vi.fn(async (targetHandle: ProcessHandle) => {

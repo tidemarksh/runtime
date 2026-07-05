@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   supervisorBlockedWaitRetryFlags,
   supervisorBlockedWaitTimerRequired,
@@ -55,7 +56,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
 
   function clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }
@@ -100,7 +101,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     worker: Worker,
     hostOp: NonNullable<ReturnType<typeof drainSupervisorBlockedRetryHostOp>>,
   ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked || hostBlockedRetryTimers.has(blocked)) {
       return;
     }
@@ -124,7 +125,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     worker: Worker,
     flags: SupervisorBlockedWaitRetryFlags = [],
   ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }

@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   supervisorBlockedEpollWaitRetryRequired,
   supervisorBlockedPipeSyncBeforeRetryClear,
@@ -91,7 +92,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       clearPipeSyncBeforeRetry?: boolean;
     } = {},
   ): void {
-    const blocked = handle.hostBlockedWorkers.get(worker);
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked) {
       return;
     }
@@ -113,7 +114,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       }
     }
     clearHostBlockedRetryTimer(handle, worker);
-    handle.hostBlockedWorkers.delete(worker);
+    hostExecutionState(handle).hostBlockedWorkers.delete(worker);
   }
 
   function clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void {
@@ -174,12 +175,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     source: string,
   ): void {
     clearBlockedWorker(handle, worker);
-    const readyIndex = handle.vforkReadyWorkers.indexOf(worker);
+    const readyIndex = hostExecutionState(handle).vforkReadyWorkers.indexOf(worker);
     if (readyIndex >= 0) {
-      handle.vforkReadyWorkers.splice(readyIndex, 1);
+      hostExecutionState(handle).vforkReadyWorkers.splice(readyIndex, 1);
     }
-    if (handle.runningWorker === worker) {
-      handle.runningWorker = null;
+    if (hostExecutionState(handle).runningWorker === worker) {
+      hostExecutionState(handle).runningWorker = null;
     }
     const thread = threadWorkerStates.get(worker);
     if (thread !== undefined && thread.vmPtr === vmPtr) {
@@ -242,7 +243,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       parkSupervisorFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
       return;
     }
-    const previousBlocked = handle.hostBlockedWorkers.get(worker);
+    const previousBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     const sameBlockedThread = previousBlocked !== undefined
       && previousBlocked.vmPtr === vmPtr
       && previousBlocked.status === status;
@@ -264,7 +265,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     ) {
       markSupervisorTimerArmed(blocked);
     }
-    handle.hostBlockedWorkers.set(worker, blocked);
+    hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
     const supervisorTimerArmed = armBlockedSupervisorTimerForBlocked(handle, blocked);
     if (supervisorTimerArmed) {
       return;
@@ -364,7 +365,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   retryHostBlockedWorkerImpl = blockedRetryCoordinator.retryHostBlockedWorker;
 
   function notifySchedulerProgress(handle: ProcessHandle): void {
-    for (const worker of [...handle.hostBlockedWorkers.keys()]) {
+    for (const worker of [...hostExecutionState(handle).hostBlockedWorkers.keys()]) {
       retryHostBlockedWorker(handle, worker);
     }
   }

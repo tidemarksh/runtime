@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import { createWorkerKernelRpcLifecycleHelpers } from "../kernel-rpc/lifecycle.js";
 import { createWorkerKernelRpcBlockedRpcHelpers } from "./blocked-rpc-resume.js";
 import { createWorkerKernelRpcFsHelpers } from "../kernel-rpc/fs.js";
@@ -66,8 +67,8 @@ interface WorkerKernelRpcDeps {
 }
 
 export function clearVforkSnapshot(handle: ProcessHandle): void {
-  handle.vforkSnapshot = null;
-  handle.vforkWorker = null;
+  hostExecutionState(handle).vforkSnapshot = null;
+  hostExecutionState(handle).vforkWorker = null;
 }
 
 export async function resolveProcessCwdInoViaKernelWorker(

@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import type {
   ProcessHandle,
   RuntimeMemoryOwnership,
@@ -220,17 +221,17 @@ function formatU64Decimal(value: bigint | number | undefined): string {
 }
 
 function readWorkerOwnerState(
-  handle: Pick<ProcessHandle, "runningWorker" | "vforkReadyWorkers" | "hostBlockedWorkers">,
+  handle: ProcessHandle,
   worker: Worker,
   state: ThreadWorkerState,
 ): string {
-  if (handle.runningWorker === worker) {
+  if (hostExecutionState(handle).runningWorker === worker) {
     return "running";
   }
-  if (handle.vforkReadyWorkers.includes(worker)) {
+  if (hostExecutionState(handle).vforkReadyWorkers.includes(worker)) {
     return "ready";
   }
-  if (handle.hostBlockedWorkers.has(worker)) {
+  if (hostExecutionState(handle).hostBlockedWorkers.has(worker)) {
     return "blocked";
   }
   const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
@@ -763,15 +764,7 @@ function formatWorkerThreadState(
 }
 
 export function summarizeProcessWorkerLogFocus(
-  handle: Pick<
-    ProcessHandle,
-    | "workers"
-    | "runningWorker"
-    | "vforkReadyWorkers"
-    | "hostBlockedWorkers"
-    | "workerDebugLog"
-    | "kernel"
-  >,
+  handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
 ): WorkerLogFocus[] {
   const attachedStates = [...handle.workers]
@@ -927,7 +920,7 @@ export function debugRuntimeExecutionStats(
       return {
         pid: handle.pid,
         cmd: handle.debugCommand,
-        running: handle.runningWorker !== null,
+        running: hostExecutionState(handle).runningWorker !== null,
         memoryBytes: handle.memory.buffer.byteLength,
         guestMemoryPolicyLimitBytes: handle.guestMemoryPolicyLimitBytes.toString(),
         processCommittedBytes,
@@ -943,8 +936,8 @@ export function debugRuntimeExecutionStats(
         artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
         memoryOwnership: handle.memoryOwnership,
         guestBase: handle.guestBase,
-        vforkReadyWorkers: handle.vforkReadyWorkers.length,
-        hostBlockedWorkers: handle.hostBlockedWorkers.size,
+        vforkReadyWorkers: hostExecutionState(handle).vforkReadyWorkers.length,
+        hostBlockedWorkers: hostExecutionState(handle).hostBlockedWorkers.size,
         pendingChildSpawnRecords: pendingChildSpawnRecordCount(handle),
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
         runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),
@@ -1486,7 +1479,7 @@ export function debugRuntimeProcessHandles(
     .map((handle) => {
       try {
         const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
-        const blocked = [...handle.hostBlockedWorkers.values()]
+        const blocked = [...hostExecutionState(handle).hostBlockedWorkers.values()]
           .map((state) => `${state.status}@0x${state.vmPtr.toString(16)}`)
           .join(",");
         const workerStates = [...handle.workers]
@@ -1638,12 +1631,12 @@ export function debugRuntimeProcessHandles(
           `worker_details=[${workerDetails}]`,
           `worker_focus=[${workerFocusSummary}]`,
           `thread_states=[${threadStates}]`,
-          `ready=${handle.vforkReadyWorkers.length}`,
-          `running=${handle.runningWorker ? "1" : "0"}`,
+          `ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+          `running=${hostExecutionState(handle).runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
           `pipe_sync=${runtimeStateSyncInFlight(handle, "pipe") ? 1 : 0}`,
           `fork_sync=${getHandleForkSharedSync(handle) === null ? 0 : 1}/${getKernelShareForkSharedSync(handle.kernelShare) === null ? 0 : 1}`,
-          `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
+          `vfork=${hostExecutionState(handle).vforkSnapshot ? "1" : "0"}`,
           `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
           `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,
           `stdio_pipe_counters=[${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]

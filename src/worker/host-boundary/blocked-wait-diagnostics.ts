@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -154,7 +155,7 @@ export function formatRunningRetryBlocker(
     + `:proc=0x${processPtr.toString(16)}`
     + `:initialized=${runningThread === undefined ? "null" : isThreadInitialized(runningThread) ? 1 : 0}`
     + `:ownerAsync=${ownerAsyncStatus ?? "null"}`
-    + `:ready=${handle.vforkReadyWorkers.length}`
+    + `:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`
     + `:active=0x${activeStepVmPtr.toString(16)}`;
 }
 

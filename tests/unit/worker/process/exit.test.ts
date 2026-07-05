@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerExitHelpers } from "../../../../src/worker/exit.js";
 import {
@@ -352,7 +353,7 @@ test("completeProcessExit waits for blocked parent pipe sync before recording wa
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -421,7 +422,7 @@ test("completeProcessExit waits for parent pipe sync before clearing blocked pip
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -490,7 +491,7 @@ test("completeProcessExit waits for parent pipe sync before recording blocked wa
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -559,7 +560,7 @@ test("completeProcessExit waits for parent child-exit record before cleanup", as
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -633,7 +634,7 @@ test("completeProcessExit routes deferred parent record rejection through local 
       abi_status_wait4: () => 31,
     } as never,
   });
-  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,
@@ -1437,7 +1438,7 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
     status: 21,
   };
   seedBlockedRpcState(blockedState, true, 1);
-  parent.hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
   const child = makeHandle({
     pid: 3,
     parentPid: 1,

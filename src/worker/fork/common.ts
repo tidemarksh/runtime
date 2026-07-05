@@ -71,11 +71,6 @@ export function createForkChildHandle({
     networkBridge: parent.networkBridge,
     networkConnections: new Map(parent.networkConnections),
     workers: new Set<Worker>(),
-    vforkReadyWorkers: [],
-    runningWorker: null,
-    hostBlockedWorkers: new Map(),
-    vforkSnapshot: null,
-    vforkWorker: null,
     exitInProgress: false,
     onError: createInheritedErrorSink(
       parent,

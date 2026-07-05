@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -543,9 +544,9 @@ function hasLiveWorkerState(
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
 ): boolean {
   if (
-    (handle.runningWorker !== null && handle.runningWorker !== undefined)
-    || (handle.vforkReadyWorkers?.length ?? 0) > 0
-    || (handle.hostBlockedWorkers?.size ?? 0) > 0
+    (hostExecutionState(handle).runningWorker !== null && hostExecutionState(handle).runningWorker !== undefined)
+    || (hostExecutionState(handle).vforkReadyWorkers?.length ?? 0) > 0
+    || (hostExecutionState(handle).hostBlockedWorkers?.size ?? 0) > 0
   ) {
     return true;
   }
@@ -1334,7 +1335,7 @@ async function resumeFsViaKernelWorkerInner(
       .filter((member) => (
         isProcessMemfsDirty(member)
         && hasLiveWorkerState(member, deps.threadWorkerStates)
-        && member.runningWorker === null
+        && hostExecutionState(member).runningWorker === null
         && !member.exitInProgress
         && member.kernelWorkerRequest
         && member.pid > 0
@@ -1344,7 +1345,7 @@ async function resumeFsViaKernelWorkerInner(
         .filter((member, index, members) => (
           member !== peer
           && !member.exitInProgress
-          && member.runningWorker === null
+          && hostExecutionState(member).runningWorker === null
           && members.indexOf(member) === index
         ));
       peer.transferDebugStats.forkSharedMemfsSyncCalls += 1;
@@ -1542,7 +1543,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
-      .filter((member) => member.runningWorker === null);
+      .filter((member) => hostExecutionState(member).runningWorker === null);
     const syncSharedOfdAfterFs = ofdStateChanged
       && !regularFileOnlyPendingFs
       && fsResponseDisposition.processOwnerMatches

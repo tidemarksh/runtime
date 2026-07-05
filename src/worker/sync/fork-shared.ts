@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -79,15 +80,15 @@ import type {
 } from "./shared.js";
 
 function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
-  return target.runningWorker === null
-    && target.vforkReadyWorkers.length === 0
-    && target.hostBlockedWorkers.size > 0
+  return hostExecutionState(target).runningWorker === null
+    && hostExecutionState(target).vforkReadyWorkers.length === 0
+    && hostExecutionState(target).hostBlockedWorkers.size > 0
     && !hasPendingBlockedRpc(target)
     && !target.exitInProgress;
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
-  return [...handle.hostBlockedWorkers.values()].some((blocked) => isBlockedRpcPending(blocked));
+  return [...hostExecutionState(handle).hostBlockedWorkers.values()].some((blocked) => isBlockedRpcPending(blocked));
 }
 
 function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
@@ -126,7 +127,7 @@ export function requestOwnedForkSharedStateSync(
     }
     const registered = deps.processHandles?.get(member.pid);
     if (
-      member.runningWorker !== null
+      hostExecutionState(member).runningWorker !== null
       || member.exitInProgress
       || registered?.exitInProgress
       || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
@@ -575,7 +576,7 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   }
   const syncTargets = kernelShareOtherMembers(handle)
     .filter((member) => (
-      member.runningWorker === null
+      hostExecutionState(member).runningWorker === null
       && !member.exitInProgress
       && !hasPendingBlockedRpc(member)
     ));

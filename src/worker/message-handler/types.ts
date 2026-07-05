@@ -1,7 +1,7 @@
 import type { ThreadWorkerOutbound } from "../../messages.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 import type { SyncCause } from "../contracts/sync.js";
-import type { AttachThreadWorkerRequest, ProcessHandle, ThreadWorkerState } from "../types.js";
+import type { AttachThreadWorkerRequest, ProcessHandle, ThreadWorkerState, VforkSnapshot } from "../types.js";
 import type { WorkerMessageHandlerSyncEffects } from "./sync-effects.js";
 
 export type ThreadWorkerStatusMessage = Extract<ThreadWorkerOutbound, { type: "status" }>;
@@ -23,7 +23,7 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   captureVforkSnapshot(
     handle: ProcessHandle,
     thread: ThreadWorkerState,
-  ): NonNullable<ProcessHandle["vforkSnapshot"]>;
+  ): VforkSnapshot;
   clearVforkSnapshot(handle: ProcessHandle): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;

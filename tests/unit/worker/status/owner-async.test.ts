@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { handleOwnerAsyncStatusReturn } from "../../../../src/worker/message-handler/status/owner-async.js";
 import {
@@ -45,7 +46,7 @@ test("owner-async status return clears the running generation and records the st
   });
 
   expect(handled).toBe(true);
-  expect(handle.runningWorker).toBe(null);
+  expect(hostExecutionState(handle).runningWorker).toBe(null);
   expect(getThreadRunningGeneration(thread)).toBe(null);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -168,7 +169,7 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
   const worker = {} as Worker;
   const pumpProcess = vi.fn();
   const clearBlockedWorker = vi.fn((handleArg: ReturnType<typeof makeHandle>, workerArg: Worker) => {
-    handleArg.hostBlockedWorkers.delete(workerArg);
+    hostExecutionState(handleArg).hostBlockedWorkers.delete(workerArg);
   });
   const appendWorkerDebugLog = vi.fn();
   const handle = makeHandle({
@@ -183,7 +184,7 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
   };
   setBlockedRpcPending(blocked, true);
   setBlockedRpcGeneration(blocked, 3);
-  handle.hostBlockedWorkers.set(worker, blocked);
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
   const thread = makeThreadState({
     ownerAsyncStatus: 6,
     runningGeneration: null,
@@ -212,7 +213,7 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
 
   expect(handled).toBe(true);
   expect(clearBlockedWorker).toHaveBeenCalledWith(handle, worker);
-  expect(handle.hostBlockedWorkers.has(worker)).toBe(false);
+  expect(hostExecutionState(handle).hostBlockedWorkers.has(worker)).toBe(false);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "status-owner-async-clear-stale-blocked-rpc:0x1234:blocked=31:status=6",
@@ -236,7 +237,7 @@ test("owner-async STATUS_FS return preserves matching blocked FS rpc", () => {
   };
   setBlockedRpcPending(blocked, true);
   setBlockedRpcGeneration(blocked, 3);
-  handle.hostBlockedWorkers.set(worker, blocked);
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
   const thread = makeThreadState({
     ownerAsyncStatus: 6,
     runningGeneration: null,
@@ -265,7 +266,7 @@ test("owner-async STATUS_FS return preserves matching blocked FS rpc", () => {
 
   expect(handled).toBe(true);
   expect(clearBlockedWorker).not.toHaveBeenCalled();
-  expect(handle.hostBlockedWorkers.get(worker)).toBe(blocked);
+  expect(hostExecutionState(handle).hostBlockedWorkers.get(worker)).toBe(blocked);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });
 
@@ -302,7 +303,7 @@ test("owner-async STATUS_FS from an unanswered running step routes to transition
   });
 
   expect(handled).toBe(false);
-  expect(handle.runningWorker).toBe(worker);
+  expect(hostExecutionState(handle).runningWorker).toBe(worker);
   expect(getThreadRunningGeneration(thread)).toBe(1);
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -346,7 +347,7 @@ test("owner-async STATUS_FS from an unanswered non-running step routes to transi
   });
 
   expect(handled).toBe(false);
-  expect(handle.runningWorker).toBe(otherWorker);
+  expect(hostExecutionState(handle).runningWorker).toBe(otherWorker);
   expect(getThreadRunningGeneration(thread)).toBe(1);
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -388,7 +389,7 @@ test("owner-async generationless STATUS_FS from an unanswered step routes to tra
   });
 
   expect(handled).toBe(false);
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -431,7 +432,7 @@ test("owner-async STATUS_OK from an unanswered step routes to transition", () =>
   });
 
   expect(handled).toBe(false);
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -508,7 +509,7 @@ test("owner-async STATUS_OK return completes a supervisor-selected faulted proce
   });
 
   expect(handled).toBe(true);
-  expect(handle.runningWorker).toBeNull();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(completeProcessExit).toHaveBeenCalledWith(handle, 13, 0, 0x1234);
@@ -555,7 +556,7 @@ test("owner-async status return does not consume a fault from resumed guest exec
   });
 
   expect(handled).toBe(false);
-  expect(handle.runningWorker).toBe(worker);
+  expect(hostExecutionState(handle).runningWorker).toBe(worker);
   expect(getThreadRunningGeneration(thread)).toBe(1);
   expect(appendWorkerDebugLog).not.toHaveBeenCalled();
 });

@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   collectLiveThreadVmPtrs,
 } from "../live-threads.js";
@@ -31,10 +32,11 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
     excludedWorker: Worker | null = null,
   ): number | null {
     const candidates: Worker[] = [];
-    if (handle.runningWorker !== null) {
-      candidates.push(handle.runningWorker);
+    const runningWorker = hostExecutionState(handle).runningWorker;
+    if (runningWorker !== null) {
+      candidates.push(runningWorker);
     }
-    candidates.push(...handle.vforkReadyWorkers, ...handle.workers);
+    candidates.push(...hostExecutionState(handle).vforkReadyWorkers, ...handle.workers);
     const seen = new Set<Worker>();
     for (const candidate of candidates) {
       if (candidate === excludedWorker || seen.has(candidate)) {
@@ -50,9 +52,9 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
   }
 
   function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
-    for (let index = handle.vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
-      if (handle.vforkReadyWorkers[index] === worker) {
-        handle.vforkReadyWorkers.splice(index, 1);
+    for (let index = hostExecutionState(handle).vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
+      if (hostExecutionState(handle).vforkReadyWorkers[index] === worker) {
+        hostExecutionState(handle).vforkReadyWorkers.splice(index, 1);
       }
     }
   }
@@ -111,11 +113,11 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
       }
       deps.clearBlockedWorker(handle, worker);
       removeVforkReadyWorker(handle, worker);
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
       }
-      if (handle.vforkWorker === worker) {
-        handle.vforkWorker = null;
+      if (hostExecutionState(handle).vforkWorker === worker) {
+        hostExecutionState(handle).vforkWorker = null;
       }
       deps.appendWorkerDebugLog(handle, `prune:0x${thread.vmPtr.toString(16)}`);
       deps.appendRuntimeLifecycleEvent(

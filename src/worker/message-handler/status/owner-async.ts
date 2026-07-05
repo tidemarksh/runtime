@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../host-execution-state.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle, type ThreadWorkerState } from "../../types.js";
 import type {
   ThreadWorkerStatusMessage,
@@ -65,8 +66,8 @@ function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
     return false;
   }
 
-  if (handle.runningWorker === worker) {
-    handle.runningWorker = null;
+  if (hostExecutionState(handle).runningWorker === worker) {
+    hostExecutionState(handle).runningWorker = null;
   }
   clearThreadOwnerAsyncStatus(thread);
   clearThreadRunningGeneration(thread);
@@ -161,11 +162,11 @@ export function handleOwnerAsyncStatusReturn(args: {
     );
     return false;
   }
-  if (handle.runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
-    handle.runningWorker = null;
+  if (hostExecutionState(handle).runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
+    hostExecutionState(handle).runningWorker = null;
     clearThreadRunningGeneration(thread);
   }
-  const blocked = handle.hostBlockedWorkers.get(worker);
+  const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
   if (
     statusBelongsToHandle
     && blocked

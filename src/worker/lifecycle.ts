@@ -1,3 +1,4 @@
+import { hostExecutionState } from "./host-execution-state.js";
 import {
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
@@ -188,7 +189,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     exitCode: number,
     termSignal: number,
   ): boolean {
-    const snapshot = handle.vforkSnapshot;
+    const snapshot = hostExecutionState(handle).vforkSnapshot;
     if (snapshot === null || snapshot.vmPtr !== vmPtr) {
       return false;
     }

@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/host-boundary/state-sync.js";
@@ -212,14 +213,14 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   const pipeWorker = {} as Worker;
   const epollWorker = {} as Worker;
   const recvWorker = {} as Worker;
-  handle.hostBlockedWorkers.set(pipeWorker, {
+  hostExecutionState(handle).hostBlockedWorkers.set(pipeWorker, {
     vmPtr: 0x1234,
     status: handle.kernel.abi_status_pipe_wait(),
   } as never);
-  handle.hostBlockedWorkers.set(epollWorker, {
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, {
     status: handle.kernel.abi_status_epoll_wait(),
   } as never);
-  handle.hostBlockedWorkers.set(recvWorker, {
+  hostExecutionState(handle).hostBlockedWorkers.set(recvWorker, {
     status: handle.kernel.abi_status_socket_recv(),
   } as never);
 
@@ -247,10 +248,10 @@ test("waking sync drains supervisor resume before runtime host retry", async () 
   handle.kernelShare.members.add(handle);
   const pipeWorker = {} as Worker;
   const pumpProcess = vi.fn((member) => {
-    member.hostBlockedWorkers.delete(pipeWorker);
-    member.runningWorker = pipeWorker;
+    hostExecutionState(member).hostBlockedWorkers.delete(pipeWorker);
+    hostExecutionState(member).runningWorker = pipeWorker;
   });
-  handle.hostBlockedWorkers.set(pipeWorker, {
+  hostExecutionState(handle).hostBlockedWorkers.set(pipeWorker, {
     status: handle.kernel.abi_status_pipe_wait(),
   } as never);
 
@@ -266,7 +267,7 @@ test("waking sync drains supervisor resume before runtime host retry", async () 
   await helpers.requestPipeStateSync(handle, true);
 
   expect(pumpProcess).toHaveBeenCalledWith(handle);
-  expect(handle.runningWorker).toBe(pipeWorker);
+  expect(hostExecutionState(handle).runningWorker).toBe(pipeWorker);
   expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
 });
 
@@ -294,7 +295,7 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
   };
   setBlockedRpcPending(blockedEpoll as never, true);
   setBlockedRpcGeneration(blockedEpoll as never, 7);
-  handle.hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -324,7 +325,7 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   };
   setBlockedRpcPending(blockedPipe as never, true);
   setBlockedRpcGeneration(blockedPipe as never, 7);
-  handle.hostBlockedWorkers.set(pipeWorker, blockedPipe as never);
+  hostExecutionState(handle).hostBlockedWorkers.set(pipeWorker, blockedPipe as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -370,7 +371,7 @@ test("requestSocketStateSync applies socket payload state to fork-share members 
   parent.kernelShare = share;
   child.kernelShare = share;
   const recvWorker = {} as Worker;
-  child.hostBlockedWorkers.set(recvWorker, {
+  hostExecutionState(child).hostBlockedWorkers.set(recvWorker, {
     status: child.kernel.abi_status_socket_recv(),
   } as never);
 

@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { beforeEach, expect, test, vi } from "vite-plus/test";
 import {
   createRuntimeStateBridge,
@@ -382,7 +383,7 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
       } as const;
     }),
   });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 31, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 31, { pending: true }));
 
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   threadWorkerStates.set(worker, {
@@ -472,7 +473,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
   const handle = makeHandle(kernel, runtimeBridge, worker, {
     kernelWorkerRequest,
   });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 31, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 31, { pending: true }));
 
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   threadWorkerStates.set(worker, {
@@ -512,7 +513,7 @@ test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", a
   expect(handledStatuses).toEqual([]);
   expect(outcome.effects).toBeUndefined();
   expect(outcome.status).toBe(0);
-  expect(isBlockedRpcPending(handle.hostBlockedWorkers.get(worker))).toBe(false);
+  expect(isBlockedRpcPending(hostExecutionState(handle).hostBlockedWorkers.get(worker))).toBe(false);
 });
 
 test("resumeVforkExecveParentViaKernelWorker restores the parent before clearing vfork runtime state", async () => {
@@ -673,7 +674,7 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
     pid: 1,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 29, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 29, { pending: true }));
 
   const threadWorkerStates = new WeakMap<Worker, {
     vmPtr: number;
@@ -715,7 +716,7 @@ test("executeHostBlockedSyscallResume skips kernel-worker shared-state syncs dur
   expect(syncBlockedForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(syncSocketStateViaKernelWorker).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
-  expect(isBlockedRpcPending(handle.hostBlockedWorkers.get(worker))).toBe(false);
+  expect(isBlockedRpcPending(hostExecutionState(handle).hostBlockedWorkers.get(worker))).toBe(false);
 });
 
 test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-side resume", async () => {
@@ -790,7 +791,7 @@ test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-s
     memory,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 21, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 21, { pending: true }));
 
   const threadState = {
     vmPtr: 0x1234,
@@ -895,7 +896,7 @@ test("executeHostBlockedSyscallResume follows supervisor pipe defer action", asy
   } as unknown as KernelExports;
 
   const handle = makeHandle(kernel, runtimeBridge, worker, { memory });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 21, {
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 21, {
     pending: true,
     canonicalEofReady: true,
   }));
@@ -926,7 +927,7 @@ test("executeHostBlockedSyscallResume follows supervisor pipe defer action", asy
   expect(kernel.supervisor_blocked_pipe_resume_action).toHaveBeenCalledWith(0x1234);
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 21);
-  expect(isPipeCanonicalEofReady(handle.hostBlockedWorkers.get(worker))).toBe(true);
+  expect(isPipeCanonicalEofReady(hostExecutionState(handle).hostBlockedWorkers.get(worker))).toBe(true);
 });
 
 test("executeHostBlockedSyscallResume follows supervisor pipe direct action", async () => {
@@ -1001,7 +1002,7 @@ test("executeHostBlockedSyscallResume follows supervisor pipe direct action", as
   } as unknown as KernelExports;
 
   const handle = makeHandle(kernel, runtimeBridge, worker, { memory });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 21, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 21, { pending: true }));
 
   const threadState = {
     vmPtr: 0x1234,
@@ -1097,7 +1098,7 @@ test("executeHostBlockedSyscallResume syncs socket before mixed pipe supervisor 
   } as unknown as KernelExports;
 
   const handle = makeHandle(kernel, runtimeBridge, worker, { memory });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 21, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 21, { pending: true }));
 
   const threadState = {
     vmPtr: 0x1234,
@@ -1202,7 +1203,7 @@ test("executeHostBlockedSyscallResume queues the full socket read buffer after o
     memory,
     kernelWorkerRequest: vi.fn(async () => ({ type: "unexpected" }) as never),
   });
-  handle.hostBlockedWorkers.set(worker, blockedState(0x1234, 29, { pending: true }));
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blockedState(0x1234, 29, { pending: true }));
 
   const threadState = {
     vmPtr: 0x1234,

@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedStatusTransitionAction,
@@ -45,7 +46,7 @@ function finishStatusTransitionRpc(
   vmPtr: number,
   rpcGeneration: number,
 ): HostBlockedWorkerState | null {
-  const latestBlocked = handle.hostBlockedWorkers.get(worker);
+  const latestBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
   if (!latestBlocked || latestBlocked.vmPtr !== vmPtr) {
     return null;
   }
@@ -75,16 +76,16 @@ export async function executeHostBlockedStatusTransition(
   );
 
   if (transitionAction === "sync-pipe") {
-    if (handle.runningWorker === worker) {
-      handle.runningWorker = null;
+    if (hostExecutionState(handle).runningWorker === worker) {
+      hostExecutionState(handle).runningWorker = null;
     }
   }
 
   deps.blockWorker(handle, worker, status, vmPtr);
 
   if (transitionAction === "sync-pipe") {
-    if (handle.runningWorker === worker) {
-      handle.runningWorker = null;
+    if (hostExecutionState(handle).runningWorker === worker) {
+      hostExecutionState(handle).runningWorker = null;
     }
   }
 
@@ -93,7 +94,7 @@ export async function executeHostBlockedStatusTransition(
     return blockedOutcome(status);
   }
 
-  const blocked = handle.hostBlockedWorkers.get(worker);
+  const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
   const rpcGeneration = blocked ? beginStatusTransitionRpc(blocked) : -1;
   const finish = (): HostBlockedWorkerState | null =>
     finishStatusTransitionRpc(handle, worker, vmPtr, rpcGeneration);

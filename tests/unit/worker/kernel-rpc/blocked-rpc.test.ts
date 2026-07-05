@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/host-boundary/blocked-rpc-resume.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
@@ -173,7 +174,7 @@ test("blocked-rpc follows supervisor pipe defer action", async () => {
     status: kernel.abi_status_pipe_wait(),
   };
   setPipeCanonicalEofReady(blocked, true);
-  handle.hostBlockedWorkers.set(worker, blocked);
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
   const { deps, helpers } = makeHelpers(handle, worker);
 
   await expect(
@@ -188,7 +189,7 @@ test("blocked-rpc follows supervisor pipe defer action", async () => {
     vmPtr,
     kernel.abi_status_pipe_wait(),
   );
-  expect(isPipeCanonicalEofReady(handle.hostBlockedWorkers.get(worker))).toBe(true);
+  expect(isPipeCanonicalEofReady(hostExecutionState(handle).hostBlockedWorkers.get(worker))).toBe(true);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "blocked-rpc-defer-pipe-supervisor:1",

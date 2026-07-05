@@ -1,3 +1,4 @@
+import { hostExecutionState } from "./host-execution-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
@@ -24,11 +25,11 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
 
   function destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit: boolean): void {
     handle.exitInProgress = true;
-    for (const worker of [...handle.hostBlockedWorkers.keys()]) {
+    for (const worker of [...hostExecutionState(handle).hostBlockedWorkers.keys()]) {
       deps.clearBlockedWorker(handle, worker);
     }
-    handle.vforkReadyWorkers.length = 0;
-    handle.runningWorker = null;
+    hostExecutionState(handle).vforkReadyWorkers.length = 0;
+    hostExecutionState(handle).runningWorker = null;
     deps.clearVforkSnapshot(handle);
 
     const workers = new Set(handle.workers);

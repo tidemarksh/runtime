@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../host-execution-state.js";
 import { readKernelRuntimeState } from "../../../abi.js";
 import { publishKernelRuntimeState, wakeRuntimeBridge } from "../../../bridge/runtime-state.js";
 import {
@@ -135,7 +136,7 @@ function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: n
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
-  for (const blocked of handle.hostBlockedWorkers.values()) {
+  for (const blocked of hostExecutionState(handle).hostBlockedWorkers.values()) {
     if (isBlockedRpcPending(blocked)) {
       return true;
     }
@@ -158,7 +159,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       case "stale":
         return;
       case "blocked": {
-        const blocked = handle.hostBlockedWorkers.get(worker);
+        const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
           blocked.status = outcome.status;
         }
@@ -186,7 +187,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         status,
         threadVmPtr: thread.vmPtr,
         workerLogTail: handle.workerDebugLog.slice(-16),
-        skipVmPtrs: [handle.vforkSnapshot?.vmPtr ?? 0].filter((vmPtr) => vmPtr !== 0),
+        skipVmPtrs: [hostExecutionState(handle).vforkSnapshot?.vmPtr ?? 0].filter((vmPtr) => vmPtr !== 0),
       });
     };
     const workerStillOwnedByHandle = createWorkerOwnershipGuard(
@@ -331,15 +332,16 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_fault()) {
+      const vforkSnapshot = hostExecutionState(handle).vforkSnapshot;
       if (
-        handle.vforkSnapshot !== null
-        && handle.vforkWorker === worker
-        && handle.vforkSnapshot.vmPtr === thread.vmPtr
+        vforkSnapshot !== null
+        && hostExecutionState(handle).vforkWorker === worker
+        && vforkSnapshot.vmPtr === thread.vmPtr
       ) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `vfork-child-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-            + `:child=${handle.vforkSnapshot.childPid ?? "none"}`
+            + `:child=${vforkSnapshot.childPid ?? "none"}`
             + `:kernel_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
             + `:exit=${msg.exitCode}:${msg.termSignal}`
             + formatCompactDebugSuffix(msg.debug, VFORK_CHILD_FAULT_DEBUG_KEYS),
@@ -400,8 +402,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             + processTableDebug
             + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
         );
-        if (handle.runningWorker === worker) {
-          handle.runningWorker = null;
+        if (hostExecutionState(handle).runningWorker === worker) {
+          hostExecutionState(handle).runningWorker = null;
         }
         handle.workers.delete(worker);
         deps.threadWorkerStates.delete(worker);
@@ -463,8 +465,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (sec === 0n && nsec === 0n) {
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
         const clearYieldingWorker = (): void => {
-          if (handle.runningWorker === worker) {
-            handle.runningWorker = null;
+          if (hostExecutionState(handle).runningWorker === worker) {
+            hostExecutionState(handle).runningWorker = null;
           }
           clearThreadWaitingInWorkerStatus(thread);
         };
@@ -497,8 +499,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (hostTimer === undefined) {
         throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
       }
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
       }
       setThreadWaitingInWorkerStatus(thread, status);
       if (hostTimer !== null) {
@@ -799,26 +801,29 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (supervisorProcessStatusIsVforkWait(handle.kernel, status)) {
-      if (handle.vforkSnapshot === null) {
-        handle.vforkSnapshot = deps.captureVforkSnapshot(handle, thread);
-        handle.vforkWorker = worker;
+      const executionState = hostExecutionState(handle);
+      let vforkSnapshot = executionState.vforkSnapshot;
+      if (vforkSnapshot === null) {
+        vforkSnapshot = deps.captureVforkSnapshot(handle, thread);
+        executionState.vforkSnapshot = vforkSnapshot;
+        executionState.vforkWorker = worker;
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `vfork-wait-snapshot:capture:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-            + `:child=${handle.vforkSnapshot.childPid ?? "none"}`
+            + `:child=${vforkSnapshot.childPid ?? "none"}`
             + `:kernel_child=${handle.kernel.thread_vfork_child_pid()}`,
         );
       } else {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `vfork-wait-snapshot:reuse:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-            + `:snapshot=0x${handle.vforkSnapshot.vmPtr.toString(16)}`
-            + `:child=${handle.vforkSnapshot.childPid ?? "none"}`
-            + `:worker=${handle.vforkWorker === worker ? "match" : "mismatch"}`
+            + `:snapshot=0x${vforkSnapshot.vmPtr.toString(16)}`
+            + `:child=${vforkSnapshot.childPid ?? "none"}`
+            + `:worker=${executionState.vforkWorker === worker ? "match" : "mismatch"}`
             + `:kernel_child=${handle.kernel.thread_vfork_child_pid()}`,
         );
       }
-      if (handle.vforkSnapshot.childPid === null) {
+      if (vforkSnapshot.childPid === null) {
         deps.pumpProcess(handle);
         void deps.syncForkSharedStateViaKernelWorker(
           handle,
@@ -834,10 +839,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
               return;
             }
-            if (!handle.vforkSnapshot || handle.vforkSnapshot.vmPtr !== thread.vmPtr) {
+            const latestSnapshot = hostExecutionState(handle).vforkSnapshot;
+            if (!latestSnapshot || latestSnapshot.vmPtr !== thread.vmPtr) {
               return;
             }
-            if (handle.vforkSnapshot.childPid === null) {
+            if (latestSnapshot.childPid === null) {
               const provisionalChildPid = handle.kernel.thread_vfork_child_pid();
               if (provisionalChildPid > 0) {
                 deps.appendRuntimeLifecycleEvent(
@@ -879,8 +885,8 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (hostTimer === undefined) {
         throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
       }
-      if (handle.runningWorker === worker) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
       }
       deps.parkSupervisorFutexWait(
         handle,

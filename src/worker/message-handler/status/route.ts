@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../host-execution-state.js";
 import {
   attachKernelRuntimeState,
 } from "../../../abi.js";
@@ -111,8 +112,8 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     const threadGeneration = getThreadGeneration(thread);
     if (msg.generation !== undefined && msg.generation !== threadGeneration) {
-      if (handle.runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
-        handle.runningWorker = null;
+      if (hostExecutionState(handle).runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
+        hostExecutionState(handle).runningWorker = null;
         clearThreadRunningGeneration(thread);
       }
       deps.appendWorkerDebugLog(
@@ -135,7 +136,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     const transientProcessOwnerMismatch = processPidField !== null
       ? processPidField !== handle.pid
       : localProcessPid !== null && localProcessPid !== handle.pid;
-    const activeVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
+    const activeVforkWorker = hostExecutionState(handle).vforkSnapshot !== null && hostExecutionState(handle).vforkWorker === worker;
     const statusBelongsToHandle = !transientProcessOwnerMismatch || activeVforkWorker;
     const faultStatus = handle.kernel.abi_status_fault?.();
     const statusStateBelongsToHandle = statusBelongsToHandle
@@ -284,7 +285,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
 
-    const isRunningWorker = handle.runningWorker === worker;
+    const isRunningWorker = hostExecutionState(handle).runningWorker === worker;
     if (!isRunningWorker) {
       recordWorkerMessageDebugEvent(
         handle.workerMessageDebugStats,
@@ -401,7 +402,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
     if (isRunningWorker) {
-      handle.runningWorker = null;
+      hostExecutionState(handle).runningWorker = null;
       clearThreadRunningGeneration(thread);
       recordWorkerMessageDebugEvent(
         handle.workerMessageDebugStats,

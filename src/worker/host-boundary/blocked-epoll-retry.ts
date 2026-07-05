@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
@@ -78,7 +79,7 @@ function postSyncRetryActionFlags(
   handle: ProcessHandle,
 ): readonly SupervisorBlockedRetryActionFlag[] {
   const flags: SupervisorBlockedRetryActionFlag[] = ["wait-timer-already-checked"];
-  if (handle.runningWorker !== null) {
+  if (hostExecutionState(handle).runningWorker !== null) {
     flags.push("running-worker");
   }
   return flags;
@@ -107,15 +108,16 @@ function deferPostSyncRetry(
   worker: Worker,
   reason: string,
 ): void {
-  if (handle.runningWorker !== null) {
+  const runningWorker = hostExecutionState(handle).runningWorker;
+  if (runningWorker !== null) {
     wakeRuntimeBridge(handle.runtimeBridge);
   }
-  const runningThread = handle.runningWorker === null
+  const runningThread = runningWorker === null
     ? undefined
-    : deps.threadWorkerStates.get(handle.runningWorker);
+    : deps.threadWorkerStates.get(runningWorker);
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
-    `epoll-retry-skip:${handle.pid}:running=${handle.runningWorker !== null ? 1 : 0}:reason=${reason}`
+    `epoll-retry-skip:${handle.pid}:running=${runningWorker !== null ? 1 : 0}:reason=${reason}`
       + `:${deps.formatRunningRetryBlocker(handle, runningThread)}`,
   );
   deps.scheduleSupervisorBlockedRetry(

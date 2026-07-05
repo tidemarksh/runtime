@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../host-execution-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -79,9 +80,9 @@ async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Prom
     if (
       childHandle.exitInProgress
       || childHandle.workers.size === 0
-      || childHandle.hostBlockedWorkers.size > 0
-      || childHandle.runningWorker !== null
-      || childHandle.vforkReadyWorkers.length > 0
+      || hostExecutionState(childHandle).hostBlockedWorkers.size > 0
+      || hostExecutionState(childHandle).runningWorker !== null
+      || hostExecutionState(childHandle).vforkReadyWorkers.length > 0
     ) {
       return;
     }
@@ -315,7 +316,7 @@ export async function handlePlainFork(
     publishKernelRuntimeState(childHandle.runtimeBridge, childHandle.kernelState);
     deps.processHandles.set(childPid, childHandle);
     await deps.requestPipeStateSync(handle, true);
-    if (childHandle.runningWorker === null) {
+    if (hostExecutionState(childHandle).runningWorker === null) {
       await deps.requestPipeStateSync(childHandle, false);
       restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
       syncKernelShareOfdReservations(childHandle);

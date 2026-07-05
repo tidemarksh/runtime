@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../src/bridge/pipe.js";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
@@ -121,22 +122,25 @@ function makeHandle(
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     workers: new Set([worker]),
-    vforkReadyWorkers: [],
-    runningWorker: null,
-    hostBlockedWorkers: new Map(),
-    vforkSnapshot: {
-      vmPtr: 0x1234,
-      childPid: null,
-      nextPid: null,
-      pgid: null,
-      sid: null,
-      inheritedSharedOfdIds: [],
-    },
-    vforkWorker: worker,
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
   handle.kernelShare.members.add(handle);
+  const executionState = hostExecutionState(handle);
+  executionState.vforkSnapshot = {
+    vmPtr: 0x1234,
+    childPid: null,
+    nextPid: null,
+    pgid: null,
+    sid: null,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
+    inheritedSharedOfdIds: [],
+  };
+  executionState.vforkWorker = worker;
 
   return {
     handle,
@@ -289,7 +293,7 @@ test("resumeVforkParentAfterChildExit ignores stale worker completions after the
   expect(resumed).toBe(false);
   expect(spies.recordChildExitViaKernelWorker).not.toHaveBeenCalled();
   expect(spies.resumeParent).not.toHaveBeenCalled();
-  expect(spies.handle.vforkSnapshot).not.toBeNull();
+  expect(hostExecutionState(spies.handle).vforkSnapshot).not.toBeNull();
 });
 
 test("resumeVforkParentAfterChildExit delegates fresh wait status for sequential child exits", () => {
@@ -315,15 +319,20 @@ test("resumeVforkParentAfterChildExit delegates fresh wait status for sequential
     7 << 8,
   );
 
-  spies.handle.vforkSnapshot = {
+  hostExecutionState(spies.handle).vforkSnapshot = {
     vmPtr: 0x1234,
     childPid: null,
     nextPid: null,
     pgid: null,
     sid: null,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
     inheritedSharedOfdIds: [],
   };
-  spies.handle.vforkWorker = spies.handle.worker;
+  hostExecutionState(spies.handle).vforkWorker = spies.handle.worker;
   spies.recordChildExitViaKernelWorker.mockClear();
   spies.resumeVforkParentViaKernelWorker.mockClear();
   spies.resumeParent.mockClear();
@@ -394,15 +403,20 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
     new TextEncoder().encode("parent-after-1\n"),
   )).toMatchObject({ written: "parent-after-1\n".length, broken: false });
 
-  spies.handle.vforkSnapshot = {
+  hostExecutionState(spies.handle).vforkSnapshot = {
     vmPtr: 0x1234,
     childPid: null,
     nextPid: null,
     pgid: null,
     sid: null,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
     inheritedSharedOfdIds: [],
   };
-  spies.handle.vforkWorker = spies.handle.worker;
+  hostExecutionState(spies.handle).vforkWorker = spies.handle.worker;
 
   resumed = lifecycle.resumeVforkParentAfterChildExit(
     spies.handle,

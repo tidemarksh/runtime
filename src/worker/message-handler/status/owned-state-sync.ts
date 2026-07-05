@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../host-execution-state.js";
 import { collectHeldEpollOfdIds } from "../../ownership/ofd-table.js";
 import {
   kernelShareOtherMembers,
@@ -68,7 +69,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     if (isRunningWorker && hasProcessMemfsEffect) {
       setProcessMemfsDirty(handle, true);
     }
-    const activeVforkChildOwnerMismatch = handle.vforkWorker === worker
+    const activeVforkChildOwnerMismatch = hostExecutionState(handle).vforkWorker === worker
       && supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
     const shouldSyncForkSharedState = workerOwnsAuthoritativeState
       && handle.kernelWorkerRequest !== null

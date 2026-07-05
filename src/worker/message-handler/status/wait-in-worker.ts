@@ -1,3 +1,4 @@
+import { hostExecutionState } from "../../host-execution-state.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "../../ownership/pipe-control.js";
@@ -66,7 +67,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     if (epollWaitStatus && epollTimeoutMs === 0) {
       clearThreadWaitingInWorkerStatus(thread);
       if (isRunningWorker) {
-        handle.runningWorker = null;
+        hostExecutionState(handle).runningWorker = null;
       }
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);
       deps.notifyWorkerStatusProgress(handle);
@@ -81,7 +82,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
         throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
       }
       if (isRunningWorker) {
-        handle.runningWorker = null;
+        hostExecutionState(handle).runningWorker = null;
         clearThreadRunningGeneration(thread);
       }
       deps.parkSupervisorFutexWait(
@@ -100,13 +101,13 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
 
     setThreadWaitingInWorkerStatus(thread, msg.status);
     if (isRunningWorker) {
-      handle.runningWorker = null;
+      hostExecutionState(handle).runningWorker = null;
       clearThreadRunningGeneration(thread);
     }
     if (
-      handle.vforkSnapshot !== null
-      && handle.vforkWorker !== null
-      && handle.vforkWorker !== worker
+      hostExecutionState(handle).vforkSnapshot !== null
+      && hostExecutionState(handle).vforkWorker !== null
+      && hostExecutionState(handle).vforkWorker !== worker
     ) {
       deps.appendWorkerDebugLog(
         handle,
