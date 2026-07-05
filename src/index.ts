@@ -50,6 +50,11 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "./worker/guest-write-watch-state.js";
+import {
+  setProcessOnError,
+  setProcessOnExit,
+  setProcessOnStdout,
+} from "./worker/process-callback-state.js";
 import { processLastDebugMessage } from "./worker/process-debug-state.js";
 import { outputBacklog } from "./worker/stdio-buffer-state.js";
 
@@ -407,19 +412,19 @@ export class Runtime {
     });
 
     const proc = new Process(pid, handle);
-    handle.onExit = (code) => {
+    setProcessOnExit(handle, (code) => {
       this.processes.delete(pid);
       proc.exitCode = code;
       proc.exited = true;
       proc._onExit?.(code);
-    };
-    handle.onError = (error) => {
+    });
+    setProcessOnError(handle, (error) => {
       this.processes.delete(pid);
       proc.exitCode = 1;
       proc.exited = true;
       proc.fatalError = error;
       proc._onError?.(error);
-    };
+    });
 
     this.processes.set(pid, handle);
     return proc;
@@ -742,7 +747,7 @@ export class Runtime {
     if (!handle) {
       throw new Error(`unknown pid: ${pid}`);
     }
-    handle.onStdout = cb;
+    setProcessOnStdout(handle, cb);
     const backlog = outputBacklog(handle);
     for (const chunk of backlog) {
       cb(chunk);
@@ -838,7 +843,7 @@ export class Process {
   }
 
   onStdout(cb: (data: Uint8Array) => void): void {
-    this.handle.onStdout = cb;
+    setProcessOnStdout(this.handle, cb);
     const backlog = outputBacklog(this.handle);
     for (const chunk of backlog) {
       cb(chunk);

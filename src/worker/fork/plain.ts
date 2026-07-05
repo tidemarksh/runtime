@@ -4,6 +4,7 @@ import {
   processDebugCommand,
   processLastDebugMessage,
 } from "../process-debug-state.js";
+import { setProcessOnError } from "../process-callback-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import {
   attachKernelRuntimeState,
@@ -229,7 +230,7 @@ export async function handlePlainFork(
       debugCommand: processDebugCommand(handle),
       workerDebugLabel: "spawn:plain-fork",
     });
-    childHandle.onError = (error: Error) => {
+    setProcessOnError(childHandle, (error: Error) => {
       if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
         return;
       }
@@ -239,7 +240,7 @@ export async function handlePlainFork(
         + ` worker_log=[${childLogTail}]`
         + ` cause=${error.message}`,
       ));
-    };
+    });
     detachInheritedHostStdioFromChild(childHandle);
     const childHeldOfdIds = collectProcessHeldOfds(childHandle);
     const sharedOfdIds = activeKernelShareOfdIds(handle);

@@ -67,6 +67,7 @@ import {
   processLastDebugMessage,
   setProcessLastDebugMessage,
 } from "../process-debug-state.js";
+import { setProcessOnError } from "../process-callback-state.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import {
@@ -616,7 +617,7 @@ export async function handleVforkExecve(
       : decodeExecveBytes(execveGuestPayload.path),
     workerDebugLabel: "spawn:vfork-execve",
   });
-  childHandle.onError = (error: Error) => {
+  setProcessOnError(childHandle, (error: Error) => {
     if (handle.pid <= 0 || deps.processHandles.get(handle.pid) !== handle) {
       return;
     }
@@ -626,7 +627,7 @@ export async function handleVforkExecve(
       + ` worker_log=[${childLogTail}]`
       + ` cause=${error.message}`,
     ));
-  };
+  });
   setGuestMemoryPolicyLimit(
     childHandle.kernel,
     childHandle.vmPtr,

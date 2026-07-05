@@ -16,11 +16,12 @@ import {
 } from "../ownership/pipe-slot.js";
 import { supervisorProcessFdIsOpen } from "../ownership/fd-table.js";
 import { replacePendingPipeSlotSnapshotForSlot } from "../pending-pipe-slot-state.js";
+import { processOnStdout } from "../process-callback-state.js";
 import { outputBacklog, stdinQueue } from "../stdio-buffer-state.js";
 import type { ProcessHandle, SharedHostStdio } from "../types.js";
 
 function flushOutputBacklog(handle: ProcessHandle): void {
-  const onStdout = handle.onStdout;
+  const onStdout = processOnStdout(handle);
   const backlog = outputBacklog(handle);
   if (!onStdout || backlog.length === 0) {
     return;

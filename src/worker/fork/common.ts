@@ -8,6 +8,7 @@ import {
   setProcessDebugCommand,
   setProcessLastDebugMessage,
 } from "../process-debug-state.js";
+import { setProcessOnError } from "../process-callback-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
@@ -70,15 +71,18 @@ export function createForkChildHandle({
     kernelWorkerRequest: parent.kernelWorkerRequest,
     networkBridge: parent.networkBridge,
     workers: new Set<Worker>(),
-    onError: createInheritedErrorSink(
+  };
+  setProcessDebugCommand(childHandle, debugCommand);
+  setProcessLastDebugMessage(childHandle, undefined);
+  setProcessOnError(
+    childHandle,
+    createInheritedErrorSink(
       parent,
       childPid,
       (pid) => deps.processHandles.get(pid),
       deps.failProcess,
     ),
-  };
-  setProcessDebugCommand(childHandle, debugCommand);
-  setProcessLastDebugMessage(childHandle, undefined);
+  );
   copyGuestWriteWatchRegions(childHandle, parent);
   copyProcessMemoryOwnership(childHandle, parent);
   copyNetworkSocketState(childHandle, parent);

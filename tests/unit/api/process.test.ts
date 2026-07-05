@@ -4,6 +4,7 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "../../../src/worker/guest-write-watch-state.js";
+import { processOnStdout } from "../../../src/worker/process-callback-state.js";
 import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import { outputBacklog } from "../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
@@ -85,7 +86,7 @@ test("Process.onStdout flushes queued backlog before delivering later bytes", ()
   proc.onStdout((data) => {
     seen.push(decoder.decode(data));
   });
-  handle.onStdout?.(encoder.encode("stdout-2\n"));
+  processOnStdout(handle)?.(encoder.encode("stdout-2\n"));
 
   expect(seen).toEqual([
     "stdout-1\n",

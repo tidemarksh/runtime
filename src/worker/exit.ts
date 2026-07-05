@@ -5,6 +5,11 @@ import {
   processLastDebugMessage,
   setProcessLastDebugMessage,
 } from "./process-debug-state.js";
+import {
+  processOnError,
+  processOnStdout,
+  takeProcessOnExit,
+} from "./process-callback-state.js";
 import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { outputBacklog } from "./stdio-buffer-state.js";
@@ -1641,7 +1646,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       return `${label}=slot${pipeSlot}/h${head}/t${tail}/ro${readOpen}/wo${writeOpen}/u${unread}/d=${JSON.stringify(preview)}`;
     };
     return [
-      `on=${handle.onStdout ? 1 : 0}`,
+      `on=${processOnStdout(handle) ? 1 : 0}`,
       `backlog=${outputBacklog(handle).length}`,
       formatSlot("stdout", handle.hostStdio.stdoutPipe),
       formatSlot("stderr", handle.hostStdio.stderrPipe),
@@ -2066,9 +2071,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         return;
       }
       exitNotified = true;
-      const onExit = handle.onExit;
-      handle.onExit = undefined;
-      onExit?.(exitCode);
+      takeProcessOnExit(handle)?.(exitCode);
     };
 
     try {
@@ -2163,7 +2166,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       processLastDebugMessage(handle) ?? "debug=n/a",
     ].join(" "));
     deps.destroyProcessHandle(handle, 15, false);
-    handle.onError?.(error);
+    processOnError(handle)?.(error);
   }
 
   return {

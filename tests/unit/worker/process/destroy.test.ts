@@ -1,6 +1,7 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerDestroyHelpers } from "../../../../src/worker/destroy.js";
+import { setProcessOnExit } from "../../../../src/worker/process-callback-state.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { FakeWorker } from "../../../support/fake-worker.js";
@@ -148,22 +149,25 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
 });
 
 test("destroyRuntimeProcesses only notifies exits for handles in the selected runtime", () => {
+  const runtime1RootOnExit = vi.fn();
   const runtime1Root = makeHandle({
     runtimeId: 1,
     pid: 1,
-    onExit: vi.fn(),
   });
+  setProcessOnExit(runtime1Root, runtime1RootOnExit);
+  const runtime1ChildOnExit = vi.fn();
   const runtime1Child = makeHandle({
     runtimeId: 1,
     pid: 2,
     parentPid: 1,
-    onExit: vi.fn(),
   });
+  setProcessOnExit(runtime1Child, runtime1ChildOnExit);
+  const runtime2OnExit = vi.fn();
   const runtime2Handle = makeHandle({
     runtimeId: 2,
     pid: 3,
-    onExit: vi.fn(),
   });
+  setProcessOnExit(runtime2Handle, runtime2OnExit);
   const processHandles = new Map<number, ProcessHandle>([
     [1, runtime1Root],
     [2, runtime1Child],
@@ -191,8 +195,8 @@ test("destroyRuntimeProcesses only notifies exits for handles in the selected ru
 
   destroyHelpers.destroyRuntimeProcesses(1, 9);
 
-  expect(runtime1Root.onExit).toHaveBeenCalledWith(137);
-  expect(runtime1Child.onExit).toHaveBeenCalledWith(137);
-  expect(runtime2Handle.onExit).not.toHaveBeenCalled();
+  expect(runtime1RootOnExit).toHaveBeenCalledWith(137);
+  expect(runtime1ChildOnExit).toHaveBeenCalledWith(137);
+  expect(runtime2OnExit).not.toHaveBeenCalled();
   expect(processHandles.has(3)).toBe(true);
 });

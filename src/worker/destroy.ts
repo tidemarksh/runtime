@@ -2,6 +2,7 @@ import { hostExecutionState } from "./host-execution-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
+import { processOnExit } from "./process-callback-state.js";
 import { processDebugCommand } from "./process-debug-state.js";
 import { setProcessExitInProgress } from "./process-lifecycle-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
@@ -71,7 +72,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     }
 
     if (notifyExit) {
-      handle.onExit?.(128 + signal);
+      processOnExit(handle)?.(128 + signal);
     }
   }
 
