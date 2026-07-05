@@ -52,6 +52,7 @@ import {
   syncSocketStateViaKernelWorker,
   applySocketStateFromKernelWorker,
 } from "../sync.js";
+import { kernelShareMemberList } from "../kernel-share.js";
 import type { SyncCause } from "../contracts/sync.js";
 import type {
   ProcessHandle,
@@ -119,7 +120,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     wakeSource: SupervisorBlockedWaitWakeSource,
     pipeUsed?: bigint,
   ): void {
-    for (const member of handle.kernelShare.members) {
+    for (const member of kernelShareMemberList(handle)) {
       if (pipeUsed !== undefined) {
         member.kernelState = {
           ...member.kernelState,
@@ -210,7 +211,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     socketUsed: number,
     netBufUsed: bigint,
   ): void {
-    for (const member of handle.kernelShare.members) {
+    for (const member of kernelShareMemberList(handle)) {
       member.kernelState = {
         ...member.kernelState,
         socketUsed,
@@ -516,7 +517,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           assertProcessIdentity(handle, "requestSocketStateSync");
           if (shouldWake) {
             if (socketState) {
-              for (const member of handle.kernelShare.members) {
+              for (const member of kernelShareMemberList(handle)) {
                 if (member !== handle && kernelWorkerOwnsSocketState(member)) {
                   applySocketStateFromKernelWorker(member, socketState);
                 }

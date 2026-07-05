@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import {
   processHostStdio,
@@ -409,7 +410,7 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
     stderrPipe: 3,
     refCount: 1,
   });
-  expect(handle.kernelShare.members.has(handle)).toBe(true);
+  expect(kernelShareMembers(handle).has(handle)).toBe(true);
   expect(processDebugCommand(handle)).toBe("/bin/test");
   expect(processHandles.size).toBe(0);
   expect(attachThreadWorker).toHaveBeenCalledWith(handle, {

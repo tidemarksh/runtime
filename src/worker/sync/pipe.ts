@@ -23,6 +23,7 @@ import {
   restoreRuntimeNetworkKernelState
 } from "./shared.js";
 import {
+  kernelShareMemberList,
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
@@ -95,7 +96,7 @@ export async function syncPipeStateViaKernelWorker(
     handle.vmPtr,
     runtimeNetworkSocketOfdIds,
   );
-  const preservedRuntimeNetworkKernelStates = [...handle.kernelShare.members].map((member) =>
+  const preservedRuntimeNetworkKernelStates = kernelShareMemberList(handle).map((member) =>
     snapshotRuntimeNetworkKernelState(member)
   );
   const pipeOfdIds = [...new Set([
@@ -121,7 +122,7 @@ export async function syncPipeStateViaKernelWorker(
     handle,
     `pipe-sync-request-slots:${handle.pid}:${formatPipeSnapshotDebug("slots", pipeSlots)}`,
   );
-  const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
+  const networkSocketSnapshots = snapshotNetworkBridgeSocketState(kernelShareMemberList(handle));
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   const applyFdEntries = hostExecutionState(handle).runningWorker === null
     && hostExecutionState(handle).vforkReadyWorkers.length === 0

@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
   addProcessWorker,
@@ -906,7 +907,7 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
     runtimeId: 99,
     networkBridge: bridge,
   };
-  handle.kernelShare.members.add(parent as never);
+  addKernelShareMember(handle, parent as never);
   const deps = makeDeps(worker);
   deps.processHandles.set(1, parent as never);
   deps.processHandles.set(4, handle as never);
@@ -962,7 +963,7 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
   networkConnections(parent).set(3, connection);
   parent.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 12 : 0);
   parent.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 12 ? 8 : 0);
-  handle.kernelShare.members.add(parent as never);
+  addKernelShareMember(handle, parent as never);
   const deps = makeDeps(worker);
   deps.processHandles.set(1, parent as never);
   deps.processHandles.set(4, handle as never);

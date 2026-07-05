@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
@@ -1666,7 +1667,7 @@ test("STATUS_OK syncs fork-shared OFD state through kernel-worker", async () => 
   const ofdId = 5;
   new DataView(kernel.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + ofdId * 32, 6, true);
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? ofdId : 0);
-  handle.kernelShare.sharedOfdIds.add(ofdId);
+  addKernelShareSharedOfdId(handle, ofdId);
 
   const worker = createdWorkers[0];
   emitReady(worker);

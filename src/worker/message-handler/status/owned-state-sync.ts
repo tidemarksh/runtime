@@ -2,6 +2,8 @@ import { hostExecutionState } from "../../host-execution-state.js";
 import { collectHeldEpollOfdIds } from "../../ownership/ofd-table.js";
 import {
   kernelShareOtherMembers,
+  kernelShareMemberList,
+  kernelShareSharedOfdIds,
   reconcileKernelSharePipeControl,
 } from "../../kernel-share.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
@@ -57,7 +59,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok()
       && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
     const hasForkSharedEffect = (completedSyncEffects & syncEffects.syncEffectForkSharedOfdState) !== 0;
-    const forkSharedHasTrackedState = (handle.kernelShare.sharedOfdIds?.size ?? 0) > 0
+    const forkSharedHasTrackedState = kernelShareSharedOfdIds(handle).size > 0
       || kernelShareOtherMembers(handle).length > 0;
     const shouldRequestForkSharedForEffect = shouldRequestForkSharedStateForEffect(
       handle,
@@ -162,7 +164,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           return;
         }
         continueAfterOwnedStateSync();
-        for (const member of handle.kernelShare.members) {
+        for (const member of kernelShareMemberList(handle)) {
           deps.pumpProcess(member);
         }
       })

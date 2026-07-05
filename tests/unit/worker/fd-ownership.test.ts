@@ -18,10 +18,17 @@ import {
   trackForkSharedOfds,
 } from "../../../src/worker/ownership/ofd-table.js";
 import {
+  addKernelShareMember,
+  addKernelShareSharedOfdId,
+  kernelShareHasSharedOfdId,
+  kernelShareMembers,
+  kernelShareSharedOfdIdList,
+  processKernelShareGroup,
   reconcileKernelSharePipeControl,
   restoreLocalPipeSlots,
   restoreLocalOfdSlots,
   snapshotLocalPipeSlots,
+  setProcessKernelShareGroup,
 } from "../../../src/worker/kernel-share.js";
 import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import { refreshPipeControlFromKernelShare } from "../../../src/worker/ownership/pipe-control.js";
@@ -604,7 +611,7 @@ test("trackForkSharedOfds skips hidden stdio pipes and retains non-stdio OFDs on
   const retained = trackForkSharedOfds(handle, handle.vmPtr, true);
 
   expect(retained).toEqual([11, 13]);
-  expect([...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right)).toEqual([11, 13]);
+  expect(kernelShareSharedOfdIdList(handle).sort((left, right) => left - right)).toEqual([11, 13]);
   expect(kernel.retainOfd).toHaveBeenCalledWith(11);
   expect(kernel.retainOfd).toHaveBeenCalledWith(13);
 });
@@ -616,12 +623,12 @@ test("activeKernelShareOfdIds ignores stale entries and restoreLocalOfdSlots res
   const siblingKernel = makeKernel(siblingMemory);
   const owner = makeHandle(ownerKernel, ownerMemory);
   const sibling = makeHandle(siblingKernel, siblingMemory);
-  owner.kernelShare.members.add(owner);
-  owner.kernelShare.members.add(sibling);
-  sibling.kernelShare = owner.kernelShare;
-  owner.kernelShare.sharedOfdIds.add(11);
-  owner.kernelShare.sharedOfdIds.add(13);
-  owner.kernelShare.sharedOfdIds.add(31);
+  addKernelShareMember(owner);
+  addKernelShareMember(owner, sibling);
+  setProcessKernelShareGroup(sibling, processKernelShareGroup(owner));
+  addKernelShareSharedOfdId(owner, 11);
+  addKernelShareSharedOfdId(owner, 13);
+  addKernelShareSharedOfdId(owner, 31);
   ownerKernel.setFdMap(new Map([[3, 13]]));
   siblingKernel.setFdMap(new Map([[4, 11]]));
   seedOfd(siblingMemory, sibling.kernelState.ofdTablePtr, 11, FD_TYPE_FILE, 0, 0xbb);
@@ -729,7 +736,7 @@ test("kernel-share pipe reconcile applies supervisor host stdio pipe counts", ()
   kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(processStderrPipe(handle)));
   kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => slot === processStderrPipe(handle) ? 1 : 0;
   kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => slot === processStderrPipe(handle) ? 1 : 0;
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const view = new DataView(memory.buffer);
   const slotBase = handle.kernelState.pipeBase + processStderrPipe(handle) * (32 + 65_536);
@@ -754,7 +761,7 @@ test("kernel-share pipe reconcile does not infer host stdio counts over supervis
   kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(processStderrPipe(handle)));
   kernel.supervisor_process_pipe_read_open_count = () => 0;
   kernel.supervisor_process_pipe_write_open_count = () => 0;
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const view = new DataView(memory.buffer);
   const slotBase = handle.kernelState.pipeBase + processStderrPipe(handle) * (32 + 65_536);
@@ -779,7 +786,7 @@ test("kernel-share pipe reconcile uses supervisor endpoint counts when available
   kernel.supervisor_process_pipe_used_mask = () => 1n | (1n << BigInt(pipeSlot));
   kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 2 : 0);
   kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 1 : 0);
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   reconcileKernelSharePipeControl(handle);
 
@@ -799,7 +806,7 @@ test("pipe-control refresh uses supervisor endpoint counts when available", () =
   kernel.setFdMap(new Map([[3, 18]]));
   kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 1 : 0);
   kernel.supervisor_process_pipe_write_open_count = (_vmPtr, slot) => (slot === pipeSlot ? 2 : 0);
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   refreshPipeControlFromKernelShare(handle);
 
@@ -820,7 +827,7 @@ test("kernel-share pipe reconcile does not resurrect closed normal pipe writers"
   kernel.setFdMap(new Map([
     [3, 18],
   ]));
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const view = new DataView(memory.buffer);
   const slotBase = handle.kernelState.pipeBase + pipeSlot * (32 + 65_536);

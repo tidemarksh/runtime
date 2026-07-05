@@ -1,8 +1,9 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
 import {
   getHandleForkSharedSync,
-  getKernelShareForkSharedSync,
+  getProcessKernelShareForkSharedSync,
   setActiveForkSharedSync,
 } from "../../../../src/worker/fork-shared-sync-state.js";
 import {
@@ -559,7 +560,7 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     guestWriteWatchRegions: [],
   } as ProcessHandle;
   setProcessDebugCommand(handle, "");
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   return handle;
 }
 
@@ -658,9 +659,9 @@ test("adoptKernelStateForHandle uses supervisor pipe-used authority when availab
 test("fork-shared sync keeps a pipe reader target that also owns runtime network state", async () => {
   const child = makeHandle(7, new Map([[5, 8]]));
   const parent = makeHandle(3, new Map([[4, 7], [9, 19]]));
-  child.kernelShare.members.add(parent);
-  parent.kernelShare = child.kernelShare;
-  child.kernelShare.sharedOfdIds.add(8);
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 8);
 
   seedOfd(child.memory, child.kernelState, 8, FD_TYPE_PIPE, 6, -11);
   seedOfd(parent.memory, parent.kernelState, 7, FD_TYPE_PIPE, 6, 10);
@@ -690,9 +691,9 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
 test("fork-shared sync preserves epoll watched fd ownership and local epoll state", async () => {
   const child = makeHandle(7, new Map([[4, 10], [11, 12]]));
   const parent = makeHandle(3, new Map([[13, 12]]));
-  child.kernelShare.members.add(parent);
-  parent.kernelShare = child.kernelShare;
-  child.kernelShare.sharedOfdIds.add(12);
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 12);
   const originalEpollTablePtr = child.kernelState.epollTablePtr;
 
   seedOfd(child.memory, child.kernelState, 10, FD_TYPE_EPOLL, 0, -1);
@@ -728,7 +729,7 @@ test("fork-shared sync preserves epoll watched fd ownership and local epoll stat
 
 test("pipe-control reconciliation preserves live writer when slot counters are stale closed", () => {
   const handle = makeHandle(1, new Map([[12, 12], [13, 13]]));
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   seedOfd(handle.memory, handle.kernelState, 12, FD_TYPE_PIPE, 6, 10);
   seedOfd(handle.memory, handle.kernelState, 13, FD_TYPE_PIPE, 6, -11);
   seedPipeSlot(handle.memory, handle.kernelState, 6, 0, 0);
@@ -768,9 +769,9 @@ test("kernel socket fd state detection uses supervisor socket-held authority", (
 test("fork-shared delta skips regular file OFDs held only by a peer", async () => {
   const child = makeHandle(7, new Map());
   const parent = makeHandle(3, new Map([[4, 12]]));
-  child.kernelShare.members.add(parent);
-  parent.kernelShare = child.kernelShare;
-  child.kernelShare.sharedOfdIds.add(12);
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 12);
 
   seedOfd(child.memory, child.kernelState, 12, FD_TYPE_FILE, 44, 21);
   seedOfd(parent.memory, parent.kernelState, 12, FD_TYPE_FILE, 44, 21);
@@ -789,9 +790,9 @@ test("fork-shared delta skips regular file OFDs held only by a peer", async () =
 test("fork-shared delta prunes stale shared OFDs when no sync is needed", async () => {
   const child = makeHandle(7, new Map());
   const parent = makeHandle(3, new Map());
-  child.kernelShare.members.add(parent);
-  parent.kernelShare = child.kernelShare;
-  child.kernelShare.sharedOfdIds.add(12);
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 12);
 
   seedOfd(child.memory, child.kernelState, 12, FD_TYPE_PIPE, 4, -1);
   seedOfd(parent.memory, parent.kernelState, 12, FD_TYPE_PIPE, 4, -1);
@@ -804,16 +805,16 @@ test("fork-shared delta prunes stale shared OFDs when no sync is needed", async 
     sourceVmPtr: child.vmPtr,
   });
 
-  expect(child.kernelShare.sharedOfdIds.has(12)).toBe(false);
+  expect(kernelShareHasSharedOfdId(child, 12)).toBe(false);
   expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
 });
 
 test("fork-shared tracking prunes regular file OFDs without a peer", async () => {
   const child = makeHandle(7, new Map([[3, 12]]));
   const parent = makeHandle(3, new Map());
-  child.kernelShare.members.add(parent);
-  parent.kernelShare = child.kernelShare;
-  child.kernelShare.sharedOfdIds.add(12);
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 12);
 
   seedOfd(child.memory, child.kernelState, 12, FD_TYPE_FILE, 44, 21);
 
@@ -825,7 +826,7 @@ test("fork-shared tracking prunes regular file OFDs without a peer", async () =>
     sourceVmPtr: child.vmPtr,
   });
 
-  expect(child.kernelShare.sharedOfdIds.has(12)).toBe(false);
+  expect(kernelShareHasSharedOfdId(child, 12)).toBe(false);
   expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
 });
 
@@ -852,18 +853,18 @@ test("blocked fork-shared sync clears a stale active sync before waiting", async
 
   expect(result).toBe("done");
   expect(getHandleForkSharedSync(handle)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare)).toBeNull();
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBeNull();
 });
 
 test("blocked fork-shared sync registers its active gate for stale-source clearing", async () => {
   const handle = makeHandle(7, new Map([[3, 12]]));
   const peer = makeHandle(3, new Map([[4, 13]]));
-  handle.kernelShare.members.add(peer);
-  peer.kernelShare = handle.kernelShare;
+  addKernelShareMember(handle, peer);
+  setProcessKernelShareGroup(peer, processKernelShareGroup(handle));
   seedOfd(handle.memory, handle.kernelState, 12, FD_TYPE_PIPE, 4, 10);
   seedOfd(peer.memory, peer.kernelState, 13, FD_TYPE_PIPE, 4, -11);
-  handle.kernelShare.sharedOfdIds.add(12);
-  handle.kernelShare.sharedOfdIds.add(13);
+  addKernelShareSharedOfdId(handle, 12);
+  addKernelShareSharedOfdId(handle, 13);
   let syncRequests = 0;
   handle.kernelWorkerRequest = vi.fn(async (msg) => {
     if (msg.type !== "sync-fork-shared-state") {

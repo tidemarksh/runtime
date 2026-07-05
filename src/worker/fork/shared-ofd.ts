@@ -5,6 +5,12 @@ import {
   collectProcessHeldOfds,
 } from "../ownership/ofd-table.js";
 import {
+  addKernelShareSharedOfdId,
+  deleteKernelShareSharedOfdId,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+} from "../kernel-share.js";
+import {
   supervisorOfdFdType,
   supervisorOfdHostFd,
   supervisorOfdIno,
@@ -179,16 +185,16 @@ export function reconcileInheritedSharedOfdsAfterVforkExecve(
   inheritedSharedOfdIds: Iterable<number>,
 ): void {
   const heldByExistingMembers = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       heldByExistingMembers.add(ofdId);
     }
   }
   for (const ofdId of inheritedSharedOfdIds) {
     if (heldByExistingMembers.has(ofdId)) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
+      addKernelShareSharedOfdId(handle, ofdId);
     } else {
-      handle.kernelShare.sharedOfdIds.delete(ofdId);
+      deleteKernelShareSharedOfdId(handle, ofdId);
     }
   }
 }
@@ -202,14 +208,14 @@ export function trackVforkExecveChildSharedOfds(
       .map((entry) => entry.ofdId)
       .filter((ofdId) => ofdId > 0 && ofdId < childHandle.kernel.abi_max_fds()),
   );
-  for (const ofdId of childHandle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(childHandle)) {
     if (!execOfdIds.has(ofdId)) {
-      childHandle.kernelShare.sharedOfdIds.delete(ofdId);
+      deleteKernelShareSharedOfdId(childHandle, ofdId);
     }
   }
   for (const entry of childExecFdEntries) {
     if (entry.ofdId > 0 && entry.ofdId < childHandle.kernel.abi_max_fds()) {
-      childHandle.kernelShare.sharedOfdIds.add(entry.ofdId);
+      addKernelShareSharedOfdId(childHandle, entry.ofdId);
     }
   }
 }

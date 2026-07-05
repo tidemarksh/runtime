@@ -16,7 +16,7 @@ import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import { guestWriteWatchRegions } from "../guest-write-watch-state.js";
 import {
   clearForkSharedSyncIfCurrent,
-  getKernelShareForkSharedSync,
+  getProcessKernelShareForkSharedSync,
 } from "../fork-shared-sync-state.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
 import type {
@@ -443,7 +443,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (processExitInProgress(handle)) {
       return;
     }
-    const forkSharedSyncPromise = getKernelShareForkSharedSync(handle.kernelShare);
+    const forkSharedSyncPromise = getProcessKernelShareForkSharedSync(handle);
     if (forkSharedSyncPromise !== null) {
       const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
       if (staleGate !== null) {

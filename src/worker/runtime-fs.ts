@@ -3,6 +3,7 @@ import type { FsSnapshotEntry } from "../fs/types.js";
 import { detachedKernelScratchBase } from "./kernel-scratch.js";
 import { normalizePath, preloadSnapshotEntries } from "./process-fs.js";
 import { isProcessMemfsDirty } from "./process-memfs-state.js";
+import { processKernelShareGroup } from "./kernel-share.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import type {
   KernelShareGroup,
@@ -127,7 +128,7 @@ export function flushRuntimeFsStateFromDirtyHandle(
       continue;
     }
     const representative = context.kernelShareRepresentative(handle) ?? handle;
-    liveRepresentatives.set(representative.kernelShare, representative);
+    liveRepresentatives.set(processKernelShareGroup(representative), representative);
   }
 
   context.runtimeFsDirtyHandles.delete(runtimeId);
@@ -177,7 +178,7 @@ export function forEachRuntimeKernelShare(
       continue;
     }
     const representative = context.kernelShareRepresentative(handle) ?? handle;
-    const group = representative.kernelShare;
+    const group = processKernelShareGroup(representative);
     if (visited.has(group)) {
       continue;
     }

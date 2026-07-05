@@ -12,7 +12,13 @@ import {
   restoreRuntimeNetworkKernelState
 } from "./shared.js";
 import {
+  addKernelShareSharedOfdId,
+  deleteKernelShareOfdSlotSnapshot,
+  deleteKernelShareSharedOfdId,
+  kernelShareHasSharedOfdId,
+  kernelShareMemberList,
   kernelShareOtherMembers,
+  kernelShareSharedOfdIdList,
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
@@ -93,18 +99,18 @@ function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
 }
 
 function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
-  for (const ofdId of [...handle.kernelShare.sharedOfdIds]) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (!isRegularFileOfd(handle, ofdId)) {
       continue;
     }
     if (sourceForkSharedOfdPeerState(handle, ofdId).compatiblePeer) {
       continue;
     }
-    for (const member of handle.kernelShare.members) {
+    for (const member of kernelShareMemberList(handle)) {
       member.kernel.kernel_unreserve_ofd?.(ofdId);
     }
-    handle.kernelShare.sharedOfdIds.delete(ofdId);
-    handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
+    deleteKernelShareSharedOfdId(handle, ofdId);
+    deleteKernelShareOfdSlotSnapshot(handle, ofdId);
   }
 }
 
@@ -131,7 +137,7 @@ export function requestOwnedForkSharedStateSync(
       hostExecutionState(member).runningWorker !== null
       || processExitInProgress(member)
       || (registered !== undefined && processExitInProgress(registered))
-      || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
+      || targetHasIncompatibleForkSharedOfd(handle, member, kernelShareSharedOfdIdList(handle))
     ) {
       return false;
     }
@@ -145,7 +151,7 @@ export function requestOwnedForkSharedStateSync(
     if (
       processExitInProgress(member)
       || (registered !== undefined && processExitInProgress(registered))
-      || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
+      || targetHasIncompatibleForkSharedOfd(handle, member, kernelShareSharedOfdIdList(handle))
     ) {
       return false;
     }
@@ -277,7 +283,7 @@ export async function syncForkSharedStateViaKernelWorker(
   const allowedOfdIdSet = options.ofdIds === undefined ? null : new Set(options.ofdIds);
   if (!memfsOnly) {
     for (const ofdId of new Set([...sourceHeldOfdIds, ...sourceFdOfdIds])) {
-      if (!handle.kernelShare.sharedOfdIds.has(ofdId)) {
+      if (!kernelShareHasSharedOfdId(handle, ofdId)) {
         continue;
       }
       if (sourceOfdCanPublishForkSharedState(handle, ofdId)) {
@@ -305,8 +311,8 @@ export async function syncForkSharedStateViaKernelWorker(
   if (!memfsOnly) {
     syncKernelShareOfdReservations(handle);
   }
-  const runtimeNetworkSocketOfdIds = collectRuntimeNetworkSocketOfdIds(handle.kernelShare.members);
-  const preservedRuntimeNetworkKernelStates = [...handle.kernelShare.members].map((member) =>
+  const runtimeNetworkSocketOfdIds = collectRuntimeNetworkSocketOfdIds(kernelShareMemberList(handle));
+  const preservedRuntimeNetworkKernelStates = kernelShareMemberList(handle).map((member) =>
     snapshotRuntimeNetworkKernelState(member, member === handle ? sourceVmPtr : member.vmPtr)
   );
   const omitRuntimeNetworkSocketOfds = (ofdIds: number[]): number[] => {
@@ -325,7 +331,7 @@ export async function syncForkSharedStateViaKernelWorker(
   const trackedSourceOfdIds = options.trackHeldOfds === true
     ? [...new Set([...sourceHeldOfdIds, ...sourceFdOfdIds])]
         .filter((ofdId) =>
-          (handle.kernelShare.sharedOfdIds.has(ofdId) || sourceFdOfdIdSet.has(ofdId))
+          (kernelShareHasSharedOfdId(handle, ofdId) || sourceFdOfdIdSet.has(ofdId))
           && canSyncForkSharedOfd(ofdId)
           && supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_none()
           && (sourceFdOfdIdSet.has(ofdId) || !sourceForkSharedOfdPeerState(handle, ofdId).incompatiblePeer)
@@ -343,7 +349,7 @@ export async function syncForkSharedStateViaKernelWorker(
           return true;
         }
         if (sourceHeldOfdIds.has(ofdId) && hasPipePeerInOtherKernelShareMember(handle, ofdId)) {
-          handle.kernelShare.sharedOfdIds.add(ofdId);
+          addKernelShareSharedOfdId(handle, ofdId);
           return true;
         }
         return false;
@@ -357,7 +363,7 @@ export async function syncForkSharedStateViaKernelWorker(
           return true;
         }
         if (sourceHeldOfdIds.has(ofdId) && hasPipePeerInOtherKernelShareMember(handle, ofdId)) {
-          handle.kernelShare.sharedOfdIds.add(ofdId);
+          addKernelShareSharedOfdId(handle, ofdId);
           return true;
         }
         return false;
@@ -375,7 +381,7 @@ export async function syncForkSharedStateViaKernelWorker(
       if (staleOfdIdSet.has(ofdId) || !syncableForkSharedOfd(ofdId)) {
         continue;
       }
-      handle.kernelShare.sharedOfdIds.add(ofdId);
+      addKernelShareSharedOfdId(handle, ofdId);
       deltaOfdIdSet.add(ofdId);
     }
     const deltaOfdIds = omitRuntimeNetworkSocketOfds([...deltaOfdIdSet])
@@ -438,7 +444,7 @@ export async function syncForkSharedStateViaKernelWorker(
       vmPtr: target.vmPtr,
       kernelState: target.kernelState,
     }));
-  const networkSocketSnapshots = snapshotNetworkBridgeSocketState(handle.kernelShare.members);
+  const networkSocketSnapshots = snapshotNetworkBridgeSocketState(kernelShareMemberList(handle));
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   try {
     response = await kernelWorkerRequest({
@@ -465,7 +471,7 @@ export async function syncForkSharedStateViaKernelWorker(
     appendForkSharedMemfsDebug(handle, `fork-shared-memfs:${handle.pid}:${response.forkSharedDebug}`);
   }
   for (const ofdId of syncOfdIds) {
-    handle.kernelShare.sharedOfdIds.add(ofdId);
+    addKernelShareSharedOfdId(handle, ofdId);
   }
   handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
   handle.kernelState = {

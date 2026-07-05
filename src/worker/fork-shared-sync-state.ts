@@ -2,6 +2,7 @@ import type {
   KernelShareGroup,
   ProcessHandle,
 } from "./types.js";
+import { processKernelShareGroup } from "./kernel-share.js";
 
 const handleForkSharedSyncPromises = new WeakMap<ProcessHandle, Promise<void>>();
 const kernelShareForkSharedSyncPromises = new WeakMap<KernelShareGroup, Promise<void>>();
@@ -40,10 +41,23 @@ export function setKernelShareForkSharedSync(
   kernelShareForkSharedSyncPromises.set(kernelShare, promise);
 }
 
+export function getProcessKernelShareForkSharedSync(
+  handle: ProcessHandle,
+): Promise<void> | null {
+  return getKernelShareForkSharedSync(processKernelShareGroup(handle));
+}
+
+export function setProcessKernelShareForkSharedSync(
+  handle: ProcessHandle,
+  promise: Promise<void> | null,
+): void {
+  setKernelShareForkSharedSync(processKernelShareGroup(handle), promise);
+}
+
 export function getActiveForkSharedSync(
   handle: ProcessHandle,
 ): Promise<void> | null {
-  return getKernelShareForkSharedSync(handle.kernelShare) ?? getHandleForkSharedSync(handle);
+  return getProcessKernelShareForkSharedSync(handle) ?? getHandleForkSharedSync(handle);
 }
 
 export function setActiveForkSharedSync(
@@ -51,7 +65,7 @@ export function setActiveForkSharedSync(
   promise: Promise<void>,
 ): void {
   setHandleForkSharedSync(handle, promise);
-  setKernelShareForkSharedSync(handle.kernelShare, promise);
+  setProcessKernelShareForkSharedSync(handle, promise);
 }
 
 export function clearForkSharedSyncIfCurrent(
@@ -61,7 +75,7 @@ export function clearForkSharedSyncIfCurrent(
   if (getHandleForkSharedSync(handle) === promise) {
     setHandleForkSharedSync(handle, null);
   }
-  if (getKernelShareForkSharedSync(handle.kernelShare) === promise) {
-    setKernelShareForkSharedSync(handle.kernelShare, null);
+  if (getProcessKernelShareForkSharedSync(handle) === promise) {
+    setProcessKernelShareForkSharedSync(handle, null);
   }
 }

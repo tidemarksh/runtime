@@ -15,6 +15,7 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
+import { kernelShareMemberList } from "../kernel-share.js";
 import { appendPendingPipeSlotSnapshots } from "../pending-pipe-slot-state.js";
 import {
   collectProcessHeldOfds,
@@ -142,7 +143,7 @@ export function expandPipePeerOfdIds(handle: ProcessHandle, ofdIds: Iterable<num
   }
 
   const peers = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       if ((supervisorOfdPipeSlotMask(member, ofdId) & pipeSlotMask) !== 0n) {
         peers.add(ofdId);
@@ -161,7 +162,7 @@ export function hasPipePeerInOtherKernelShareMember(handle: ProcessHandle, ofdId
   if (pipeSlotMask === 0n) {
     return false;
   }
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     if (member === handle) {
       continue;
     }
@@ -578,7 +579,7 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
   }
   const readOpen = new Int32Array(maxPipes);
   const writeOpen = new Int32Array(maxPipes);
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     if (member.vmPtr === 0) {
       continue;
     }

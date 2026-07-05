@@ -13,6 +13,7 @@ import {
   supervisorProcessPipeOfdForFd,
   supervisorProcessPipeSlotForFd,
 } from "../ownership/pipe-slot.js";
+import { kernelShareMemberList } from "../kernel-share.js";
 
 export interface PipePollSchedulerDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -49,7 +50,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
       return "n/a";
     }
     const holders: string[] = [];
-    for (const member of handle.kernelShare.members) {
+    for (const member of kernelShareMemberList(handle)) {
       if (member.vmPtr === 0 || processExitInProgress(member)) {
         continue;
       }

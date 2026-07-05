@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.js";
@@ -171,7 +172,7 @@ function makeHandle(
     publishedStates: KernelRuntimeState[];
   };
   setProcessDebugCommand(handle, "test");
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   return handle;
 }
 

@@ -9,6 +9,14 @@ import {
 } from "./ownership/ofd-table.js";
 import { supervisorOfdReconcileRefcount } from "./ownership/ofd-metadata.js";
 import {
+  deleteKernelShareOfdSlotSnapshot,
+  deleteKernelShareSharedOfdId,
+  getKernelShareOfdSlotSnapshot,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+  setKernelShareOfdSlotSnapshot,
+} from "./kernel-share.js";
+import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
@@ -68,7 +76,7 @@ export function snapshotKernelShareOfdSlots(
   }
 
   const snapshots = new Map<number, Uint8Array>();
-  const members = [handle, ...[...handle.kernelShare.members].filter((member) => member !== handle)];
+  const members = [handle, ...kernelShareMemberList(handle).filter((member) => member !== handle)];
   for (const ofdId of ofdIds) {
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
@@ -81,11 +89,11 @@ export function snapshotKernelShareOfdSlots(
       const slotOffset = member.kernelState.ofdTablePtr + ofdId * slotBytes;
       const slot = new Uint8Array(member.memory.buffer, slotOffset, slotBytes).slice();
       snapshots.set(ofdId, slot);
-      handle.kernelShare.ofdSlotSnapshots.set(ofdId, slot);
+      setKernelShareOfdSlotSnapshot(handle, ofdId, slot);
       break;
     }
     if (!snapshots.has(ofdId)) {
-      const cached = handle.kernelShare.ofdSlotSnapshots.get(ofdId);
+      const cached = getKernelShareOfdSlotSnapshot(handle, ofdId);
       if (cached?.length === slotBytes) {
         snapshots.set(ofdId, cached.slice());
       }
@@ -96,8 +104,8 @@ export function snapshotKernelShareOfdSlots(
 
 export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
   const activeOfdIds = activeKernelShareOfdIds(handle);
-  const reservedOfdIds = [...new Set([...handle.kernelShare.sharedOfdIds, ...activeOfdIds])];
-  for (const member of handle.kernelShare.members) {
+  const reservedOfdIds = [...new Set([...kernelShareSharedOfdIdList(handle), ...activeOfdIds])];
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of reservedOfdIds) {
       member.kernel.kernel_reserve_ofd?.(ofdId);
     }
@@ -106,11 +114,11 @@ export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
 
 export function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
   for (const ofdId of staleOfdIds) {
-    for (const member of handle.kernelShare.members) {
+    for (const member of kernelShareMemberList(handle)) {
       member.kernel.kernel_unreserve_ofd?.(ofdId);
     }
-    handle.kernelShare.sharedOfdIds.delete(ofdId);
-    handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
+    deleteKernelShareSharedOfdId(handle, ofdId);
+    deleteKernelShareOfdSlotSnapshot(handle, ofdId);
   }
 }
 
@@ -125,7 +133,7 @@ export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds
   const slotCopies = new Map<number, Uint8Array>();
   const sourceFirstMembers = [
     handle,
-    ...[...handle.kernelShare.members].filter((member) => member !== handle),
+    ...kernelShareMemberList(handle).filter((member) => member !== handle),
   ];
   for (const ofdId of sharedOfdIds) {
     for (const member of sourceFirstMembers) {
@@ -159,7 +167,7 @@ export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfd
   const sharedOfdIdSet = new Set(sharedOfdIds);
   const expectedRefcounts = new Int32Array(maxFds);
 
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     const memberRefcounts = collectProcessHeldOfdRefcounts(member);
     for (const ofdId of sharedOfdIdSet) {
       if (ofdId <= 0 || ofdId >= maxFds) {

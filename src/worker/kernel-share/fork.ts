@@ -1,10 +1,16 @@
 import type { ProcessHandle } from "../types.js";
+import {
+  addKernelShareMember,
+  deleteKernelShareMember,
+  processKernelShareGroup,
+  setProcessKernelShareGroup,
+} from "./common.js";
 
 export function adoptKernelShare(parent: ProcessHandle, child: ProcessHandle): void {
-  child.kernelShare = parent.kernelShare;
-  child.kernelShare.members.add(child);
+  setProcessKernelShareGroup(child, processKernelShareGroup(parent));
+  addKernelShareMember(child, child);
 }
 
 export function detachKernelShare(handle: ProcessHandle): void {
-  handle.kernelShare.members.delete(handle);
+  deleteKernelShareMember(handle, handle);
 }

@@ -5,6 +5,12 @@ import {
   processStdoutPipe,
 } from "../process-stdio-state.js";
 import {
+  addKernelShareSharedOfdId,
+  kernelShareHasSharedOfdId,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+} from "../kernel-share.js";
+import {
   collectProcessHeldOfds,
   forkSharedHeldOfdTrackAction,
   trackForkSharedOfds,
@@ -39,7 +45,7 @@ export function sourceForkSharedOfdPeerState(
   }
   let compatiblePeer = false;
   let incompatiblePeer = false;
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     if (member === handle || !collectProcessHeldOfds(member).has(ofdId)) {
       continue;
     }
@@ -54,7 +60,7 @@ export function sourceForkSharedOfdPeerState(
 }
 
 export function sourceOfdCanPublishForkSharedState(handle: ProcessHandle, ofdId: number): boolean {
-  if (!handle.kernelShare.sharedOfdIds.has(ofdId)) {
+  if (!kernelShareHasSharedOfdId(handle, ofdId)) {
     return false;
   }
   const { compatiblePeer, incompatiblePeer } = sourceForkSharedOfdPeerState(handle, ofdId);
@@ -97,7 +103,7 @@ export function targetHasIncompatibleForkSharedOfd(
       ofdId <= 0
       || ofdId >= maxFds
       || !trackedOfdIds.has(ofdId)
-      || !source.kernelShare.sharedOfdIds.has(ofdId)
+      || !kernelShareHasSharedOfdId(source, ofdId)
     ) {
       continue;
     }
@@ -154,7 +160,7 @@ function sourceRegularFileForkSharedPeerFacts(
     return { sourceHoldsRegularFile: false, regularFileHasPeer: false };
   }
   let sourceHoldsRegularFile = false;
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (
       !processFdEntriesIncludeOfd(handle, vmPtr, ofdId)
       || !processHoldsRegularFileOfd(handle, vmPtr, ofdId)
@@ -162,7 +168,7 @@ function sourceRegularFileForkSharedPeerFacts(
       continue;
     }
     sourceHoldsRegularFile = true;
-    for (const peer of handle.kernelShare.members) {
+    for (const peer of kernelShareMemberList(handle)) {
       if (peer === handle || peer.vmPtr === 0) {
         continue;
       }
@@ -219,7 +225,7 @@ export function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<numbe
     }
   }
   const tracked = new Set<number>();
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (
       ofdId > 0
       && ofdId < handle.kernel.abi_max_fds()
@@ -229,7 +235,7 @@ export function collectTrackableForkSharedOfds(handle: ProcessHandle): Set<numbe
   }
   for (const ofdId of collectProcessHeldOfds(handle)) {
     if (forkSharedHeldOfdTrackAction(handle, ofdId, {
-      shared: handle.kernelShare.sharedOfdIds.has(ofdId),
+      shared: kernelShareHasSharedOfdId(handle, ofdId),
       hostStdioPipe: stdioOfdIds.has(ofdId),
       stdioFd: stdioFdOfdIds.has(ofdId),
     })) {
@@ -279,12 +285,12 @@ export function trackHeldForkSharedOfds(handle: ProcessHandle, vmPtr: number): v
   trackForkSharedOfds(handle, vmPtr, false);
   for (const ofdId of collectProcessHeldOfds(handle)) {
     if (forkSharedHeldOfdTrackAction(handle, ofdId, {
-      shared: handle.kernelShare.sharedOfdIds.has(ofdId),
+      shared: kernelShareHasSharedOfdId(handle, ofdId),
       hostStdioPipe: isProcessHostStdioOfd(handle, vmPtr, ofdId)
         || isProcessHostStdioPipeOfd(handle, ofdId),
       stdioFd: false,
     })) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
+      addKernelShareSharedOfdId(handle, ofdId);
     }
   }
 }

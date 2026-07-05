@@ -35,6 +35,7 @@ import {
   setProcessMemfsDirty,
   setProcessMemfsPublishPending,
 } from "../process-memfs-state.js";
+import { kernelShareHasSharedOfdId } from "../kernel-share.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
 import {
   type ProcessHandle,
@@ -536,7 +537,7 @@ function pendingFsSharedOfdIds(handle: ProcessHandle, vmPtr: number): number[] {
   if (
     ofdId > 0
     && ofdId < handle.kernel.abi_max_fds()
-    && handle.kernelShare.sharedOfdIds.has(ofdId)
+    && kernelShareHasSharedOfdId(handle, ofdId)
   ) {
     return [ofdId];
   }

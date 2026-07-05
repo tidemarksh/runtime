@@ -15,6 +15,12 @@ import {
 } from "../../layout/ofd.js";
 import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
+import {
+  addKernelShareSharedOfdId,
+  kernelShareHasSharedOfdId,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+} from "../kernel-share.js";
 import { regularFileOfdOffsetSnapshotEntries } from "../regular-file-ofd-offset-state.js";
 import { networkOfdSlotWatermarks } from "../network-socket-state.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
@@ -214,14 +220,14 @@ export function hasPlausibleOfdState(handle: KernelSyncHandle, ofdId: number): b
 
 export function activeKernelShareOfdIds(handle: ProcessHandle): number[] {
   const heldByAnyMember = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       heldByAnyMember.add(ofdId);
     }
   }
 
   const active: number[] = [];
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (heldByAnyMember.has(ofdId)) {
       active.push(ofdId);
     }
@@ -231,14 +237,14 @@ export function activeKernelShareOfdIds(handle: ProcessHandle): number[] {
 
 export function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
   const heldByAnyMember = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       heldByAnyMember.add(ofdId);
     }
   }
 
   const stale: number[] = [];
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (!heldByAnyMember.has(ofdId)) {
       stale.push(ofdId);
     }
@@ -303,7 +309,7 @@ export function trackForkSharedOfds(
       continue;
     }
     if (!forkSharedHeldOfdTrackAction(handle, ofdId, {
-      shared: handle.kernelShare.sharedOfdIds.has(ofdId),
+      shared: kernelShareHasSharedOfdId(handle, ofdId),
       hostStdioPipe: stdioOfdIds.has(ofdId),
       stdioFd: fd >= 0 && fd <= 2,
       fdEntrySource: true,
@@ -311,7 +317,7 @@ export function trackForkSharedOfds(
       continue;
     }
     retained.add(ofdId);
-    handle.kernelShare.sharedOfdIds.add(ofdId);
+    addKernelShareSharedOfdId(handle, ofdId);
     if (retainRefcounts) {
       supervisorOfdReconcileRefcount(handle, ofdId, supervisorOfdRefcount(handle, ofdId) + 1);
     }

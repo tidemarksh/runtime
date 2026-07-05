@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
   processHostStdio,
@@ -214,7 +215,7 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
       };
     }),
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const clearPipeSyncBeforeRetry = vi.fn(() => 0);
   handle.kernel.supervisor_blocked_pipe_sync_before_retry_clear = clearPipeSyncBeforeRetry;
   const pipeWorker = {} as Worker;
@@ -252,7 +253,7 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
 test("waking sync drains supervisor resume before runtime host retry", async () => {
   const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const pipeWorker = {} as Worker;
   const pumpProcess = vi.fn((member) => {
     hostExecutionState(member).hostBlockedWorkers.delete(pipeWorker);
@@ -295,7 +296,7 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
       };
     }),
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const epollWorker = {} as Worker;
   const blockedEpoll = {
     status: handle.kernel.abi_status_epoll_wait(),
@@ -322,7 +323,7 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
 test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", async () => {
   const retryHostBlockedWorker = vi.fn();
   const handle = makeHandle();
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const clearPipeSyncBeforeRetry = vi.fn(() => 0);
   handle.kernel.supervisor_blocked_pipe_sync_before_retry_clear = clearPipeSyncBeforeRetry;
   const pipeWorker = {} as Worker;
@@ -375,8 +376,8 @@ test("requestSocketStateSync applies socket payload state to fork-share members 
   });
   const child = makeHandle({ pid: 2 });
   const share = { members: new Set([parent, child]), sharedOfdIds: new Set(), ofdSlotSnapshots: new Map() };
-  parent.kernelShare = share;
-  child.kernelShare = share;
+  setProcessKernelShareGroup(parent, share);
+  setProcessKernelShareGroup(child, share);
   const recvWorker = {} as Worker;
   hostExecutionState(child).hostBlockedWorkers.set(recvWorker, {
     status: child.kernel.abi_status_socket_recv(),
@@ -427,7 +428,7 @@ test("requestSocketStateSync rewrites provisional pid restored by kernel-worker 
       currentPid = newPid;
     }
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -587,7 +588,7 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
       },
     };
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -680,7 +681,7 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
       },
     };
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -790,7 +791,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
       },
     };
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -891,7 +892,7 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
       },
     };
   });
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},

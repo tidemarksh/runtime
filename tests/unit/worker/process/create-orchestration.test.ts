@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
@@ -1415,7 +1416,7 @@ test("STATUS_FS does not sync fork-shared OFD state when no fork-share peers exi
   const worker = createdWorkers[0];
 
   handle.kernel.thread_pending_fs_effects = () => 1 << 1;
-  handle.kernelShare.sharedOfdIds.add(7);
+  addKernelShareSharedOfdId(handle, 7);
   handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? 7 : 0);
   new DataView(handle.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + 7 * 32, 1, true);
 

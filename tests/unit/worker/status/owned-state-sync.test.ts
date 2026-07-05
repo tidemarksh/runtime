@@ -1,9 +1,10 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerOwnedStateSyncHandler } from "../../../../src/worker/message-handler/status/owned-state-sync.js";
 import {
   getHandleForkSharedSync,
-  getKernelShareForkSharedSync,
-  setKernelShareForkSharedSync,
+  getProcessKernelShareForkSharedSync,
+  setProcessKernelShareForkSharedSync,
 } from "../../../../src/worker/fork-shared-sync-state.js";
 import {
   getThreadOwnerAsyncStatus,
@@ -247,12 +248,13 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 0 ? 2 : 0),
     },
   };
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add(peer);
+  addKernelShareMember(handle);
+  addKernelShareMember(handle, peer);
   const continueAfterOwnedStateSync = vi.fn(() => {
     order.push("continue");
   });
   const deps = {
+    processHandles: new Map([[handle.pid, handle]]),
     threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
     pumpProcess: vi.fn(),
@@ -346,14 +348,15 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
       process_fd_ofd_id: (_vmPtr: number, fd: number) => (fd === 0 ? 2 : 0),
     },
   };
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add(peer);
+  addKernelShareMember(handle);
+  addKernelShareMember(handle, peer);
   const continueAfterOwnedStateSync = vi.fn();
   let resolveSync!: () => void;
   const syncForkSharedStateViaKernelWorker = vi.fn(() => new Promise<void>((resolve) => {
     resolveSync = resolve;
   }));
   const deps = {
+    processHandles: new Map([[handle.pid, handle]]),
     threadWorkerStates,
     appendRuntimeLifecycleEvent: vi.fn(),
     pumpProcess: vi.fn(),
@@ -389,7 +392,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
   });
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
   expect(getHandleForkSharedSync(handle as never)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBeNull();
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBeNull();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     7,
     "fork-shared-sync-local:7:src=0x1234:targets=none",
@@ -468,8 +471,8 @@ test("kernel completed fork-shared effect syncs available parent targets", async
       kernel_ofd_host_fd: (ofdId: number) => (ofdId === 7 ? 2 : 0),
     },
   };
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add(parent);
+  addKernelShareMember(handle);
+  addKernelShareMember(handle, parent);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -576,8 +579,8 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
       process_fd_ofd_id: () => 0,
     },
   };
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add(parent);
+  addKernelShareMember(handle);
+  addKernelShareMember(handle, parent);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -662,7 +665,7 @@ test("kernel pipe data-plane effect does not request fork-shared sync", () => {
       kernel_attach_runtime_state: vi.fn(),
     },
   };
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -747,8 +750,8 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     exitInProgress: true,
     workers: new Set(),
   };
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add(exitingPeer);
+  addKernelShareMember(handle);
+  addKernelShareMember(handle, exitingPeer);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -856,8 +859,8 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
       kernel_ofd_host_fd: (ofdId: number) => (ofdId === 7 ? 10 : 0),
     },
   };
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add(parent);
+  addKernelShareMember(handle);
+  addKernelShareMember(handle, parent);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -953,16 +956,17 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
       kernel_attach_runtime_state: vi.fn(),
     },
   };
-  setKernelShareForkSharedSync(handle.kernelShare as never, activeSync);
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add({
+  setProcessKernelShareForkSharedSync(handle as never, activeSync);
+  addKernelShareMember(handle);
+  const peer = {
     pid: 3,
     vmPtr: 0x5678,
     runningWorker: null,
     exitInProgress: false,
     kernel: handle.kernel,
-    kernelShare: handle.kernelShare,
-  } as never);
+  } as never;
+  setProcessKernelShareGroup(peer, processKernelShareGroup(handle));
+  addKernelShareMember(handle, peer);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -998,7 +1002,7 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
   await vi.waitFor(() => {
     expect(getHandleForkSharedSync(handle as never)).not.toBeNull();
   });
-  expect(getHandleForkSharedSync(handle as never)).toBe(getKernelShareForkSharedSync(handle.kernelShare as never));
+  expect(getHandleForkSharedSync(handle as never)).toBe(getProcessKernelShareForkSharedSync(handle as never));
   expect(getHandleForkSharedSync(handle as never)).not.toBe(activeSync);
 
   resolveActiveSync();
@@ -1008,7 +1012,7 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
 
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
   expect(getHandleForkSharedSync(handle as never)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBeNull();
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBeNull();
 });
 
 test("queued no-target fork-shared OFD sync waits without replacing the active share promise", async () => {
@@ -1057,16 +1061,17 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
       kernel_attach_runtime_state: vi.fn(),
     },
   };
-  setKernelShareForkSharedSync(handle.kernelShare as never, activeSync);
-  handle.kernelShare.members.add(handle);
-  handle.kernelShare.members.add({
+  setProcessKernelShareForkSharedSync(handle as never, activeSync);
+  addKernelShareMember(handle);
+  const peer = {
     pid: 0,
     vmPtr: 0,
     runningWorker: null,
     exitInProgress: false,
     kernel: handle.kernel,
-    kernelShare: handle.kernelShare,
-  } as never);
+  } as never;
+  setProcessKernelShareGroup(peer, processKernelShareGroup(handle));
+  addKernelShareMember(handle, peer);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -1100,7 +1105,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
 
   expect(handled).toBe(true);
   expect(getHandleForkSharedSync(handle as never)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBe(activeSync);
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBe(activeSync);
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   await vi.waitFor(() => {
     expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
@@ -1124,7 +1129,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
   expect(getHandleForkSharedSync(handle as never)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBe(activeSync);
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBe(activeSync);
 });
 
 test("fork-shared-only pipe effects sync when the source holds tracked shared state", async () => {
@@ -1166,7 +1171,7 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
       kernel_attach_runtime_state: vi.fn(),
     },
   };
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const continueAfterOwnedStateSync = vi.fn();
   const deps = {
     threadWorkerStates,
@@ -1245,7 +1250,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     },
   };
   setProcessMemfsDirty(handle as never, true);
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const continueAfterOwnedStateSync = vi.fn(() => {
     order.push("continue");
   });
@@ -1349,7 +1354,7 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
       kernel_attach_runtime_state: vi.fn(),
     },
   };
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const continueAfterOwnedStateSync = vi.fn();
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const deps = {
@@ -1442,7 +1447,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
       kernel_attach_runtime_state: vi.fn(),
     },
   };
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const continueAfterOwnedStateSync = vi.fn();
   const deps = {
     threadWorkerStates,

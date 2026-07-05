@@ -87,7 +87,6 @@ export interface ProcessHandle {
   wasmModule: WebAssembly.Module;
   kernel: KernelExports;
   kernelState: KernelRuntimeState;
-  kernelShare: KernelShareGroup;
   runtimeBridge: RuntimeStateBridge;
   sabPageCache: SharedArrayBuffer | null;
   kernelWorkerRequest?: KernelWorkerRequestFn;

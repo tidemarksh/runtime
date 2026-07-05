@@ -17,6 +17,10 @@ import {
   setProcessStdioState,
 } from "../process-stdio-state.js";
 import { setProcessWorkers } from "../process-worker-state.js";
+import {
+  processKernelShareGroup,
+  setProcessKernelShareGroup,
+} from "../kernel-share.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
@@ -66,7 +70,6 @@ export function createForkChildHandle({
     wasmModule: parent.wasmModule,
     kernel,
     kernelState,
-    kernelShare: parent.kernelShare,
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: parent.sabPageCache,
     kernelWorkerRequest: parent.kernelWorkerRequest,
@@ -74,6 +77,7 @@ export function createForkChildHandle({
   };
   setProcessDebugCommand(childHandle, debugCommand);
   setProcessLastDebugMessage(childHandle, undefined);
+  setProcessKernelShareGroup(childHandle, processKernelShareGroup(parent));
   setProcessStdioState(childHandle, {
     stdinPipe: kernel.process_stdin_pipe(vmPtr),
     stdoutPipe: kernel.process_stdout_pipe(vmPtr),

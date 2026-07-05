@@ -40,7 +40,11 @@ import {
 import { setProcessStdioState } from "./process-stdio-state.js";
 import { setProcessWorkers } from "./process-worker-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
-import { createKernelShareGroup } from "./kernel-share.js";
+import {
+  addKernelShareMember,
+  createKernelShareGroup,
+  setProcessKernelShareGroup,
+} from "./kernel-share.js";
 import {
   alignUp,
   detachedKernelScratchBase,
@@ -657,12 +661,12 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       wasmModule,
       kernel: exports,
       kernelState,
-      kernelShare: createKernelShareGroup(),
       runtimeBridge,
       sabPageCache: options.sabPageCache ?? null,
       kernelWorkerRequest: options.kernelWorkerRequest,
       networkBridge: options.networkBridge,
     };
+    setProcessKernelShareGroup(handle, createKernelShareGroup());
     setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
     setProcessLastDebugMessage(handle, undefined);
     setProcessOnExit(handle, options.onExit);
@@ -869,7 +873,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     }
     deps.assertProcessStandardFdIntegrity(handle, "create-process");
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
-    handle.kernelShare.members.add(handle);
+    addKernelShareMember(handle);
 
     if (handle.pid > 0) {
       deps.processHandles.set(handle.pid, handle);

@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import {
   processHostStdio,
@@ -91,7 +92,7 @@ function makeHandle(
     ...overrides,
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "test");
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   return { handle, releaseHostStdio };
 }
 

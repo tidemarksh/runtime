@@ -8,6 +8,7 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
+import { kernelShareMemberList } from "./common.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
 import {
   supervisorOfdPipeSlotModeMap,
@@ -210,7 +211,7 @@ function addSupervisorPipeControlForMember(
 }
 
 export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
-  const members = [...handle.kernelShare.members].filter((member) => !processExitInProgress(member));
+  const members = kernelShareMemberList(handle).filter((member) => !processExitInProgress(member));
   if (members.length === 0) {
     return;
   }

@@ -50,8 +50,9 @@ import {
 } from "../process-debug-state.js";
 import {
   getHandleForkSharedSync,
-  getKernelShareForkSharedSync,
+  getProcessKernelShareForkSharedSync,
 } from "../fork-shared-sync-state.js";
+import { kernelShareSharedOfdIdList } from "../kernel-share.js";
 import {
   getThreadGeneration,
   getThreadOwnerAsyncStatus,
@@ -1654,14 +1655,14 @@ export function debugRuntimeProcessHandles(
           `running=${hostExecutionState(handle).runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
           `pipe_sync=${runtimeStateSyncInFlight(handle, "pipe") ? 1 : 0}`,
-          `fork_sync=${getHandleForkSharedSync(handle) === null ? 0 : 1}/${getKernelShareForkSharedSync(handle.kernelShare) === null ? 0 : 1}`,
+          `fork_sync=${getHandleForkSharedSync(handle) === null ? 0 : 1}/${getProcessKernelShareForkSharedSync(handle) === null ? 0 : 1}`,
           `vfork=${hostExecutionState(handle).vforkSnapshot ? "1" : "0"}`,
           `stdio_pipes=${processStdinPipe(handle)}/${processStdoutPipe(handle)}/${processStderrPipe(handle)}`,
           `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,
           `stdio_pipe_counters=[${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             .map((fd) => formatPipeCounterDebug(handle, fd))
             .join(" ")}]`,
-          `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
+          `shared_ofds=[${kernelShareSharedOfdIdList(handle).sort((left, right) => left - right).join(",")}]`,
           `fds=[${fdSummary}]`,
           `worker_net=[${networkLogSummary}]`,
           `network_fds=[${networkFdSummary}]`,

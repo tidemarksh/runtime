@@ -8,6 +8,7 @@ import {
 } from "./process-stdio-state.js";
 import {
   kernelShareOtherMembers,
+  kernelShareSharedOfdIdList,
   reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
 import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
@@ -167,7 +168,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`
+      `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${kernelShareSharedOfdIdList(handle).sort((left, right) => left - right).join(",")}]`
         + `:mem=${handle.kernel.debug_memory_brk_base?.() ?? "n/a"}`
         + `:${handle.kernel.debug_memory_brk_current?.() ?? "n/a"}`
         + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,

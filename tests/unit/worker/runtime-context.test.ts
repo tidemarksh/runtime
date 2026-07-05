@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../src/worker/kernel-share.js";
 import { expect, test } from "vite-plus/test";
 import { createWorkerRuntimeContext } from "../../../src/worker/runtime-context.js";
 import {
@@ -70,7 +71,7 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
     },
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "runtime-context");
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   return handle;
 }
 

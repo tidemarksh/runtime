@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
   addProcessWorker,
@@ -58,7 +59,7 @@ import {
 } from "../../../../src/worker/host-blocked-state.js";
 import {
   getHandleForkSharedSync,
-  getKernelShareForkSharedSync,
+  getProcessKernelShareForkSharedSync,
   setActiveForkSharedSync,
 } from "../../../../src/worker/fork-shared-sync-state.js";
 import { setPendingChildSpawnRecords } from "../../../../src/worker/pending-child-spawn-state.js";
@@ -2748,7 +2749,7 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   setPendingChildSpawnRecords(handle, 0);
   const forkSharedSync = new Promise<void>(() => {});
   registerForkSharedSyncPromise(forkSharedSync, {
@@ -2779,7 +2780,7 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
   await flushMicrotasks(2);
 
   expect(getHandleForkSharedSync(handle)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare)).toBeNull();
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBeNull();
   expect(lifecycleEvents.some((event) =>
     event.startsWith("wait4-retry-cleared:1:fork-shared-sync-stale-source:")
     && event.includes(":owner=1:src=0x9999:reason=owned-ofd:targets=5"),
@@ -2808,7 +2809,7 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   setPendingChildSpawnRecords(handle, 0);
   const forkSharedSync = new Promise<void>(() => {});
   registerForkSharedSyncPromise(forkSharedSync, {
@@ -2839,7 +2840,7 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
   await flushMicrotasks(2);
 
   expect(getHandleForkSharedSync(handle)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare)).toBeNull();
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBeNull();
   expect(lifecycleEvents.some((event) =>
     event.startsWith("wait4-retry-cleared:1:fork-shared-sync-empty-targets:")
     && event.includes(":owner=1:src=0x9999:reason=blocked-rpc:targets=none"),
@@ -2887,7 +2888,7 @@ test("idle ok worker resumes after a fork-shared sync gate settles", async () =>
   await Promise.resolve();
 
   expect(getHandleForkSharedSync(handle)).toBeNull();
-  expect(getKernelShareForkSharedSync(handle.kernelShare)).toBeNull();
+  expect(getProcessKernelShareForkSharedSync(handle as never)).toBeNull();
   expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
     budget: expect.any(Number),

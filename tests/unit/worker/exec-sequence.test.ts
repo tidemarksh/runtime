@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../src/worker/host-execution-state.js";
 import {
   processHostStdio,
@@ -132,7 +133,7 @@ function makeHandle(
     ...overrides,
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "test");
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const executionState = hostExecutionState(handle);
   executionState.vforkSnapshot = {
     vmPtr: 0x1234,

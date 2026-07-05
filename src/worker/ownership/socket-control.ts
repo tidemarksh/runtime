@@ -17,6 +17,7 @@ import {
   networkRecvTailWatermarks,
   networkSocketSlotWatermarks,
 } from "../network-socket-state.js";
+import { kernelShareMemberList } from "../kernel-share.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
 
@@ -400,7 +401,7 @@ export function restoreRuntimeNetworkSidecarForHandle(
   vmPtr: number,
 ): RuntimeNetworkBridge | undefined {
   const relatedHandles = [
-    ...handle.kernelShare.members,
+    ...kernelShareMemberList(handle),
     ...processHandles.values(),
   ].filter((member) => member !== handle && member.runtimeId === handle.runtimeId);
 

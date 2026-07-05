@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
   processHostStdio,
@@ -102,7 +103,7 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   const handle = makeHandle();
   const primaryWorker = handle.worker as unknown as FakeWorker;
   const extraWorkers = processWorkerList(handle) as Array<Worker & FakeWorker>;
-  handle.kernelShare.members.add(handle);
+  addKernelShareMember(handle);
   const processHandles = new Map<number, ProcessHandle>([[handle.pid, handle]]);
   const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>([[handle.runtimeId, new Set([handle])]]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -158,7 +159,7 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   expect(processStderrPipe(handle)).toBe(0);
   expect(processHostStdio(handle).refCount).toBe(0);
   expect(releaseSharedHostStdio).toHaveBeenCalledTimes(1);
-  expect(handle.kernelShare.members.has(handle)).toBe(false);
+  expect(kernelShareMembers(handle).has(handle)).toBe(false);
 });
 
 test("destroyRuntimeProcesses only notifies exits for handles in the selected runtime", () => {
