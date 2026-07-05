@@ -46,6 +46,7 @@ import {
   pendingGuestMemoryWritesForNextStepCount,
   pendingPipeSlotsForNextStepCount,
 } from "../thread-step-payload.js";
+import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -943,7 +944,7 @@ export function debugRuntimeExecutionStats(
         guestBase: handle.guestBase,
         vforkReadyWorkers: handle.vforkReadyWorkers.length,
         hostBlockedWorkers: handle.hostBlockedWorkers.size,
-        pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
+        pendingChildSpawnRecords: pendingChildSpawnRecordCount(handle),
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
         runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),
         workerMessageDebugStats: {

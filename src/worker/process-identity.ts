@@ -1,4 +1,5 @@
 import { collectLiveThreadVmPtrs } from "./live-threads.js";
+import { hasPendingChildSpawnRecords } from "./pending-child-spawn-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 interface ProcessIdentityAssertionOptions {
@@ -143,7 +144,7 @@ export function assertHandleWorkerProcessIdentity(
   context: string,
   options: ProcessIdentityAssertionOptions = {},
 ): void {
-  if (handle.pid <= 0 || handle.pendingChildSpawnRecords > 0) {
+  if (handle.pid <= 0 || hasPendingChildSpawnRecords(handle)) {
     return;
   }
 
@@ -171,7 +172,7 @@ export function assertHandleWorkerProcessIdentity(
 
   if (handle.vmPtr !== 0) {
     const includeHandleVmPtr = ownedWorkerVmPtrs.has(handle.vmPtr)
-      || (ownedWorkerVmPtrs.size === 0 && handle.pendingChildSpawnRecords === 0);
+      || (ownedWorkerVmPtrs.size === 0 && !hasPendingChildSpawnRecords(handle));
     if (includeHandleVmPtr) {
       if (
         anchorVmPtr === null

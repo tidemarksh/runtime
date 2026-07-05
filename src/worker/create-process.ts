@@ -675,7 +675,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       vforkReadyWorkers: [],
       runningWorker: null,
       hostBlockedWorkers: new Map(),
-      pendingChildSpawnRecords: 0,
       processMemfsDirty: false,
       processMemfsPublishPending: false,
       processMemfsDeletedPaths: new Set(),

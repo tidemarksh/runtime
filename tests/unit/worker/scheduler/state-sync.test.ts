@@ -127,7 +127,6 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
   return {
     pid: 1,
     vmPtr: 0,
-    pendingChildSpawnRecords: 0,
     kernelWorkerRequest: vi.fn(async () => ({
       type: "pipe-state-synced",
       kernelState: runtimeState,

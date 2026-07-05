@@ -677,7 +677,6 @@ test("active vfork child fault remains routed through the parent handle", () => 
     workers: new Set<Worker>([worker]),
     vforkReadyWorkers: [],
     hostBlockedWorkers: new Map<Worker, unknown>(),
-    pendingChildSpawnRecords: 0,
     stdinPipe: 0,
     stdoutPipe: 0,
     stderrPipe: 0,

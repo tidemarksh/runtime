@@ -33,6 +33,10 @@ import { getThreadActivityState } from "../thread-activity-state.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
 import { snapshotProcessFdEntries, restoreProcessFdEntries } from "../ownership/fd-table.js";
 import {
+  beginPendingChildSpawnRecord,
+  finishPendingChildSpawnRecord,
+} from "../pending-child-spawn-state.js";
+import {
   assertExecveChildReadyOwnership,
   assertVforkParentResumeOwnership,
 } from "../ownership/invariants.js";
@@ -362,7 +366,7 @@ export async function handleVforkExecve(
   parentThread: ThreadWorkerState,
   childPid: number,
 ): Promise<void> {
-  handle.pendingChildSpawnRecords += 1;
+  beginPendingChildSpawnRecord(handle);
   try {
     const handoffBeforePreflight = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
     deps.appendRuntimeLifecycleEvent(
@@ -770,9 +774,7 @@ export async function handleVforkExecve(
   });
   deps.notifyForkProgress(handle);
   } finally {
-    if (handle.pendingChildSpawnRecords > 0) {
-      handle.pendingChildSpawnRecords -= 1;
-    }
+    finishPendingChildSpawnRecord(handle);
     deps.notifyForkProgress(handle);
   }
 }

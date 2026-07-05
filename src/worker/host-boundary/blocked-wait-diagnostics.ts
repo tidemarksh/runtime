@@ -21,6 +21,7 @@ import {
 } from "../thread-host-state.js";
 import { maybeThreadActivityState } from "../thread-activity-state.js";
 import { pendingGuestMemoryWritesForNextStepCount } from "../thread-step-payload.js";
+import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
 import {
   getLastPipeRetryLifecycleEvent,
   getLastWait4RetryLifecycleEvent,
@@ -291,7 +292,7 @@ export function createBlockedWaitDiagnostics(
       `blocked-state:${handle.pid}:0x${blocked.vmPtr.toString(16)}:status=${status}`,
       `fds=${formatBlockedFdEntries(handle, blocked.vmPtr)}`,
       "records=supervisor",
-      `pending=0/${handle.pendingChildSpawnRecords}`,
+      `pending=0/${pendingChildSpawnRecordCount(handle)}`,
       `active=${deps.activeChildDebugFlag(handle, blocked.vmPtr)}`,
     ];
     if (status === handle.kernel.abi_status_pipe_wait()) {

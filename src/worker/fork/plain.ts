@@ -27,6 +27,10 @@ import {
   trackForkSharedOfds,
 } from "../ownership/ofd-table.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
+import {
+  beginPendingChildSpawnRecord,
+  finishPendingChildSpawnRecord,
+} from "../pending-child-spawn-state.js";
 import { adoptKernelStateForHandle } from "../sync.js";
 import { getActiveForkSharedSync } from "../fork-shared-sync-state.js";
 import { createForkChildHandle } from "./common.js";
@@ -124,7 +128,7 @@ export async function handlePlainFork(
   parentThread: ThreadWorkerState,
   childPid: number,
 ): Promise<void> {
-  handle.pendingChildSpawnRecords += 1;
+  beginPendingChildSpawnRecord(handle);
   try {
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:start:${childPid}`);
     deps.appendWorkerDebugLog(
@@ -336,9 +340,7 @@ export async function handlePlainFork(
     deps.notifyForkProgress(handle);
     deps.appendWorkerDebugLog(handle, `plain-fork-parent:done:${childPid}`);
   } finally {
-    if (handle.pendingChildSpawnRecords > 0) {
-      handle.pendingChildSpawnRecords -= 1;
-    }
+    finishPendingChildSpawnRecord(handle);
     deps.notifyForkProgress(handle);
   }
 }

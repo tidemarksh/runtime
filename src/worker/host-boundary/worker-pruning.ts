@@ -4,6 +4,7 @@ import {
 import {
   releaseWorker,
 } from "../pool.js";
+import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
 import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "../supervisor-status.js";
 import type {
@@ -137,8 +138,9 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
     if (anchorVmPtr === 0 || handle.workers.size <= 1) {
       return;
     }
-    if (handle.pendingChildSpawnRecords > 0) {
-      deps.appendWorkerDebugLog(handle, `prune-skip-spawn:${handle.pendingChildSpawnRecords}`);
+    const pendingChildSpawns = pendingChildSpawnRecordCount(handle);
+    if (pendingChildSpawns > 0) {
+      deps.appendWorkerDebugLog(handle, `prune-skip-spawn:${pendingChildSpawns}`);
       return;
     }
     const liveVmPtrs = collectLiveThreadVmPtrs(handle.kernel, anchorVmPtr);

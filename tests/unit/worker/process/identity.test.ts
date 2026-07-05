@@ -45,7 +45,6 @@ function makeHandle(options: {
 }): ProcessHandle {
   return {
     pid: 3,
-    pendingChildSpawnRecords: 0,
     vmPtr: 0,
     workers: new Set<Worker>(),
     kernel: {

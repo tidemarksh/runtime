@@ -105,7 +105,6 @@ export function createForkChildHandle({
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    pendingChildSpawnRecords: 0,
     processMemfsDirty: false,
     processMemfsPublishPending: false,
     processMemfsDeletedPaths: new Set(),

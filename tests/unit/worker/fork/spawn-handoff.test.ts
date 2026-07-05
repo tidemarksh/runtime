@@ -86,7 +86,6 @@ function makeHandle(kind: number, childPid = 77): ProcessHandle {
   return {
     runtimeId: 1,
     pid: 11,
-    pendingChildSpawnRecords: 0,
     kernel: {
       abi_spawn_kind_execve: () => 1,
       abi_spawn_kind_fork: () => 2,

@@ -139,7 +139,6 @@ export interface ProcessHandle {
   // hostBlockedWorkers tracks waits whose host-side effect bridge is still live.
   // Futex/runnable/dead-thread decisions remain supervisor-owned.
   hostBlockedWorkers: Map<Worker, HostBlockedWorkerState>;
-  pendingChildSpawnRecords: number;
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
   processMemfsDeletedPaths?: Set<string>;

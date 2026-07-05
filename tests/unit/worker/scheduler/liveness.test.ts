@@ -51,6 +51,7 @@ import {
   getKernelShareForkSharedSync,
   setActiveForkSharedSync,
 } from "../../../../src/worker/fork-shared-sync-state.js";
+import { setPendingChildSpawnRecords } from "../../../../src/worker/pending-child-spawn-state.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -937,7 +938,6 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    pendingChildSpawnRecords: 1,
     processMemfsDirty: false,
     networkConnections: new Map(),
     networkPendingConnectFds: new Set(),
@@ -957,6 +957,7 @@ function makeHandle(
     workerDebugLog: [],
     guestWriteWatchRegions: [],
   };
+  setPendingChildSpawnRecords(handle, 1);
   if (threadWorkerStates !== undefined) {
     installTestSupervisorProcessResume(kernel, handle, threadWorkerStates);
     installTestSupervisorBlockedWaitTimers(kernel, handle);
@@ -1235,7 +1236,7 @@ test("blocked FS retry pumps after clearing owner async status", async () => {
   let status = kernel.abi_status_fs();
   kernel.thread_status = () => status;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const resumeFsViaKernelWorkerOutcome = vi.fn(async () => {
     expect(getThreadOwnerAsyncStatus(thread as never)).toBe(kernel.abi_status_fs());
     status = kernel.abi_status_ok();
@@ -1280,7 +1281,7 @@ test("blocked FS retry defers owner-async enqueue until async clears", async () 
   let status = kernel.abi_status_fs();
   kernel.thread_status = () => status;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   let scheduler: ReturnType<typeof createWorkerScheduler>;
   const resumeFsViaKernelWorkerOutcome = vi.fn(async () => {
     expect(getThreadOwnerAsyncStatus(thread as never)).toBe(kernel.abi_status_fs());
@@ -1330,7 +1331,7 @@ test("pumpProcess keeps a fresh owner-async worker parked", () => {
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1475,7 +1476,7 @@ test("wait4 retry delegates to kernel worker when kernel-worker support is avail
   const { exports: kernel, threadResumeWait4 } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_wait4();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => ({
     type: "wait4-resumed",
     requestId: 0,
@@ -1512,7 +1513,7 @@ test("wait4 retry clears stale blocked state when kernel status is already ok", 
   const retryAction = vi.fn(kernel.supervisor_blocked_retry_action);
   kernel.supervisor_blocked_retry_action = retryAction;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("stale wait4 must not delegate to the kernel worker");
   });
@@ -1587,7 +1588,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
   kernel.thread_blocked_ofd_id = () => 10;
   kernel.thread_resume_blocked_syscall = vi.fn();
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers = new Set([blockedWorker, runningWorker]);
   handle.runningWorker = runningWorker;
   handle.kernelWorkerRequest = vi.fn(async () => {
@@ -1644,7 +1645,7 @@ test("host-local epoll retry treats timeout zero as expired", async () => {
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1698,7 +1699,7 @@ test("epoll kernel-worker retry completes timeout through supervisor timer HostO
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
     expect(message.type).toBe("sync-epoll-state");
     return {
@@ -1787,7 +1788,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
     blockedStatus = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers = new Set([blockedWorker, runningWorker]);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
     expect(message.type).toBe("sync-epoll-state");
@@ -1859,7 +1860,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
   kernel.supervisor_blocked_epoll_wait_retry_required = () => 1;
   kernel.abi_fd_type_epoll = () => 7;
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers.add(parentWorker);
   handle.workers.add(childWorker);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
@@ -1968,7 +1969,7 @@ test("finite pipe poll with active children completes through supervisor timer",
   kernel.thread_resume_poll_wait_timeout = resumePollTimeout;
   kernel.process_active_child_pid = () => 7;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const pumpSupervisorSelectedChildProcess = vi.fn(() => true);
 
   const scheduler = createWorkerScheduler({
@@ -2013,7 +2014,7 @@ test("pipe pselect retry parks behind a supervisor-owned active child", async ()
   kernel.thread_poll_hup_sync_pending = () => 0;
   kernel.process_active_child_pid = () => 7;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
@@ -2069,7 +2070,7 @@ test("pipe pselect retry resumes after pipe sync when no writer remains", async 
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   kernel.memory = handle.memory;
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("scheduler retry should delegate blocked resume through outcome helper");
   });
@@ -2119,7 +2120,7 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   kernel.thread_a7 = () => 999n;
   kernel.thread_a0 = () => 4n;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("direct kernel-worker request should not be issued by scheduler retry");
   });
@@ -2163,7 +2164,7 @@ test("kernel-worker unsupported blocked status fails before terminal local resum
     throw new Error("unsupported kernel-worker status must not use terminal local resume");
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("unsupported blocked status must not issue an ad hoc kernel-worker request");
   });
@@ -2210,7 +2211,7 @@ test("does not passively park synced pipe EOF", () => {
   kernel.thread_blocked_pipe_write_ready = () => 0;
   kernel.thread_poll_wait_has_socket = () => 0;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn() as never;
 
   const scheduler = createWorkerScheduler({
@@ -2247,7 +2248,7 @@ test("reblocking the same pipe wait preserves in-flight blocked rpc ownership", 
   kernel.thread_a7 = () => 999n;
   kernel.thread_a0 = () => 4n;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("same-status reblock must not start a duplicate retry");
   });
@@ -2297,7 +2298,7 @@ test("socket poll is resumed immediately after network pump changes state", asyn
     throw new Error("socket poll resume must be delegated through host-boundary outcome helper");
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.networkConnections.set(3, {} as never);
   const pumpNetworkConnections = vi.fn(async () => true);
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
@@ -2354,7 +2355,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.networkConnections.set(3, {} as never);
   handle.kernelWorkerRequest = vi.fn(async (msg) => {
     switch (msg.type) {
@@ -2427,7 +2428,7 @@ test("finite pipe poll timeout completes through supervisor timer when kernel-wo
   kernel.thread_resume_poll_wait_timeout = resumePollTimeout;
   kernel.thread_resume_blocked_syscall = vi.fn();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unexpected" }) as never);
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
@@ -2502,7 +2503,7 @@ test("finite pipe poll timeout uses saved blocked syscall when current a7 moved 
   kernel.thread_resume_poll_wait_timeout = resumePollTimeout;
   kernel.thread_resume_blocked_syscall = vi.fn();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -2565,7 +2566,7 @@ test("supervisor-owned finite pipe poll timer does not run local pipe sync befor
   kernel.kernel_ofd_host_fd = () => 0;
   kernel.kernel_pipe_region_bytes = () => 64 * (32 + 65_536);
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
     order.push("sync");
     expect(message.type).toBe("sync-pipe-state");
@@ -2642,7 +2643,7 @@ test("supervisor-owned finite pipe poll with active child completes without pipe
   kernel.kernel_ofd_host_fd = () => 0;
   kernel.kernel_pipe_region_bytes = () => 64 * (32 + 65_536);
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("active child finite pipe poll timeout should not sync pipe state");
   });
@@ -2692,7 +2693,7 @@ test("wait4 retry resumes without waiting for a fork-shared sync gate", async ()
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const forkSharedSync = new Promise<void>(() => {});
   setActiveForkSharedSync(handle, forkSharedSync);
   const lifecycleEvents: string[] = [];
@@ -2741,7 +2742,7 @@ test("wait4 retry clears a stale fork-shared sync source before retrying", async
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.kernelShare.members.add(handle);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const forkSharedSync = new Promise<void>(() => {});
   registerForkSharedSyncPromise(forkSharedSync, {
     ownerPid: handle.pid,
@@ -2801,7 +2802,7 @@ test("wait4 retry clears an empty-target fork-shared sync gate before retrying",
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.kernelShare.members.add(handle);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const forkSharedSync = new Promise<void>(() => {});
   registerForkSharedSyncPromise(forkSharedSync, {
     ownerPid: handle.pid,
@@ -2854,7 +2855,7 @@ test("idle ok worker resumes after a fork-shared sync gate settles", async () =>
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   let resolveSync!: () => void;
   const forkSharedSync = new Promise<void>((resolve) => {
     resolveSync = resolve;
@@ -2901,7 +2902,7 @@ test("wait4 retry does not park behind a pending fork-shared sync gate", async (
     return 7n;
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const forkSharedSync = new Promise<void>(() => {});
   setActiveForkSharedSync(handle, forkSharedSync);
   const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
@@ -2944,7 +2945,7 @@ test("wait4 retry re-enters supervisor direct resume until wait4 is reaped", asy
     return 0n;
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   const lifecycleEvents: string[] = [];
   const executeHostBlockedSyscallResumeOutcome = makeHostBoundaryWait4ResumeOutcome();
 
@@ -2993,7 +2994,7 @@ test("epoll timerfd wait advances guest time to deadline before retrying epoll",
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers.add(readyWorker);
   handle.vforkReadyWorkers.push(readyWorker);
 
@@ -3069,7 +3070,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers.add(readyWorker);
   handle.vforkReadyWorkers.push(readyWorker);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
@@ -3190,7 +3191,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
     status = kernel.abi_status_ok();
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers.add(readyWorker);
   handle.vforkReadyWorkers.push(readyWorker);
   handle.kernelState.epollTablePtr = 0x1000;
@@ -3325,7 +3326,7 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
   });
 
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelState.epollTablePtr = 0x1000;
   handle.kernelState.ofdTablePtr = 0x3000;
   handle.kernelState.pipeBase = 0x4000;
@@ -3428,7 +3429,7 @@ test("wait4 retry reaches supervisor even while another worker is marked running
     ? kernel.abi_status_wait4()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.workers.add(runningWorker);
   handle.runningWorker = runningWorker;
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
@@ -4362,7 +4363,7 @@ test("pruning a stale running worker clears the running slot", () => {
   const handle = makeHandle(kernel, staleWorker, threadWorkerStates);
   handle.workers.add(anchorWorker);
   handle.runningWorker = staleWorker;
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -4406,7 +4407,7 @@ test("pruning preserves a worker whose thread state still belongs to the process
   const handle = makeHandle(kernel, detachedWorker, threadWorkerStates);
   handle.workers.add(anchorWorker);
   handle.runningWorker = detachedWorker;
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -4527,7 +4528,7 @@ test("pruning is deferred while child spawn records are still pending", () => {
   };
   const handle = makeHandle(kernel, staleWorker, threadWorkerStates);
   handle.workers.add(anchorWorker);
-  handle.pendingChildSpawnRecords = 1;
+  setPendingChildSpawnRecords(handle, 1);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -5263,7 +5264,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.kernelWorkerRequest = vi.fn();
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.runningWorker = worker;
   handle.vforkReadyWorkers = [worker];
   handle.hostBlockedWorkers.set(worker, {
@@ -5354,7 +5355,7 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   handle.kernelWorkerRequest = vi.fn();
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   Object.assign(handle.kernel, { memory });
   handle.memory = memory;
   handle.hostBlockedWorkers.set(worker, {
@@ -5686,7 +5687,7 @@ test("blockWorker schedules initial kernel-worker pipe retry before passive park
   kernel.thread_blocked_pipe_write_ready = () => 0;
   kernel.thread_poll_wait_has_socket = () => 0;
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.pendingChildSpawnRecords = 0;
+  setPendingChildSpawnRecords(handle, 0);
   handle.kernelWorkerRequest = vi.fn() as never;
 
   const scheduler = createWorkerScheduler({
