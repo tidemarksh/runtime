@@ -59,7 +59,7 @@ function requireSupervisorPipeCount(
   return readCount.bind(handle.kernel);
 }
 
-function applySupervisorPipeControl(
+export function applySupervisorPipeControl(
   handle: ProcessHandle,
   pipeSlot: number,
   readOpen: number,
@@ -71,7 +71,7 @@ function applySupervisorPipeControl(
   }
 }
 
-function copyPipeSlotDataPlane(
+export function copyPipeSlotDataPlane(
   memory: Uint8Array,
   sourceSlot: Uint8Array,
   targetOffset: number,
@@ -84,7 +84,7 @@ function copyPipeSlotDataPlane(
   );
 }
 
-function applyPipeSlotSnapshot(
+export function applyPipeSlotSnapshot(
   handle: ProcessHandle,
   memory: Uint8Array,
   sourceSlot: Uint8Array,

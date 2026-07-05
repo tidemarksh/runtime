@@ -1,7 +1,6 @@
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
-  supervisorPipeReconcileControl,
 } from "../../abi.js";
 import {
   processHostStdio,
@@ -68,6 +67,11 @@ import {
   syncPipeOfdGenerationsForSlot,
 } from "../ownership/ofd-table.js";
 import {
+  applyPipeSlotSnapshot,
+  applySupervisorPipeControl,
+  copyPipeSlotDataPlane,
+} from "../ownership/pipe-control.js";
+import {
   supervisorOfdPipeSlotModeMap,
   supervisorOfdPipeSlots,
 } from "../ownership/pipe-slot.js";
@@ -105,49 +109,8 @@ import {
 import { appendForkSharedMemfsDebug } from "./memfs.js";
 import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 
-const PIPE_DEBUG_CONTROL_END_OFFSET = PIPE_DEBUG_WRITE_OPEN_OFFSET + 4;
-
 export const lastForkSharedActiveOfdIdsByHandle = new WeakMap<ProcessHandle, Set<number>>();
 export const SOCK_STATE_SHUTDOWN = SOCKET_STATE_SHUTDOWN;
-
-function applySupervisorPipeControl(
-  handle: ProcessHandle,
-  pipeSlot: number,
-  readOpen: number,
-  writeOpen: number,
-): void {
-  const applied = supervisorPipeReconcileControl(handle.kernel, pipeSlot, readOpen, writeOpen);
-  if (applied === 0) {
-    throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
-  }
-}
-
-function copyPipeSlotDataPlane(
-  memory: Uint8Array,
-  sourceSlot: Uint8Array,
-  targetOffset: number,
-  slotBytes: number,
-): void {
-  memory.set(sourceSlot.subarray(0, PIPE_DEBUG_READ_OPEN_OFFSET), targetOffset);
-  memory.set(
-    sourceSlot.subarray(PIPE_DEBUG_CONTROL_END_OFFSET, slotBytes),
-    targetOffset + PIPE_DEBUG_CONTROL_END_OFFSET,
-  );
-}
-
-function applyPipeSlotSnapshot(
-  handle: ProcessHandle,
-  memory: Uint8Array,
-  sourceSlot: Uint8Array,
-  targetOffset: number,
-  slotBytes: number,
-  pipeSlot: number,
-  readOpen: number,
-  writeOpen: number,
-): void {
-  copyPipeSlotDataPlane(memory, sourceSlot, targetOffset, slotBytes);
-  applySupervisorPipeControl(handle, pipeSlot, readOpen, writeOpen);
-}
 
 export function formatSyncCause(cause: SyncCause): string {
   return `cause=${describeSyncCause(cause)}`;
