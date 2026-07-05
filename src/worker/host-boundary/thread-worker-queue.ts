@@ -27,10 +27,13 @@ import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import {
   clearThreadRunningGeneration,
+  getThreadGeneration,
+  getThreadOwnerPid,
   getThreadReinitCount,
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadReinitCount,
   setThreadRunningGeneration,
@@ -156,7 +159,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (
       handle.workers.has(runningWorker)
       && thread
-      && (getThreadRunningGeneration(thread) ?? thread.generation) === thread.generation
+      && (getThreadRunningGeneration(thread) ?? getThreadGeneration(thread)) === getThreadGeneration(thread)
     ) {
       return runningWorker;
     }
@@ -199,7 +202,7 @@ export function createWorkerSchedulerQueueHelpers(
       handle.runtimeId,
       `attach-transfer-detach:${handle.pid}`
         + `:vm=0x${(thread?.vmPtr ?? 0).toString(16)}`
-        + `:owner=${thread?.ownerPid ?? "none"}`
+        + `:owner=${thread === undefined ? "none" : getThreadOwnerPid(thread)}`
         + `:workers=${handle.workers.size}`,
     );
     handle.workers.delete(worker);
@@ -211,7 +214,7 @@ export function createWorkerSchedulerQueueHelpers(
     const existingThread = deps.threadWorkerStates.get(worker);
     const reinitWithinHandle = existingThread !== undefined
       && transferFrom === undefined
-      && existingThread.ownerPid === handle.pid;
+      && getThreadOwnerPid(existingThread) === handle.pid;
     if (existingThread) {
       if (reinitWithinHandle) {
         clearBlockedWorker(deps, handle, worker);
@@ -226,7 +229,7 @@ export function createWorkerSchedulerQueueHelpers(
         const sourceHandle = transferFrom;
         if (!sourceHandle) {
           throw new Error(
-            `attachThreadWorker requires transferFrom for existing worker owner=${existingThread.ownerPid}`
+            `attachThreadWorker requires transferFrom for existing worker owner=${getThreadOwnerPid(existingThread)}`
               + ` target=${handle.pid} vm=0x${vmPtr.toString(16)}`,
           );
         }
@@ -236,9 +239,9 @@ export function createWorkerSchedulerQueueHelpers(
               + ` vm=0x${vmPtr.toString(16)}`,
           );
         }
-        if (existingThread.ownerPid !== sourceHandle.pid) {
+        if (getThreadOwnerPid(existingThread) !== sourceHandle.pid) {
           throw new Error(
-            `attachThreadWorker owner mismatch worker_owner=${existingThread.ownerPid}`
+            `attachThreadWorker owner mismatch worker_owner=${getThreadOwnerPid(existingThread)}`
               + ` transfer_from=${sourceHandle.pid} target=${handle.pid}`,
           );
         }
@@ -260,10 +263,9 @@ export function createWorkerSchedulerQueueHelpers(
     const reinitCount = reinitWithinHandle ? getThreadReinitCount(existingThread) + 1 : 0;
     const thread: ThreadWorkerState = {
       vmPtr,
-      ownerPid: handle.pid,
-      generation,
     };
     deps.threadWorkerStates.set(worker, thread);
+    setThreadHostIdentity(thread, handle.pid, generation);
     setThreadReinitCount(thread, reinitCount);
     setThreadInitialized(thread, false);
     resetThreadActivityState(thread);
@@ -485,7 +487,7 @@ export function createWorkerSchedulerQueueHelpers(
       reconcileKernelSharePipeControl(handle);
       const activity = getThreadActivityState(thread);
       activity.stepCount += 1;
-      setThreadRunningGeneration(thread, thread.generation);
+      setThreadRunningGeneration(thread, getThreadGeneration(thread));
       activity.totalStepBudget += stepBudget;
       activity.lastStepAtMs = Date.now();
       activity.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);

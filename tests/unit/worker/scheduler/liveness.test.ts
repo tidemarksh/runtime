@@ -22,9 +22,11 @@ import {
   clearThreadRunningGeneration,
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
+  getThreadGeneration,
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadOwnerAsyncStatus,
   setThreadReinitCount,
@@ -462,8 +464,6 @@ function makeHostBoundaryWait4ResumeOutcome() {
 function makeThreadState(vmPtr: number): ThreadWorkerState {
   const thread = {
     vmPtr,
-    ownerPid: 1,
-    generation: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -484,6 +484,7 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
   };
+  setThreadHostIdentity(thread, 1, 0);
   setThreadInitialized(thread, true);
   setThreadReinitCount(thread, 0);
   clearThreadWaitingInWorkerStatus(thread);
@@ -1059,7 +1060,7 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
     thread,
     msg: {
       type: "status",
-      generation: thread.generation,
+      generation: getThreadGeneration(thread),
       status: kernel.abi_status_ok(),
       exitCode: 0,
       termSignal: 0,
@@ -1116,7 +1117,7 @@ test("ok status re-enqueues immediately when no blocked retry rpc is pending", (
     thread,
     msg: {
       type: "status",
-      generation: thread.generation,
+      generation: getThreadGeneration(thread),
       status: kernel.abi_status_ok(),
       exitCode: 0,
       termSignal: 0,
@@ -1557,7 +1558,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
   const runningVmPtr = 0x5678;
   const blockedThread = makeThreadState(blockedVmPtr);
   const runningThread = makeThreadState(runningVmPtr);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(blockedWorker, blockedThread);
   threadWorkerStates.set(runningWorker, runningThread);
@@ -1753,7 +1754,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   const runningVmPtr = 0x5678;
   const blockedThread = makeThreadState(blockedVmPtr);
   const runningThread = makeThreadState(runningVmPtr);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(blockedWorker, blockedThread);
   threadWorkerStates.set(runningWorker, runningThread);
@@ -3473,7 +3474,7 @@ test("pumpProcess preserves an unanswered ok running worker that has not returne
   } as unknown as Worker;
   const runningThread = makeThreadState(0x66c42c8);
   const readyThread = makeThreadState(0x64a6e20);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 1;
   getThreadActivityState(runningThread).lastStepAtMs = 7_500;
   getThreadActivityState(runningThread).lastStatusAtMs = null;
@@ -3501,7 +3502,7 @@ test("pumpProcess preserves an unanswered ok running worker that has not returne
 
   scheduler.pumpProcess(handle);
 
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(handle.runningWorker).toBe(runningWorker);
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
@@ -3517,7 +3518,7 @@ test("pumpProcess keeps an unanswered running worker after an active step clears
   } as unknown as Worker;
   const runningThread = makeThreadState(0x66c42c8);
   const readyThread = makeThreadState(0x64a6e20);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 1;
   getThreadActivityState(runningThread).lastStepAtMs = 7_500;
   getThreadActivityState(runningThread).lastStatusAtMs = null;
@@ -3553,7 +3554,7 @@ test("pumpProcess keeps an unanswered running worker after an active step clears
   activeStepVmPtr = 0;
   await vi.advanceTimersByTimeAsync(2_000);
 
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(handle.runningWorker).toBe(runningWorker);
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
@@ -3592,13 +3593,13 @@ test("pumpProcess preserves a dispatched worker when a sibling remains queued", 
   scheduler.pumpProcess(handle);
 
   expect(handle.runningWorker).toBe(firstWorker);
-  expect(getThreadRunningGeneration(firstThread)).toBe(firstThread.generation);
+  expect(getThreadRunningGeneration(firstThread)).toBe(getThreadGeneration(firstThread));
   expect(handle.vforkReadyWorkers).toEqual([secondWorker]);
 
   vi.setSystemTime(new Date(12_000));
   await vi.advanceTimersByTimeAsync(2_000);
 
-  expect(getThreadRunningGeneration(firstThread)).toBe(firstThread.generation);
+  expect(getThreadRunningGeneration(firstThread)).toBe(getThreadGeneration(firstThread));
   expect(handle.runningWorker).toBe(firstWorker);
   expect(firstWorker.postMessage).toHaveBeenCalledTimes(1);
   expect(secondWorker.postMessage).not.toHaveBeenCalled();
@@ -3786,7 +3787,7 @@ test("pumpProcess preserves a stale unanswered ok running worker without active-
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x9ba7260);
-  setThreadRunningGeneration(thread, thread.generation);
+  setThreadRunningGeneration(thread, getThreadGeneration(thread));
   getThreadActivityState(thread).stepCount = 12;
   getThreadActivityState(thread).statusCount = 11;
   getThreadActivityState(thread).lastStepAtMs = 7_500;
@@ -3813,7 +3814,7 @@ test("pumpProcess preserves a stale unanswered ok running worker without active-
   scheduler.pumpProcess(handle);
 
   expect(handle.runningWorker).toBe(worker);
-  expect(getThreadRunningGeneration(thread)).toBe(thread.generation);
+  expect(getThreadRunningGeneration(thread)).toBe(getThreadGeneration(thread));
   expect(getThreadActivityState(thread).stepCount).toBe(12);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
@@ -3824,7 +3825,7 @@ test("pumpProcess preserves a stale unanswered ok running worker when last trace
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x57fe3d0);
-  setThreadRunningGeneration(thread, thread.generation);
+  setThreadRunningGeneration(thread, getThreadGeneration(thread));
   getThreadActivityState(thread).stepCount = 101;
   getThreadActivityState(thread).statusCount = 100;
   getThreadActivityState(thread).lastStepAtMs = 7_500;
@@ -3851,7 +3852,7 @@ test("pumpProcess preserves a stale unanswered ok running worker when last trace
   scheduler.pumpProcess(handle);
 
   expect(handle.runningWorker).toBe(worker);
-  expect(getThreadRunningGeneration(thread)).toBe(thread.generation);
+  expect(getThreadRunningGeneration(thread)).toBe(getThreadGeneration(thread));
   expect(getThreadActivityState(thread).stepCount).toBe(101);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
@@ -3862,7 +3863,7 @@ test("pumpProcess preserves a stale unanswered no-ready running worker with pend
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x9ba7260);
-  setThreadRunningGeneration(thread, thread.generation);
+  setThreadRunningGeneration(thread, getThreadGeneration(thread));
   getThreadActivityState(thread).stepCount = 12;
   getThreadActivityState(thread).statusCount = 11;
   getThreadActivityState(thread).lastStepAtMs = 7_500;
@@ -3893,7 +3894,7 @@ test("pumpProcess preserves a stale unanswered no-ready running worker with pend
   scheduler.pumpProcess(handle);
 
   expect(handle.runningWorker).toBe(worker);
-  expect(getThreadRunningGeneration(thread)).toBe(thread.generation);
+  expect(getThreadRunningGeneration(thread)).toBe(getThreadGeneration(thread));
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
@@ -3906,7 +3907,7 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
     postMessage: vi.fn(),
   } as unknown as Worker;
   const runningThread = makeThreadState(0x9ba7260);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 70;
   getThreadActivityState(runningThread).statusCount = 11;
   getThreadActivityState(runningThread).lastStepAtMs = 7_500;
@@ -3940,7 +3941,7 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
 
   scheduler.pumpProcess(handle);
 
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(getThreadActivityState(runningThread).stepCount).toBe(70);
   expect(getThreadRunningGeneration(idleThread)).toBeNull();
   expect(getThreadActivityState(idleThread).stepCount).toBe(162);
@@ -3991,7 +3992,7 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
   scheduler.pumpProcess(handle);
 
   expect(handle.runningWorker).toBe(readyWorker);
-  expect(getThreadRunningGeneration(readyThread)).toBe(readyThread.generation);
+  expect(getThreadRunningGeneration(readyThread)).toBe(getThreadGeneration(readyThread));
   expect(readyWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "step",
     budget: expect.any(Number),
@@ -4009,7 +4010,7 @@ test("pumpProcess preserves an unanswered running worker when the step shares a 
   } as unknown as Worker;
   const runningThread = makeThreadState(0x66c42c8);
   const readyThread = makeThreadState(0x64a6e20);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 3;
   getThreadActivityState(runningThread).statusCount = 2;
   getThreadActivityState(runningThread).lastStepAtMs = 7_500;
@@ -4038,7 +4039,7 @@ test("pumpProcess preserves an unanswered running worker when the step shares a 
 
   scheduler.pumpProcess(handle);
 
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(handle.runningWorker).toBe(runningWorker);
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
@@ -4054,7 +4055,7 @@ test("pumpProcess preserves an unanswered ok running worker when status covers t
   } as unknown as Worker;
   const runningThread = makeThreadState(0x6648420);
   const readyThread = makeThreadState(0x9ba7260);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 162;
   getThreadActivityState(runningThread).statusCount = 161;
   getThreadActivityState(runningThread).lastStepAtMs = 7_500;
@@ -4083,7 +4084,7 @@ test("pumpProcess preserves an unanswered ok running worker when status covers t
 
   scheduler.pumpProcess(handle);
 
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(handle.runningWorker).toBe(runningWorker);
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
@@ -4099,7 +4100,7 @@ test("pumpProcess preserves an unanswered ok running worker when the step is sta
   } as unknown as Worker;
   const runningThread = makeThreadState(0x6648420);
   const readyThread = makeThreadState(0x9ba7260);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 162;
   getThreadActivityState(runningThread).statusCount = 161;
   getThreadActivityState(runningThread).lastStepAtMs = 7_500;
@@ -4128,7 +4129,7 @@ test("pumpProcess preserves an unanswered ok running worker when the step is sta
 
   scheduler.pumpProcess(handle);
 
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(handle.runningWorker).toBe(runningWorker);
   expect(readyWorker.postMessage).not.toHaveBeenCalled();
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
@@ -4196,7 +4197,7 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   } as unknown as Worker;
   const runningThread = makeThreadState(0x7127a90);
   const blockedThread = makeThreadState(0x7141c68);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 2;
   getThreadActivityState(runningThread).statusCount = 1;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -4224,7 +4225,7 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(false);
 
   expect(handle.runningWorker).toBe(runningWorker);
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(handle.vforkReadyWorkers).not.toContain(runningWorker);
 });
 
@@ -4238,7 +4239,7 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   const runningThread = makeThreadState(0x7127a90);
   const blockedThread = makeThreadState(0x7141c68);
   const stackPointer = 0xa467710n;
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 2;
   getThreadActivityState(runningThread).statusCount = 1;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -4271,7 +4272,7 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(false);
 
   expect(handle.runningWorker).toBe(runningWorker);
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
   expect(getThreadWaitingInWorkerStatus(runningThread as never)).toBeNull();
   expect(handle.vforkReadyWorkers).not.toContain(runningWorker);
 });
@@ -4286,7 +4287,7 @@ test("epoll retry keeps active unanswered ok running worker", () => {
   } as unknown as Worker;
   const runningThread = makeThreadState(0x585f220);
   const blockedThread = makeThreadState(0x6285030);
-  setThreadRunningGeneration(runningThread, runningThread.generation);
+  setThreadRunningGeneration(runningThread, getThreadGeneration(runningThread));
   getThreadActivityState(runningThread).stepCount = 827;
   getThreadActivityState(runningThread).statusCount = 825;
   getThreadActivityState(runningThread).lastStatus = 0;
@@ -4316,7 +4317,7 @@ test("epoll retry keeps active unanswered ok running worker", () => {
   expect(scheduler.clearStaleRunningWorker(handle, blockedWorker)).toBe(false);
 
   expect(handle.runningWorker).toBe(runningWorker);
-  expect(getThreadRunningGeneration(runningThread)).toBe(runningThread.generation);
+  expect(getThreadRunningGeneration(runningThread)).toBe(getThreadGeneration(runningThread));
 });
 
 test("pumpProcess waits for socket status publication before dispatching a ready sibling", () => {
@@ -5272,7 +5273,7 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x70bf0d9);
-  setThreadRunningGeneration(thread, thread.generation);
+  setThreadRunningGeneration(thread, getThreadGeneration(thread));
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();

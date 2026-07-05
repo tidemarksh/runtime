@@ -5,6 +5,7 @@ import {
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
 import {
+  getThreadGeneration,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
@@ -259,7 +260,7 @@ test("host boundary arms supervisor timer for wait-in-worker futex waits", async
       type: "status",
       status: kernel.abi_status_futex_wait(),
       vmPtr: 0x1234,
-      generation: thread.generation,
+      generation: getThreadGeneration(thread),
       exitCode: 0,
       termSignal: 0,
       pc: 0n,

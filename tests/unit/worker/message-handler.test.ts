@@ -4,7 +4,9 @@ import type { ThreadWorkerOutbound } from "../../../src/messages.js";
 import type { KernelExports } from "../../../src/abi.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
 import {
+  getThreadOwnerPid,
   getThreadOwnerAsyncStatus,
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadOwnerAsyncStatus,
   setThreadReinitCount,
@@ -18,22 +20,24 @@ import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi
 import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
 
 function makeThreadState(overrides: Partial<ThreadWorkerState> & {
+  generation?: number;
   initialized?: boolean;
   ownerAsyncStatus?: number | null;
+  ownerPid?: number;
   reinitCount?: number;
   waitingInWorkerStatus?: number | null;
 } = {}): ThreadWorkerState {
   const {
+    generation = 2,
     initialized = true,
     ownerAsyncStatus,
+    ownerPid = 3,
     reinitCount = 0,
     waitingInWorkerStatus,
     ...rest
   } = overrides;
   const thread = {
     vmPtr: 0x1234,
-    ownerPid: 3,
-    generation: 2,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -55,6 +59,7 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> & {
     hotStatusPcs: {},
     ...rest,
   } as ThreadWorkerState;
+  setThreadHostIdentity(thread, ownerPid, generation);
   setThreadInitialized(thread, initialized);
   setThreadReinitCount(thread, reinitCount);
   if (typeof ownerAsyncStatus === "number") {
@@ -409,7 +414,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
     wasmFeatures: { bulkMemory: true },
   } as ThreadWorkerOutbound);
 
-  expect(thread.ownerPid).toBe(3);
+  expect(getThreadOwnerPid(thread)).toBe(3);
   expect(failProcess).not.toHaveBeenCalled();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,

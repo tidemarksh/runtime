@@ -3,6 +3,10 @@ import {
   readKernelRuntimeState,
 } from "../../abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../types.js";
+import {
+  getThreadGeneration,
+  getThreadOwnerPid,
+} from "../thread-host-state.js";
 
 export type ProcessStateSnapshot = {
   offset: number;
@@ -20,11 +24,12 @@ export function createWorkerOwnershipGuard(
   thread: ThreadWorkerState,
   threadWorkerStates: Pick<WeakMap<Worker, ThreadWorkerState>, "get">,
 ): () => boolean {
-  const threadGeneration = thread.generation;
+  const threadGeneration = getThreadGeneration(thread);
   return () => {
     const current = threadWorkerStates.get(worker);
-    return current?.generation === threadGeneration
-      && current.ownerPid === handle.pid
+    return current !== undefined
+      && getThreadGeneration(current) === threadGeneration
+      && getThreadOwnerPid(current) === handle.pid
       && handle.workers.has(worker);
   };
 }

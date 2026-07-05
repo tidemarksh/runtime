@@ -4,6 +4,8 @@ import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
 import {
   clearThreadRunningGeneration,
+  setThreadGeneration,
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadOwnerAsyncStatus,
   setThreadReinitCount,
@@ -106,8 +108,10 @@ function installSupervisorFaultExitDecision(
 
 function makeThreadState(overrides: Record<string, unknown> = {}) {
   const {
+    generation = 1,
     initialized = true,
     ownerAsyncStatus,
+    ownerPid = 7,
     reinitCount = 0,
     runningGeneration = null,
     waitingInWorkerStatus,
@@ -134,11 +138,12 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    ownerPid: 7,
-    generation: 1,
     ...rest,
   };
   Object.assign(getThreadActivityState(thread as never), rest);
+  if (typeof ownerPid === "number" && typeof generation === "number") {
+    setThreadHostIdentity(thread as never, ownerPid, generation);
+  }
   setThreadInitialized(thread as never, initialized === true);
   if (typeof reinitCount === "number") {
     setThreadReinitCount(thread as never, reinitCount);
@@ -2213,7 +2218,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     networkClosedFds: new Set(),
   };
 
-  thread.generation = 1;
+  setThreadGeneration(thread as never, 1);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2248,7 +2253,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   staleReaderView.setInt32(12, 1, true);
   staleReaderSlot[32] = 0x99;
 
-  thread.generation = 2;
+  setThreadGeneration(thread as never, 2);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2285,7 +2290,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   writerSlot[32 + 9] = 0xab;
   applied[32 + 1] = 0x7b;
 
-  thread.generation = 3;
+  setThreadGeneration(thread as never, 3);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2321,7 +2326,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   staleDrainedReaderView.setInt32(8, 1, true);
   staleDrainedReaderView.setInt32(12, 1, true);
 
-  thread.generation = 4;
+  setThreadGeneration(thread as never, 4);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2358,7 +2363,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   appliedView.setUint32(0, 0, true);
   appliedView.setUint32(4, 0, true);
 
-  thread.generation = 5;
+  setThreadGeneration(thread as never, 5);
   handler(handle, worker, {
     type: "status",
     status: 0,

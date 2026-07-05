@@ -4,6 +4,7 @@ import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/ty
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import {
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadReinitCount,
   setThreadRunningGeneration,
@@ -100,8 +101,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
   const worker = {} as Worker;
   const thread: ThreadWorkerState = {
     vmPtr: 0x2000,
-    ownerPid: 1,
-    generation: 3,
     stepCount: 7,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -133,6 +132,7 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStepPc: 0x1234n,
     lastStatusPc: 0x5678n,
   });
+  setThreadHostIdentity(thread, 1, 3);
   setThreadInitialized(thread, true);
   setThreadReinitCount(thread, 0);
   setThreadRunningGeneration(thread, 3);

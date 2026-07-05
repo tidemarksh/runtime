@@ -7,6 +7,8 @@ interface ThreadHostGateState {
   runningGeneration: number | null;
   initialized: boolean;
   reinitCount: number;
+  ownerPid: number;
+  generation: number;
 }
 
 const threadHostGateStates = new WeakMap<ThreadWorkerState, ThreadHostGateState>();
@@ -21,6 +23,8 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
       runningGeneration: null,
       initialized: false,
       reinitCount: 0,
+      ownerPid: 0,
+      generation: 0,
     };
     threadHostGateStates.set(thread, state);
   }
@@ -35,6 +39,8 @@ function clearIfIdle(thread: ThreadWorkerState, state: ThreadHostGateState): voi
     && state.runningGeneration === null
     && !state.initialized
     && state.reinitCount === 0
+    && state.ownerPid === 0
+    && state.generation === 0
   ) {
     threadHostGateStates.delete(thread);
   }
@@ -190,6 +196,45 @@ export function setThreadReinitCount(
 ): void {
   const state = hostGateState(thread);
   state.reinitCount = reinitCount;
+  clearIfIdle(thread, state);
+}
+
+export function getThreadOwnerPid(
+  thread: ThreadWorkerState | null | undefined,
+): number {
+  return thread === null || thread === undefined
+    ? 0
+    : threadHostGateStates.get(thread)?.ownerPid ?? 0;
+}
+
+export function setThreadOwnerPid(thread: ThreadWorkerState, ownerPid: number): void {
+  const state = hostGateState(thread);
+  state.ownerPid = ownerPid;
+  clearIfIdle(thread, state);
+}
+
+export function getThreadGeneration(
+  thread: ThreadWorkerState | null | undefined,
+): number {
+  return thread === null || thread === undefined
+    ? 0
+    : threadHostGateStates.get(thread)?.generation ?? 0;
+}
+
+export function setThreadGeneration(thread: ThreadWorkerState, generation: number): void {
+  const state = hostGateState(thread);
+  state.generation = generation;
+  clearIfIdle(thread, state);
+}
+
+export function setThreadHostIdentity(
+  thread: ThreadWorkerState,
+  ownerPid: number,
+  generation: number,
+): void {
+  const state = hostGateState(thread);
+  state.ownerPid = ownerPid;
+  state.generation = generation;
   clearIfIdle(thread, state);
 }
 

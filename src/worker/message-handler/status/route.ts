@@ -50,6 +50,8 @@ import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
 import { applyStatusFdEntries } from "./fd-entries.js";
 import {
   clearThreadRunningGeneration,
+  getThreadGeneration,
+  getThreadOwnerPid,
   getThreadRunningGeneration,
   clearThreadWaitingInWorkerStatus,
   getThreadOwnerAsyncStatus,
@@ -107,7 +109,8 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
       return;
     }
-    if (msg.generation !== undefined && msg.generation !== thread.generation) {
+    const threadGeneration = getThreadGeneration(thread);
+    if (msg.generation !== undefined && msg.generation !== threadGeneration) {
       if (handle.runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
         handle.runningWorker = null;
         clearThreadRunningGeneration(thread);
@@ -115,13 +118,13 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       deps.appendWorkerDebugLog(
         handle,
         `status-stale-generation:0x${thread.vmPtr.toString(16)}`
-          + `:msg=${msg.generation}:current=${thread.generation}:status=${msg.status}`,
+          + `:msg=${msg.generation}:current=${threadGeneration}:status=${msg.status}`,
       );
       if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, msg.status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-stale-generation:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-            + `:msg=${msg.generation}:current=${thread.generation}`,
+            + `:msg=${msg.generation}:current=${threadGeneration}`,
         );
       }
       return;
@@ -162,7 +165,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `status-execve-spawn-seen:${handle.pid}:0x${msg.vmPtr.toString(16)}`
-          + `:owner=${thread.ownerPid}`
+          + `:owner=${getThreadOwnerPid(thread)}`
           + `:field=${processPidField ?? "n/a"}`
           + `:local=${localProcessPid ?? "n/a"}`
           + `:kind=${handle.kernel.thread_spawn_kind?.(msg.vmPtr) ?? -1}`
@@ -228,7 +231,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     deps.appendWorkerDebugLog(
       handle,
       `status-route:0x${thread.vmPtr.toString(16)}`
-        + `:owner_pid=${thread.ownerPid}`
+        + `:owner_pid=${getThreadOwnerPid(thread)}`
         + `:handle_pid=${handle.pid}`
         + `:generation=${msg.generation}`
         + `:status=${status}`,

@@ -29,7 +29,9 @@ import {
 } from "../ownership/ofd-metadata.js";
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import {
+  getThreadGeneration,
   getThreadOwnerAsyncStatus,
+  getThreadOwnerPid,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
   isThreadInitialized,
@@ -283,8 +285,8 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
-    `ownerPid=${state.ownerPid}`,
-    `gen=${state.generation}`,
+    `ownerPid=${getThreadOwnerPid(state)}`,
+    `gen=${getThreadGeneration(state)}`,
     `runGen=${getThreadRunningGeneration(state) ?? "null"}`,
     `init=${isThreadInitialized(state) ? 1 : 0}`,
     `wait=${waitingInWorkerStatus ?? "null"}`,

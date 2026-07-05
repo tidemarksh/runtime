@@ -10,6 +10,7 @@ import {
 import {
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadReinitCount,
 } from "../../../../src/worker/thread-host-state.js";
@@ -142,8 +143,6 @@ export function makeHostBoundaryKernel() {
 export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
   const thread = {
     vmPtr,
-    ownerPid: 1,
-    generation: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -164,6 +163,7 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
   };
+  setThreadHostIdentity(thread, 1, 0);
   setThreadInitialized(thread, true);
   setThreadReinitCount(thread, 0);
   clearThreadWaitingInWorkerStatus(thread);

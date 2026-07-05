@@ -11,6 +11,11 @@ import { supervisorProcessStatusAllowsPidMismatch } from "./supervisor-status.js
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
+import {
+  getThreadGeneration,
+  getThreadOwnerPid,
+  setThreadOwnerPid,
+} from "./thread-host-state.js";
 
 export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
   const handleWorkerControlMessage = createWorkerControlMessageHandler(deps);
@@ -64,26 +69,28 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     if (!thread) {
       return true;
     }
-    if ("generation" in msg && msg.generation !== thread.generation) {
+    const threadGeneration = getThreadGeneration(thread);
+    if ("generation" in msg && msg.generation !== threadGeneration) {
       recordWorkerMessageDebugEvent(
         handle.workerMessageDebugStats,
         "staleGenerationDrops",
-        `stale-generation:${handle.pid}:${msg.type}:${msg.generation}->${thread.generation}`,
+        `stale-generation:${handle.pid}:${msg.type}:${msg.generation}->${threadGeneration}`,
       );
       deps.appendWorkerDebugLog(
         handle,
-        `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${thread.generation}`,
+        `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${threadGeneration}`,
       );
       return false;
     }
-    if (thread.ownerPid !== handle.pid) {
+    const ownerPid = getThreadOwnerPid(thread);
+    if (ownerPid !== handle.pid) {
       const readyVmPtr = msg.type === "ready" && "vmPtr" in msg ? msg.vmPtr : 0;
       if (readyVmPtr === thread.vmPtr && handle.pid > 0) {
         if (supervisorProcessOwnerLiveMatches(handle.kernel, thread.vmPtr, handle.pid)) {
           const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
           const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
-          const previousOwnerPid = thread.ownerPid;
-          thread.ownerPid = handle.pid;
+          const previousOwnerPid = ownerPid;
+          setThreadOwnerPid(thread, handle.pid);
           recordWorkerMessageDebugEvent(
             handle.workerMessageDebugStats,
             "readyRehydrateAdopts",
@@ -100,7 +107,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
             handle,
             worker,
             msg,
-            `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
+            `owner_pid=${ownerPid} handle_pid=${handle.pid}`,
           );
           return false;
         }
@@ -109,7 +116,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
           handle,
           worker,
           msg,
-          `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
+          `owner_pid=${ownerPid} handle_pid=${handle.pid}`,
         );
         return false;
       }
@@ -206,7 +213,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     const isActiveVforkWorker = thread !== undefined
       && handle.vforkSnapshot !== null
       && handle.vforkWorker === worker;
-    const workerOwnerMatchesHandle = thread !== undefined && thread.ownerPid === handle.pid;
+    const workerOwnerMatchesHandle = thread !== undefined && getThreadOwnerPid(thread) === handle.pid;
     if (
       !isActiveVforkWorker
       && !workerOwnerMatchesHandle
@@ -234,19 +241,20 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       !isActiveVforkWorker
       && handle.pid > 0
       && thread !== undefined
-      && thread.ownerPid > 0
-      && thread.ownerPid !== handle.pid
+      && getThreadOwnerPid(thread) > 0
+      && getThreadOwnerPid(thread) !== handle.pid
     ) {
-      const ownerHandle = deps.processHandles.get(thread.ownerPid);
+      const ownerPid = getThreadOwnerPid(thread);
+      const ownerHandle = deps.processHandles.get(ownerPid);
       if (ownerHandle && ownerHandle !== handle) {
         recordWorkerMessageDebugEvent(
           handle.workerMessageDebugStats,
           "rerouted",
-          `reroute-owner:${handle.pid}->${thread.ownerPid}:${msg.type}`,
+          `reroute-owner:${handle.pid}->${ownerPid}:${msg.type}`,
         );
         deps.appendWorkerDebugLog(
           handle,
-          `reroute-owner-message:pid=${handle.pid}->${thread.ownerPid}:type=${msg.type}`,
+          `reroute-owner-message:pid=${handle.pid}->${ownerPid}:type=${msg.type}`,
         );
         handleWorkerMessage(ownerHandle, worker, msg);
         return;

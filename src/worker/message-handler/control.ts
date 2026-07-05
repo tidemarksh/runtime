@@ -22,6 +22,7 @@ import { supervisorProcessStatusIsCloneSpawn } from "../supervisor-status.js";
 import {
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
+  getThreadOwnerPid,
   getThreadReinitCount,
   getThreadOwnerAsyncStatus,
   setThreadInitialized,
@@ -97,20 +98,20 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       deps.appendWorkerDebugLog(
         handle,
         `ready-route:0x${thread.vmPtr.toString(16)}`
-          + `:owner_pid=${thread.ownerPid}`
+          + `:owner_pid=${getThreadOwnerPid(thread)}`
           + `:handle_pid=${handle.pid}`
           + `:generation=${msg.generation}`,
       );
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `clone-child-ready-route:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
-          + `:owner=${thread.ownerPid}:generation=${msg.generation}`
+          + `:owner=${getThreadOwnerPid(thread)}:generation=${msg.generation}`
           + `:resume=${threadResumeWorkersOnReadyCount(thread)}`,
       );
       const readyProcessPidField = readProcessPidField(msg.debug);
       if (readyProcessPidField !== null && readyProcessPidField !== handle.pid) {
         if (
-          thread.ownerPid === handle.pid
+          getThreadOwnerPid(thread) === handle.pid
           && supervisorProcessOwnerLiveMatches(handle.kernel, thread.vmPtr, handle.pid)
         ) {
           const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);

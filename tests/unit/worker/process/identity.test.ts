@@ -2,6 +2,7 @@ import { expect, test } from "vite-plus/test";
 import { assertHandleWorkerProcessIdentity } from "../../../../src/worker/process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import {
+  setThreadHostIdentity,
   setThreadInitialized,
   setThreadReinitCount,
 } from "../../../../src/worker/thread-host-state.js";
@@ -9,8 +10,6 @@ import {
 function makeWorkerState(vmPtr: number): ThreadWorkerState {
   const thread = {
     vmPtr,
-    ownerPid: 3,
-    generation: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -33,6 +32,7 @@ function makeWorkerState(vmPtr: number): ThreadWorkerState {
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
   };
+  setThreadHostIdentity(thread, 3, 0);
   setThreadInitialized(thread, true);
   setThreadReinitCount(thread, 0);
   return thread;

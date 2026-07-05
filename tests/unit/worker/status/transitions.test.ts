@@ -4,7 +4,9 @@ import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
   setThreadOwnerAsyncStatus,
+  setThreadOwnerPid,
   snapshotThreadResumeWorkersOnReady,
 } from "../../../../src/worker/thread-host-state.js";
 import {
@@ -414,13 +416,15 @@ function makeDeps(worker: Worker) {
     generation: number;
     waitingInWorkerStatus: number | null;
   }>();
-  threadWorkerStates.set(worker, {
+  const thread = {
     vmPtr: 0x1234,
     ownerPid: 0,
     ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
-  });
+  };
+  setThreadHostIdentity(thread as never, 0, 1);
+  threadWorkerStates.set(worker, thread);
 
   return {
     threadWorkerStates,
@@ -771,13 +775,15 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
     return 88;
   });
   const deps = makeDeps(worker);
-  deps.threadWorkerStates.set(faultWorker, {
+  const faultThread = {
     vmPtr: 0x5678,
     ownerPid: 1,
     ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
-  });
+  };
+  setThreadHostIdentity(faultThread as never, 1, 1);
+  deps.threadWorkerStates.set(faultWorker, faultThread);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1072,7 +1078,7 @@ test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supe
   const deps = makeDeps(worker);
   deps.syncEffectPipeState = 1;
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1144,7 +1150,7 @@ test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", as
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1194,7 +1200,7 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
   handle.kernel.thread_status = () => handle.kernel.abi_status_ok();
   handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
   const deps = makeDeps(worker);
-  deps.threadWorkerStates.get(worker)!.ownerPid = handle.pid;
+  setThreadOwnerPid(deps.threadWorkerStates.get(worker)! as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   expect(() => transition({
@@ -1254,7 +1260,7 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   let childThread:
     | {
       vmPtr: number;
@@ -1272,6 +1278,7 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
       generation: 1,
       waitingInWorkerStatus: null,
     };
+    setThreadHostIdentity(childThread as never, handle.pid, 1);
     deps.threadWorkerStates.set(request.worker, childThread);
     handle.workers.add(request.worker);
   });
@@ -1371,15 +1378,17 @@ test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending t
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
-    deps.threadWorkerStates.set(request.worker, {
+    const childThread = {
       vmPtr: request.vmPtr,
       ownerPid: handle.pid,
       ownerAsyncStatus: null,
       generation: 1,
       waitingInWorkerStatus: null,
-    });
+    };
+    setThreadHostIdentity(childThread as never, handle.pid, 1);
+    deps.threadWorkerStates.set(request.worker, childThread);
     handle.workers.add(request.worker);
   });
   const transition = createWorkerStatusTransitionHandler(deps as never);
@@ -1457,7 +1466,7 @@ test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1525,7 +1534,7 @@ test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", ()
   });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1568,7 +1577,7 @@ test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current cl
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
   handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
   const deps = makeDeps(worker);
-  deps.threadWorkerStates.get(worker)!.ownerPid = handle.pid;
+  setThreadOwnerPid(deps.threadWorkerStates.get(worker)! as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1620,7 +1629,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
   installCloneSpawnHostOp(handle);
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   let childThread:
     | {
       vmPtr: number;
@@ -1638,6 +1647,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
       generation: 1,
       waitingInWorkerStatus: null,
     };
+    setThreadHostIdentity(childThread as never, handle.pid, 1);
     deps.threadWorkerStates.set(request.worker, childThread);
     handle.workers.add(request.worker);
   });
@@ -1679,7 +1689,7 @@ test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync c
   const deps = makeDeps(worker);
   deps.syncProcessLifecycleViaKernelWorker = vi.fn(() => new Promise<void>(() => {}));
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1719,7 +1729,7 @@ test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => 
     syncResolutions.push(resolve);
   }));
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
   const statusMsg = {
     type: "status" as const,
@@ -1807,7 +1817,7 @@ test("STATUS_FS supervisor pipe-refresh NONE action skips shared pipe refresh", 
   (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
     .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1852,7 +1862,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
     .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   clearThreadOwnerAsyncStatus(thread as never);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
@@ -1947,7 +1957,7 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
     resolvePipeSync = resolve;
   }));
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
