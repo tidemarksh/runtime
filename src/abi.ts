@@ -212,6 +212,21 @@ export interface KernelExports {
   supervisor_pipe_slot_mode_read?(): number;
   supervisor_pipe_slot_mode_write?(): number;
   supervisor_pipe_slot_mode_control?(): number;
+  supervisor_pipe_slot_snapshot_context_shared_state?(): number;
+  supervisor_pipe_slot_snapshot_context_thread_step?(): number;
+  supervisor_pipe_slot_snapshot_context_kernel_worker_apply?(): number;
+  supervisor_pipe_slot_snapshot_context_kernel_worker_process?(): number;
+  supervisor_pipe_slot_snapshot_context_kernel_worker_canonical?(): number;
+  supervisor_pipe_slot_snapshot_action_skip?(): number;
+  supervisor_pipe_slot_snapshot_action_apply_slot?(): number;
+  supervisor_pipe_slot_snapshot_action_apply_control?(): number;
+  supervisor_pipe_slot_snapshot_action_set_head_to_source?(): number;
+  supervisor_pipe_slot_snapshot_action_set_tail_to_source?(): number;
+  supervisor_pipe_slot_snapshot_action_set_head_zero?(): number;
+  supervisor_pipe_slot_snapshot_action_copy_full?(): number;
+  supervisor_pipe_slot_snapshot_action_copy_tail_delta?(): number;
+  supervisor_pipe_slot_snapshot_action_sync_generation?(): number;
+  supervisor_pipe_slot_snapshot_action_stop?(): number;
   supervisor_blocked_pipe_resume_action_defer?(): number;
   supervisor_blocked_pipe_resume_action_direct?(): number;
   supervisor_blocked_pipe_sync_before_retry_action_none?(): number;
@@ -477,6 +492,21 @@ export interface KernelExports {
   supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
   supervisor_pipe_reconcile_control?(pipeSlot: number, readOpen: number, writeOpen: number): number;
+  supervisor_pipe_slot_snapshot_merge_action?(
+    context: number,
+    mode: number,
+    fresh: number,
+    sourceHead: number,
+    sourceTail: number,
+    sourceReadOpen: number,
+    sourceWriteOpen: number,
+    sourceGeneration: number,
+    targetHead: number,
+    targetTail: number,
+    targetReadOpen: number,
+    targetWriteOpen: number,
+    targetGeneration: number,
+  ): number;
   supervisor_blocked_pipe_resume_action?(vmPtr: number): number;
   supervisor_blocked_pipe_sync_before_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
@@ -1722,6 +1752,21 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_pipe_slot_mode_read",
   "supervisor_pipe_slot_mode_write",
   "supervisor_pipe_slot_mode_control",
+  "supervisor_pipe_slot_snapshot_context_shared_state",
+  "supervisor_pipe_slot_snapshot_context_thread_step",
+  "supervisor_pipe_slot_snapshot_context_kernel_worker_apply",
+  "supervisor_pipe_slot_snapshot_context_kernel_worker_process",
+  "supervisor_pipe_slot_snapshot_context_kernel_worker_canonical",
+  "supervisor_pipe_slot_snapshot_action_skip",
+  "supervisor_pipe_slot_snapshot_action_apply_slot",
+  "supervisor_pipe_slot_snapshot_action_apply_control",
+  "supervisor_pipe_slot_snapshot_action_set_head_to_source",
+  "supervisor_pipe_slot_snapshot_action_set_tail_to_source",
+  "supervisor_pipe_slot_snapshot_action_set_head_zero",
+  "supervisor_pipe_slot_snapshot_action_copy_full",
+  "supervisor_pipe_slot_snapshot_action_copy_tail_delta",
+  "supervisor_pipe_slot_snapshot_action_sync_generation",
+  "supervisor_pipe_slot_snapshot_action_stop",
   "supervisor_blocked_pipe_resume_action_defer",
   "supervisor_blocked_pipe_resume_action_direct",
   "supervisor_blocked_pipe_sync_before_retry_action_none",
@@ -1898,6 +1943,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_pipe_read_open_count",
   "supervisor_process_pipe_write_open_count",
   "supervisor_pipe_reconcile_control",
+  "supervisor_pipe_slot_snapshot_merge_action",
   "supervisor_blocked_pipe_resume_action",
   "supervisor_blocked_pipe_sync_before_retry_action",
   "supervisor_blocked_pipe_sync_before_retry_requested",

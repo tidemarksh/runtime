@@ -83,6 +83,24 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_fork_shared_ofd_action_rehydrate: 1 << 2,
   supervisor_fork_shared_held_ofd_track_action: 0,
   supervisor_fork_shared_effect_sync_action: 0,
+  supervisor_pipe_slot_mode_read: 1,
+  supervisor_pipe_slot_mode_write: 2,
+  supervisor_pipe_slot_mode_control: 4,
+  supervisor_pipe_slot_snapshot_context_shared_state: 1,
+  supervisor_pipe_slot_snapshot_context_thread_step: 2,
+  supervisor_pipe_slot_snapshot_context_kernel_worker_apply: 3,
+  supervisor_pipe_slot_snapshot_context_kernel_worker_process: 4,
+  supervisor_pipe_slot_snapshot_context_kernel_worker_canonical: 5,
+  supervisor_pipe_slot_snapshot_action_skip: 1,
+  supervisor_pipe_slot_snapshot_action_apply_slot: 2,
+  supervisor_pipe_slot_snapshot_action_apply_control: 4,
+  supervisor_pipe_slot_snapshot_action_set_head_to_source: 8,
+  supervisor_pipe_slot_snapshot_action_set_tail_to_source: 16,
+  supervisor_pipe_slot_snapshot_action_set_head_zero: 32,
+  supervisor_pipe_slot_snapshot_action_copy_full: 64,
+  supervisor_pipe_slot_snapshot_action_copy_tail_delta: 128,
+  supervisor_pipe_slot_snapshot_action_sync_generation: 256,
+  supervisor_pipe_slot_snapshot_action_stop: 512,
   supervisor_fs_control_record_bytes: 112,
   supervisor_fs_control_record_magic: 0x5346_5354,
   supervisor_signal_control_record_bytes: 120,
@@ -892,6 +910,255 @@ export function makeSupervisorAbiStubs(
     view.setInt32(slotOffset + 12, Math.trunc(writeOpen), true);
     return 1;
   };
+  const pipeCounterAhead = (sourceValue: number, targetValue: number): boolean =>
+    sourceValue > targetValue
+    || (
+      sourceValue < targetValue
+      && targetValue > 65_536 / 2
+      && sourceValue < 65_536 / 2
+    );
+  const pipeGenerationAhead = (sourceValue: number, targetValue: number): boolean =>
+    targetValue === 0
+    || sourceValue > targetValue
+    || (
+      sourceValue < targetValue
+      && targetValue > 0x80000000
+      && sourceValue < 0x80000000
+    );
+  const pipeSlotSnapshotMergeAction = (
+    context: number,
+    mode: number,
+    freshFlag: number,
+    sourceHead: number,
+    sourceTail: number,
+    sourceReadOpen: number,
+    sourceWriteOpen: number,
+    sourceGeneration: number,
+    targetHeadInput: number,
+    targetTailInput: number,
+    targetReadOpen: number,
+    targetWriteOpen: number,
+    targetGeneration: number,
+  ): number => {
+    const readMode = (mode & DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_mode_read) !== 0;
+    const writeMode = (mode & DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_mode_write) !== 0;
+    const controlMode = (mode & DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_mode_control) !== 0;
+    const fresh = freshFlag !== 0;
+    const sharedState = context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_shared_state;
+    const threadStep = context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_thread_step;
+    const kernelWorkerApply =
+      context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_apply;
+    const kernelWorkerProcess =
+      context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_process;
+    const kernelWorkerCanonical =
+      context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_canonical;
+    const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
+    let targetHead = targetHeadInput;
+    let targetTail = targetTailInput;
+    if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && !pipeGenerationAhead(sourceGeneration, targetGeneration)
+      ) {
+        if (kernelWorkerCanonical) {
+          if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
+            return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
+              | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+          }
+        } else if (targetHead !== targetTail && !fresh) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+        }
+      }
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+      if (
+        fresh
+        || pipeGenerationAhead(sourceGeneration, targetGeneration)
+        || (targetReadOpen <= 0 && targetWriteOpen <= 0)
+      ) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+      } else if (syncGenerationWithoutApply) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+      }
+      return action;
+    }
+    if (
+      (
+        fresh
+        || ((kernelWorkerProcess || kernelWorkerCanonical) && targetReadOpen <= 0 && targetWriteOpen <= 0)
+      )
+      && sourceHead === 0
+      && sourceTail === 0
+      && targetHead === targetTail
+      && sourceReadOpen > 0
+      && sourceWriteOpen > 0
+      && readMode
+      && writeMode
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
+    if (
+      kernelWorkerProcess
+      && sourceHead === 0
+      && sourceTail === 0
+      && (targetHead !== 0 || targetTail !== 0)
+    ) {
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+      if (targetReadOpen <= 0 && targetWriteOpen <= 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot;
+      }
+      return action;
+    }
+    if (
+      kernelWorkerApply
+      && sourceHead === 0
+      && sourceTail === 0
+      && (targetHead !== 0 || targetTail !== 0)
+      && targetReadOpen <= 0
+      && targetWriteOpen <= 0
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
+    if (
+      (threadStep || kernelWorkerApply)
+      && targetReadOpen <= 0
+      && targetWriteOpen <= 0
+      && targetHead === targetTail
+      && (sourceReadOpen > 0 || sourceWriteOpen > 0)
+      && (writeMode || controlMode)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
+    let action = 0;
+    if (controlMode && (sharedState || threadStep || kernelWorkerApply)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_control;
+    }
+    if (
+      readMode
+      && (!writeMode || kernelWorkerProcess)
+      && sourceHead !== 0
+      && sourceHead === sourceTail
+      && targetTail !== sourceTail
+      && pipeCounterAhead(sourceTail, targetTail)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source;
+      targetHead = sourceHead;
+      targetTail = sourceTail;
+    }
+    if (
+      writeMode
+      && !readMode
+      && sourceHead === 0
+      && sourceTail !== 0
+      && targetHead !== 0
+      && (targetHead === targetTail || targetTail === 0)
+      && pipeCounterAhead(sourceTail, targetTail)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_zero;
+      targetHead = 0;
+    }
+    if (sharedState) {
+      let readHeadAdvanced = false;
+      if (readMode) {
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+          targetHead = sourceHead;
+          readHeadAdvanced = true;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail) || (readHeadAdvanced && sourceHead !== sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+          targetTail = sourceTail;
+        } else if (
+          sourceTail === targetTail
+          && sourceHead !== sourceTail
+          && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+        ) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      if (writeMode) {
+        if (pipeCounterAhead(sourceTail, targetTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        } else if (
+          sourceTail === targetTail
+          && sourceHead !== sourceTail
+          && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+        ) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+    }
+    if (kernelWorkerProcess) {
+      if (
+        readMode
+        && pipeCounterAhead(sourceHead, targetHead)
+        && (sourceHead !== sourceTail || targetTail === sourceTail)
+      ) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+      }
+      if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+      } else if (writeMode && sourceTail === targetTail && sourceHead !== sourceTail) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+      }
+      return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+    }
+    if (kernelWorkerCanonical) {
+      if (readMode) {
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+          targetHead = sourceHead;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      if (writeMode) {
+        let repairedHead = false;
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+          repairedHead = true;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+    }
+    if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+    }
+    if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_tail_delta;
+    } else if (
+      writeMode
+      && sourceTail === targetTail
+      && sourceHead !== sourceTail
+      && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+    }
+    return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+  };
   const regularFileOfdsShareIdentity = (
     receiver: Partial<KernelExports>,
     currentOfdId: number,
@@ -1597,6 +1864,38 @@ export function makeSupervisorAbiStubs(
       writeOpen: number,
     ) {
       return reconcilePipeControl(currentExports(this), pipeSlot, readOpen, writeOpen);
+    },
+    supervisor_pipe_slot_snapshot_merge_action(
+      this: KernelExports | undefined,
+      context: number,
+      mode: number,
+      fresh: number,
+      sourceHead: number,
+      sourceTail: number,
+      sourceReadOpen: number,
+      sourceWriteOpen: number,
+      sourceGeneration: number,
+      targetHead: number,
+      targetTail: number,
+      targetReadOpen: number,
+      targetWriteOpen: number,
+      targetGeneration: number,
+    ) {
+      return pipeSlotSnapshotMergeAction(
+        context,
+        mode,
+        fresh,
+        sourceHead,
+        sourceTail,
+        sourceReadOpen,
+        sourceWriteOpen,
+        sourceGeneration,
+        targetHead,
+        targetTail,
+        targetReadOpen,
+        targetWriteOpen,
+        targetGeneration,
+      );
     },
     supervisor_fork_shared_held_ofd_track_flag_shared() {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared;

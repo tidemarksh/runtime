@@ -30,6 +30,24 @@ const SUPERVISOR_BLOCKED_RESUME_DELEGATION_UNSUPPORTED = 3;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_EPOLL_DIRECT = 4;
 const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DEFER = 0;
 const SUPERVISOR_BLOCKED_PIPE_RESUME_ACTION_DIRECT = 1;
+const SUPERVISOR_PIPE_SLOT_MODE_READ = 1;
+const SUPERVISOR_PIPE_SLOT_MODE_WRITE = 2;
+const SUPERVISOR_PIPE_SLOT_MODE_CONTROL = 4;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE = 1;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP = 2;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY = 3;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS = 4;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL = 5;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SKIP = 1;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT = 2;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL = 4;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE = 8;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE = 16;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO = 32;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL = 64;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA = 128;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION = 256;
+const SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP = 512;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_ACTION_REQUEST_SYNC = 1;
 const SUPERVISOR_BLOCKED_PIPE_SYNC_BEFORE_RETRY_FLAG_KERNEL_WORKER_AVAILABLE = 1;
@@ -244,6 +262,25 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_process_pipe_read_open_count"
   | "supervisor_process_pipe_write_open_count"
   | "supervisor_pipe_reconcile_control"
+  | "supervisor_pipe_slot_mode_read"
+  | "supervisor_pipe_slot_mode_write"
+  | "supervisor_pipe_slot_mode_control"
+  | "supervisor_pipe_slot_snapshot_context_shared_state"
+  | "supervisor_pipe_slot_snapshot_context_thread_step"
+  | "supervisor_pipe_slot_snapshot_context_kernel_worker_apply"
+  | "supervisor_pipe_slot_snapshot_context_kernel_worker_process"
+  | "supervisor_pipe_slot_snapshot_context_kernel_worker_canonical"
+  | "supervisor_pipe_slot_snapshot_action_skip"
+  | "supervisor_pipe_slot_snapshot_action_apply_slot"
+  | "supervisor_pipe_slot_snapshot_action_apply_control"
+  | "supervisor_pipe_slot_snapshot_action_set_head_to_source"
+  | "supervisor_pipe_slot_snapshot_action_set_tail_to_source"
+  | "supervisor_pipe_slot_snapshot_action_set_head_zero"
+  | "supervisor_pipe_slot_snapshot_action_copy_full"
+  | "supervisor_pipe_slot_snapshot_action_copy_tail_delta"
+  | "supervisor_pipe_slot_snapshot_action_sync_generation"
+  | "supervisor_pipe_slot_snapshot_action_stop"
+  | "supervisor_pipe_slot_snapshot_merge_action"
   | "supervisor_process_epoll_held_ofd"
   | "supervisor_process_epoll_dependent_ofd"
   | "supervisor_process_sync_dependent_ofd"
@@ -660,6 +697,252 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     view.setInt32(slotOffset + 12, Math.trunc(writeOpen), true);
     return 1;
   };
+  const pipeCounterAhead = (sourceValue: number, targetValue: number): boolean =>
+    sourceValue > targetValue
+    || (
+      sourceValue < targetValue
+      && targetValue > 65_536 / 2
+      && sourceValue < 65_536 / 2
+    );
+  const pipeGenerationAhead = (sourceValue: number, targetValue: number): boolean =>
+    targetValue === 0
+    || sourceValue > targetValue
+    || (
+      sourceValue < targetValue
+      && targetValue > 0x80000000
+      && sourceValue < 0x80000000
+    );
+  const supervisorPipeSlotSnapshotMergeAction = (
+    context: number,
+    mode: number,
+    freshFlag: number,
+    sourceHead: number,
+    sourceTail: number,
+    sourceReadOpen: number,
+    sourceWriteOpen: number,
+    sourceGeneration: number,
+    targetHeadInput: number,
+    targetTailInput: number,
+    targetReadOpen: number,
+    targetWriteOpen: number,
+    targetGeneration: number,
+  ): number => {
+    const readMode = (mode & SUPERVISOR_PIPE_SLOT_MODE_READ) !== 0;
+    const writeMode = (mode & SUPERVISOR_PIPE_SLOT_MODE_WRITE) !== 0;
+    const controlMode = (mode & SUPERVISOR_PIPE_SLOT_MODE_CONTROL) !== 0;
+    const fresh = freshFlag !== 0;
+    const sharedState = context === SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE;
+    const threadStep = context === SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP;
+    const kernelWorkerApply = context === SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY;
+    const kernelWorkerProcess = context === SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS;
+    const kernelWorkerCanonical = context === SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL;
+    const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
+    let targetHead = targetHeadInput;
+    let targetTail = targetTailInput;
+    if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && !pipeGenerationAhead(sourceGeneration, targetGeneration)
+      ) {
+        if (kernelWorkerCanonical) {
+          if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
+            return SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SKIP
+              | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+          }
+        } else if (targetHead !== targetTail && !fresh) {
+          return SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SKIP
+            | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+        }
+      }
+      let action = SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+      if (
+        fresh
+        || pipeGenerationAhead(sourceGeneration, targetGeneration)
+        || (targetReadOpen <= 0 && targetWriteOpen <= 0)
+      ) {
+        action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+          | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+      } else if (syncGenerationWithoutApply) {
+        action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+      }
+      return action;
+    }
+    if (
+      (
+        fresh
+        || ((kernelWorkerProcess || kernelWorkerCanonical) && targetReadOpen <= 0 && targetWriteOpen <= 0)
+      )
+      && sourceHead === 0
+      && sourceTail === 0
+      && targetHead === targetTail
+      && sourceReadOpen > 0
+      && sourceWriteOpen > 0
+      && readMode
+      && writeMode
+    ) {
+      return SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    }
+    if (
+      kernelWorkerProcess
+      && sourceHead === 0
+      && sourceTail === 0
+      && (targetHead !== 0 || targetTail !== 0)
+    ) {
+      let action = SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+      if (targetReadOpen <= 0 && targetWriteOpen <= 0) {
+        action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT;
+      }
+      return action;
+    }
+    if (
+      kernelWorkerApply
+      && sourceHead === 0
+      && sourceTail === 0
+      && (targetHead !== 0 || targetTail !== 0)
+      && targetReadOpen <= 0
+      && targetWriteOpen <= 0
+    ) {
+      return SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    }
+    if (
+      (threadStep || kernelWorkerApply)
+      && targetReadOpen <= 0
+      && targetWriteOpen <= 0
+      && targetHead === targetTail
+      && (sourceReadOpen > 0 || sourceWriteOpen > 0)
+      && (writeMode || controlMode)
+    ) {
+      return SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    }
+    let action = 0;
+    if (controlMode && (sharedState || threadStep || kernelWorkerApply)) {
+      action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL;
+    }
+    if (
+      readMode
+      && (!writeMode || kernelWorkerProcess)
+      && sourceHead !== 0
+      && sourceHead === sourceTail
+      && targetTail !== sourceTail
+      && pipeCounterAhead(sourceTail, targetTail)
+    ) {
+      action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE;
+      targetHead = sourceHead;
+      targetTail = sourceTail;
+    }
+    if (
+      writeMode
+      && !readMode
+      && sourceHead === 0
+      && sourceTail !== 0
+      && targetHead !== 0
+      && (targetHead === targetTail || targetTail === 0)
+      && pipeCounterAhead(sourceTail, targetTail)
+    ) {
+      action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO;
+      targetHead = 0;
+    }
+    if (sharedState) {
+      let readHeadAdvanced = false;
+      if (readMode) {
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+          targetHead = sourceHead;
+          readHeadAdvanced = true;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail) || (readHeadAdvanced && sourceHead !== sourceTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE
+            | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+          targetTail = sourceTail;
+        } else if (
+          sourceTail === targetTail
+          && sourceHead !== sourceTail
+          && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+        ) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        }
+      }
+      if (writeMode) {
+        if (pipeCounterAhead(sourceTail, targetTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE
+            | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        } else if (
+          sourceTail === targetTail
+          && sourceHead !== sourceTail
+          && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+        ) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        }
+      }
+      return action | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    }
+    if (kernelWorkerProcess) {
+      if (
+        readMode
+        && pipeCounterAhead(sourceHead, targetHead)
+        && (sourceHead !== sourceTail || targetTail === sourceTail)
+      ) {
+        action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+      }
+      if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+        action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE
+          | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      } else if (writeMode && sourceTail === targetTail && sourceHead !== sourceTail) {
+        action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+      return action | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    }
+    if (kernelWorkerCanonical) {
+      if (readMode) {
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+          targetHead = sourceHead;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE
+            | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        }
+      }
+      if (writeMode) {
+        let repairedHead = false;
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+          repairedHead = true;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE
+            | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+          action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        }
+      }
+      return action | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    }
+    if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+      action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+    }
+    if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+      action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE
+        | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA;
+    } else if (
+      writeMode
+      && sourceTail === targetTail
+      && sourceHead !== sourceTail
+      && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+    ) {
+      action |= SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+    }
+    return action | SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  };
   const pipeSlotMode = (vmPtr: number, pipeSlot: number): number => {
     let mode = 0;
     for (let fd = 0; fd < maxFds(); fd += 1) {
@@ -702,6 +985,28 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_process_pipe_write_open_count ??= (vmPtr: number, pipeSlot: number) =>
     pipeOpenCount(vmPtr, pipeSlot, true);
   nextKernel.supervisor_pipe_reconcile_control ??= supervisorPipeReconcileControl;
+  nextKernel.supervisor_pipe_slot_mode_read ??= () => SUPERVISOR_PIPE_SLOT_MODE_READ;
+  nextKernel.supervisor_pipe_slot_mode_write ??= () => SUPERVISOR_PIPE_SLOT_MODE_WRITE;
+  nextKernel.supervisor_pipe_slot_mode_control ??= () => SUPERVISOR_PIPE_SLOT_MODE_CONTROL;
+  nextKernel.supervisor_pipe_slot_snapshot_context_shared_state ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE;
+  nextKernel.supervisor_pipe_slot_snapshot_context_thread_step ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP;
+  nextKernel.supervisor_pipe_slot_snapshot_context_kernel_worker_apply ??= () =>
+    SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY;
+  nextKernel.supervisor_pipe_slot_snapshot_context_kernel_worker_process ??= () =>
+    SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS;
+  nextKernel.supervisor_pipe_slot_snapshot_context_kernel_worker_canonical ??= () =>
+    SUPERVISOR_PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL;
+  nextKernel.supervisor_pipe_slot_snapshot_action_skip ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SKIP;
+  nextKernel.supervisor_pipe_slot_snapshot_action_apply_slot ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT;
+  nextKernel.supervisor_pipe_slot_snapshot_action_apply_control ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL;
+  nextKernel.supervisor_pipe_slot_snapshot_action_set_head_to_source ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+  nextKernel.supervisor_pipe_slot_snapshot_action_set_tail_to_source ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE;
+  nextKernel.supervisor_pipe_slot_snapshot_action_set_head_zero ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO;
+  nextKernel.supervisor_pipe_slot_snapshot_action_copy_full ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+  nextKernel.supervisor_pipe_slot_snapshot_action_copy_tail_delta ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA;
+  nextKernel.supervisor_pipe_slot_snapshot_action_sync_generation ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  nextKernel.supervisor_pipe_slot_snapshot_action_stop ??= () => SUPERVISOR_PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  nextKernel.supervisor_pipe_slot_snapshot_merge_action ??= supervisorPipeSlotSnapshotMergeAction;
   nextKernel.supervisor_blocked_epoll_watched_ofd ??= () => 0;
   nextKernel.supervisor_blocked_epoll_dependent_sync_ofd ??= (vmPtr: number, index: number) =>
     nextKernel.supervisor_blocked_epoll_watched_ofd!(vmPtr, index);

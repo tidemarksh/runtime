@@ -7,6 +7,22 @@ import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/sh
 const FD_TYPE_PIPE = 6;
 const PIPE_SLOT_MODE_READ = 1;
 const PIPE_SLOT_MODE_WRITE = 2;
+const PIPE_SLOT_MODE_CONTROL = 4;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE = 1;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP = 2;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY = 3;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS = 4;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL = 5;
+const PIPE_SLOT_SNAPSHOT_ACTION_SKIP = 1;
+const PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT = 2;
+const PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL = 4;
+const PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE = 8;
+const PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE = 16;
+const PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO = 32;
+const PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL = 64;
+const PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA = 128;
+const PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION = 256;
+const PIPE_SLOT_SNAPSHOT_ACTION_STOP = 512;
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_BYTES = 32 + PIPE_BUF_SIZE;
 
@@ -44,6 +60,235 @@ function makeKernelState(): KernelRuntimeState {
 
 function pipeSlotBase(state: KernelRuntimeState, pipeSlot: number): number {
   return state.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+}
+
+function pipeCounterAhead(sourceValue: number, targetValue: number): boolean {
+  return sourceValue > targetValue
+    || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
+}
+
+function pipeGenerationAhead(sourceValue: number, targetValue: number): boolean {
+  return targetValue === 0
+    || sourceValue > targetValue
+    || (sourceValue < targetValue && targetValue > 0x80000000 && sourceValue < 0x80000000);
+}
+
+function pipeSlotSnapshotMergeAction(
+  context: number,
+  mode: number,
+  freshFlag: number,
+  sourceHead: number,
+  sourceTail: number,
+  sourceReadOpen: number,
+  sourceWriteOpen: number,
+  sourceGeneration: number,
+  targetHeadInput: number,
+  targetTailInput: number,
+  targetReadOpen: number,
+  targetWriteOpen: number,
+  targetGeneration: number,
+): number {
+  const readMode = (mode & PIPE_SLOT_MODE_READ) !== 0;
+  const writeMode = (mode & PIPE_SLOT_MODE_WRITE) !== 0;
+  const controlMode = (mode & PIPE_SLOT_MODE_CONTROL) !== 0;
+  const fresh = freshFlag !== 0;
+  const sharedState = context === PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE;
+  const threadStep = context === PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP;
+  const kernelWorkerApply = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY;
+  const kernelWorkerProcess = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS;
+  const kernelWorkerCanonical = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL;
+  const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
+  let targetHead = targetHeadInput;
+  let targetTail = targetTailInput;
+
+  if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
+    if (sourceHead === 0 && sourceTail === 0 && !pipeGenerationAhead(sourceGeneration, targetGeneration)) {
+      if (kernelWorkerCanonical) {
+        if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
+          return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+        }
+      } else if (targetHead !== targetTail && !fresh) {
+        return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+      }
+    }
+    let action = PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    if (
+      fresh
+      || pipeGenerationAhead(sourceGeneration, targetGeneration)
+      || (targetReadOpen <= 0 && targetWriteOpen <= 0)
+    ) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    } else if (syncGenerationWithoutApply) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    }
+    return action;
+  }
+
+  if (
+    (
+      fresh
+      || ((kernelWorkerProcess || kernelWorkerCanonical) && targetReadOpen <= 0 && targetWriteOpen <= 0)
+    )
+    && sourceHead === 0
+    && sourceTail === 0
+    && targetHead === targetTail
+    && sourceReadOpen > 0
+    && sourceWriteOpen > 0
+    && readMode
+    && writeMode
+  ) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
+  if (kernelWorkerProcess && sourceHead === 0 && sourceTail === 0 && (targetHead !== 0 || targetTail !== 0)) {
+    let action = PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    if (targetReadOpen <= 0 && targetWriteOpen <= 0) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT;
+    }
+    return action;
+  }
+
+  if (
+    kernelWorkerApply
+    && sourceHead === 0
+    && sourceTail === 0
+    && (targetHead !== 0 || targetTail !== 0)
+    && targetReadOpen <= 0
+    && targetWriteOpen <= 0
+  ) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
+  if (
+    (threadStep || kernelWorkerApply)
+    && targetReadOpen <= 0
+    && targetWriteOpen <= 0
+    && targetHead === targetTail
+    && (sourceReadOpen > 0 || sourceWriteOpen > 0)
+    && (writeMode || controlMode)
+  ) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
+  let action = 0;
+  if (controlMode && (sharedState || threadStep || kernelWorkerApply)) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL;
+  }
+  if (
+    readMode
+    && (!writeMode || kernelWorkerProcess)
+    && sourceHead !== 0
+    && sourceHead === sourceTail
+    && targetTail !== sourceTail
+    && pipeCounterAhead(sourceTail, targetTail)
+  ) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE;
+    targetHead = sourceHead;
+    targetTail = sourceTail;
+  }
+  if (
+    writeMode
+    && !readMode
+    && sourceHead === 0
+    && sourceTail !== 0
+    && targetHead !== 0
+    && (targetHead === targetTail || targetTail === 0)
+    && pipeCounterAhead(sourceTail, targetTail)
+  ) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO;
+    targetHead = 0;
+  }
+
+  if (sharedState) {
+    let readHeadAdvanced = false;
+    if (readMode) {
+      if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+        targetHead = sourceHead;
+        readHeadAdvanced = true;
+      }
+      if (pipeCounterAhead(sourceTail, targetTail) || (readHeadAdvanced && sourceHead !== sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        targetTail = sourceTail;
+      } else if (
+        sourceTail === targetTail
+        && sourceHead !== sourceTail
+        && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+      ) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    if (writeMode) {
+      if (pipeCounterAhead(sourceTail, targetTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      } else if (
+        sourceTail === targetTail
+        && sourceHead !== sourceTail
+        && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+      ) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  }
+
+  if (kernelWorkerProcess) {
+    if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+    }
+    if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+    } else if (writeMode && sourceTail === targetTail && sourceHead !== sourceTail) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+    }
+    return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  }
+
+  if (kernelWorkerCanonical) {
+    if (readMode) {
+      if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+        targetHead = sourceHead;
+      }
+      if (pipeCounterAhead(sourceTail, targetTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    if (writeMode) {
+      let repairedHead = false;
+      if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+        repairedHead = true;
+      }
+      if (pipeCounterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  }
+
+  if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+  }
+  if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA;
+  } else if (
+    writeMode
+    && sourceTail === targetTail
+    && sourceHead !== sourceTail
+    && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+  ) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+  }
+  return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
 }
 
 function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
@@ -272,6 +517,26 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
       view.setInt32(slotBase + 12, Math.trunc(writeOpen), true);
       return 1;
     },
+    supervisor_pipe_slot_mode_read: () => PIPE_SLOT_MODE_READ,
+    supervisor_pipe_slot_mode_write: () => PIPE_SLOT_MODE_WRITE,
+    supervisor_pipe_slot_mode_control: () => PIPE_SLOT_MODE_CONTROL,
+    supervisor_pipe_slot_snapshot_context_shared_state: () => PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE,
+    supervisor_pipe_slot_snapshot_context_thread_step: () => PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_apply: () => PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_process: () => PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_canonical: () =>
+      PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL,
+    supervisor_pipe_slot_snapshot_action_skip: () => PIPE_SLOT_SNAPSHOT_ACTION_SKIP,
+    supervisor_pipe_slot_snapshot_action_apply_slot: () => PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT,
+    supervisor_pipe_slot_snapshot_action_apply_control: () => PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL,
+    supervisor_pipe_slot_snapshot_action_set_head_to_source: () => PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE,
+    supervisor_pipe_slot_snapshot_action_set_tail_to_source: () => PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE,
+    supervisor_pipe_slot_snapshot_action_set_head_zero: () => PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO,
+    supervisor_pipe_slot_snapshot_action_copy_full: () => PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL,
+    supervisor_pipe_slot_snapshot_action_copy_tail_delta: () => PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA,
+    supervisor_pipe_slot_snapshot_action_sync_generation: () => PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION,
+    supervisor_pipe_slot_snapshot_action_stop: () => PIPE_SLOT_SNAPSHOT_ACTION_STOP,
+    supervisor_pipe_slot_snapshot_merge_action: pipeSlotSnapshotMergeAction,
     supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
     },
