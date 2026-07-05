@@ -10,7 +10,7 @@ import {
   restoreNetworkBridgeSocketState,
   snapshotRuntimeNetworkKernelState,
   restoreRuntimeNetworkKernelState
-} from "./shared.js";
+} from "../host-boundary/shared-state.js";
 import {
   addKernelShareSharedOfdId,
   deleteKernelShareOfdSlotSnapshot,
@@ -100,7 +100,7 @@ import type {
   KernelWorkerPidStateSnapshot,
   ProcessHandle,
   SyncCause
-} from "./shared.js";
+} from "../host-boundary/shared-state.js";
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
   return [...hostExecutionState(handle).hostBlockedWorkers.values()].some((blocked) => isBlockedRpcPending(blocked));

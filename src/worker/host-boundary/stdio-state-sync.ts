@@ -4,7 +4,7 @@ import {
   formatSyncCause,
   snapshotNetworkBridgeSocketState,
   restoreNetworkBridgeSocketState,
-} from "../sync/shared.js";
+} from "./shared-state.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
@@ -17,7 +17,7 @@ import {
 import type {
   ProcessHandle,
   SyncCause,
-} from "../sync/shared.js";
+} from "./shared-state.js";
 
 export interface SharedHostStdioReleasePorts {
   wakePipeAndEpollWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void;

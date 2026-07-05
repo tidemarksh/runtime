@@ -4,7 +4,7 @@ import {
   formatSyncCause,
   snapshotNetworkBridgeSocketState,
   restoreNetworkBridgeSocketState
-} from "../sync/shared.js";
+} from "./shared-state.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
   collectHeldEpollOfdIds,
@@ -21,7 +21,7 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   ProcessHandle,
   SyncCause
-} from "../sync/shared.js";
+} from "./shared-state.js";
 
 export function snapshotProcessFdOfdStateForKernelWorker(
   handle: ProcessHandle,
