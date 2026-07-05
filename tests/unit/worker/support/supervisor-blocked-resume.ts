@@ -187,6 +187,7 @@ const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_BLOCK_WAIT4_AND_SYNC_PIPE = 4;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_SOCKET = 8;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_EPOLL = 16;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_PIPE = 32;
+const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_DRAIN_LOCAL_PIPE = 64;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_RUNNING_WORKER = 1;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_KERNEL_WORKER_AVAILABLE = 2;
 const SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_EPOLL_STATE_KERNEL_OWNS = 4;
@@ -212,6 +213,10 @@ const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_SOCKET = 2;
 const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_SYNC_LIFECYCLE = 4;
 const SUPERVISOR_WORKER_STATUS_SYNC_ACTION_WAKE_SIGNAL_WAITERS = 8;
 const SUPERVISOR_WORKER_STATUS_SYNC_FLAG_WROTE_OR_DRAINED_PIPE = 1;
+const SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_NONE = 0;
+const SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_YIELD = 1;
+const SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_ARM_HOST_TIMER = 2;
+const SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_SYNC_PIPE_BEFORE_YIELD_CLEAR = 4;
 const POLLFD_BYTES = 8;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
@@ -408,6 +413,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_wait_in_worker_status_action_sync_socket"
   | "supervisor_wait_in_worker_status_action_sync_epoll"
   | "supervisor_wait_in_worker_status_action_sync_pipe"
+  | "supervisor_wait_in_worker_status_action_drain_local_pipe"
   | "supervisor_wait_in_worker_status_action_flag_running_worker"
   | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
   | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns"
@@ -440,6 +446,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_worker_status_sync_action_sync_lifecycle"
   | "supervisor_worker_status_sync_action_wake_signal_waiters"
   | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe"
+  | "supervisor_worker_sleep_status_action"
+  | "supervisor_worker_sleep_status_action_none"
+  | "supervisor_worker_sleep_status_action_yield"
+  | "supervisor_worker_sleep_status_action_arm_host_timer"
+  | "supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear"
   | "supervisor_state_sync_kind_pipe"
   | "supervisor_state_sync_kind_epoll"
   | "supervisor_state_sync_kind_socket"
@@ -639,33 +650,37 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     return toNumber(kernel.thread_epoll_wait_timeout?.(vmPtr));
   };
   const waitInWorkerStatusAction = (vmPtr: number, status: number, flags: number): number => {
-    if (kernel.abi_status_epoll_wait?.() === status) {
-      const timeoutMs = epollWaitTimeoutMs(vmPtr);
-      if (timeoutMs < -1) {
-        return timeoutMs;
-      }
-      if (timeoutMs === 0) {
-        return SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_BLOCK_EPOLL_TIMEOUT;
-      }
-    }
-    if (kernel.abi_status_futex_wait?.() === status) {
-      return SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_PARK_FUTEX;
-    }
-
     const runningWorker =
       (flags & SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_RUNNING_WORKER) !== 0;
     const kernelWorkerAvailable =
       (flags & SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
     const epollStateKernelOwns =
       (flags & SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_EPOLL_STATE_KERNEL_OWNS) !== 0;
-    if (kernelWorkerAvailable && kernel.abi_status_wait4?.() === status) {
-      return SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_BLOCK_WAIT4_AND_SYNC_PIPE;
-    }
-    if (!runningWorker) {
-      return SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_NONE;
+    let actions = SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_NONE;
+    if (!kernelWorkerAvailable) {
+      actions |= SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_DRAIN_LOCAL_PIPE;
     }
 
-    let actions = SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_NONE;
+    if (kernel.abi_status_epoll_wait?.() === status) {
+      const timeoutMs = epollWaitTimeoutMs(vmPtr);
+      if (timeoutMs < -1) {
+        return timeoutMs;
+      }
+      if (timeoutMs === 0) {
+        return actions | SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_BLOCK_EPOLL_TIMEOUT;
+      }
+    }
+    if (kernel.abi_status_futex_wait?.() === status) {
+      return actions | SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_PARK_FUTEX;
+    }
+
+    if (kernelWorkerAvailable && kernel.abi_status_wait4?.() === status) {
+      return actions | SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_BLOCK_WAIT4_AND_SYNC_PIPE;
+    }
+    if (!runningWorker) {
+      return actions;
+    }
+
     if (
       kernelWorkerAvailable
       && (kernel.abi_status_socket_recv?.() === status || kernel.abi_status_socket_send?.() === status)
@@ -869,6 +884,30 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       if ((completedSyncEffects & syncEffectSignalWaiters) !== 0) {
         action |= SUPERVISOR_WORKER_STATUS_SYNC_ACTION_WAKE_SIGNAL_WAITERS;
       }
+    }
+    return action;
+  };
+  const workerSleepStatusAction = (
+    vmPtr: number,
+    status: number,
+    completedSyncEffects: number,
+  ): number => {
+    if (kernel.abi_status_sleep?.() !== status) {
+      return SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_NONE;
+    }
+    if (vmPtr === 0) {
+      return -14;
+    }
+    const rawSeconds = kernel.thread_sleep_seconds?.(vmPtr) ?? 0n;
+    const rawNanoseconds = kernel.thread_sleep_nanoseconds?.(vmPtr) ?? 0n;
+    const seconds = typeof rawSeconds === "bigint" ? rawSeconds : BigInt(rawSeconds);
+    const nanoseconds = typeof rawNanoseconds === "bigint" ? rawNanoseconds : BigInt(rawNanoseconds);
+    if (seconds !== 0n || nanoseconds !== 0n) {
+      return SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_ARM_HOST_TIMER;
+    }
+    let action = SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_YIELD;
+    if ((completedSyncEffects & (1 << 0)) !== 0) {
+      action |= SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_SYNC_PIPE_BEFORE_YIELD_CLEAR;
     }
     return action;
   };
@@ -1086,6 +1125,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_wait_in_worker_status_action_sync_socket"
     | "supervisor_wait_in_worker_status_action_sync_epoll"
     | "supervisor_wait_in_worker_status_action_sync_pipe"
+    | "supervisor_wait_in_worker_status_action_drain_local_pipe"
     | "supervisor_wait_in_worker_status_action_flag_running_worker"
     | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
     | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns"
@@ -1118,6 +1158,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_worker_status_sync_action_sync_lifecycle"
     | "supervisor_worker_status_sync_action_wake_signal_waiters"
     | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe"
+    | "supervisor_worker_sleep_status_action"
+    | "supervisor_worker_sleep_status_action_none"
+    | "supervisor_worker_sleep_status_action_yield"
+    | "supervisor_worker_sleep_status_action_arm_host_timer"
+    | "supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear"
     | "supervisor_state_sync_kind_pipe"
     | "supervisor_state_sync_kind_epoll"
     | "supervisor_state_sync_kind_socket"
@@ -2186,6 +2231,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_EPOLL;
   nextKernel.supervisor_wait_in_worker_status_action_sync_pipe ??= () =>
     SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_PIPE;
+  nextKernel.supervisor_wait_in_worker_status_action_drain_local_pipe ??= () =>
+    SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_DRAIN_LOCAL_PIPE;
   nextKernel.supervisor_wait_in_worker_status_action_flag_running_worker ??= () =>
     SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_FLAG_RUNNING_WORKER;
   nextKernel.supervisor_wait_in_worker_status_action_flag_kernel_worker_available ??= () =>
@@ -2258,6 +2305,19 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     completedSyncEffects: number,
     flags: number,
   ) => workerStatusSyncAction(status, completedSyncEffects, flags);
+  nextKernel.supervisor_worker_sleep_status_action_none ??= () =>
+    SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_NONE;
+  nextKernel.supervisor_worker_sleep_status_action_yield ??= () =>
+    SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_YIELD;
+  nextKernel.supervisor_worker_sleep_status_action_arm_host_timer ??= () =>
+    SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_ARM_HOST_TIMER;
+  nextKernel.supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear ??= () =>
+    SUPERVISOR_WORKER_SLEEP_STATUS_ACTION_SYNC_PIPE_BEFORE_YIELD_CLEAR;
+  nextKernel.supervisor_worker_sleep_status_action ??= (
+    vmPtr: number,
+    status: number,
+    completedSyncEffects: number,
+  ) => workerSleepStatusAction(vmPtr, status, completedSyncEffects);
   nextKernel.supervisor_state_sync_kind_pipe ??= () => SUPERVISOR_STATE_SYNC_KIND_PIPE;
   nextKernel.supervisor_state_sync_kind_epoll ??= () => SUPERVISOR_STATE_SYNC_KIND_EPOLL;
   nextKernel.supervisor_state_sync_kind_socket ??= () => SUPERVISOR_STATE_SYNC_KIND_SOCKET;

@@ -294,6 +294,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_wait_in_worker_status_action_sync_socket: 8,
   supervisor_wait_in_worker_status_action_sync_epoll: 16,
   supervisor_wait_in_worker_status_action_sync_pipe: 32,
+  supervisor_wait_in_worker_status_action_drain_local_pipe: 64,
   supervisor_wait_in_worker_status_action_flag_running_worker: 1,
   supervisor_wait_in_worker_status_action_flag_kernel_worker_available: 2,
   supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns: 4,
@@ -319,6 +320,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_worker_status_sync_action_sync_lifecycle: 4,
   supervisor_worker_status_sync_action_wake_signal_waiters: 8,
   supervisor_worker_status_sync_flag_wrote_or_drained_pipe: 1,
+  supervisor_worker_sleep_status_action_none: 0,
+  supervisor_worker_sleep_status_action_yield: 1,
+  supervisor_worker_sleep_status_action_arm_host_timer: 2,
+  supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear: 4,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -695,19 +700,6 @@ export function makeSupervisorAbiStubs(
     status: number,
     flags: number,
   ): number => {
-    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
-      const timeoutMs = supervisorEpollWaitTimeoutMs(receiver, vmPtr);
-      if (timeoutMs < -1) {
-        return timeoutMs;
-      }
-      if (timeoutMs === 0) {
-        return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_epoll_timeout;
-      }
-    }
-    if (status === callOptionalNumber(receiver, "abi_status_futex_wait")) {
-      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_park_futex;
-    }
-
     const runningWorker =
       (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_running_worker) !== 0;
     const kernelWorkerAvailable =
@@ -716,15 +708,31 @@ export function makeSupervisorAbiStubs(
     const epollStateKernelOwns =
       (flags
         & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns) !== 0;
+    let actions = DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_none;
+    if (!kernelWorkerAvailable) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_drain_local_pipe;
+    }
+
+    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
+      const timeoutMs = supervisorEpollWaitTimeoutMs(receiver, vmPtr);
+      if (timeoutMs < -1) {
+        return timeoutMs;
+      }
+      if (timeoutMs === 0) {
+        return actions | DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_epoll_timeout;
+      }
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_futex_wait")) {
+      return actions | DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_park_futex;
+    }
 
     if (kernelWorkerAvailable && status === callOptionalNumber(receiver, "abi_status_wait4")) {
-      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe;
+      return actions | DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe;
     }
     if (!runningWorker) {
-      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_none;
+      return actions;
     }
 
-    let actions = DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_none;
     if (
       kernelWorkerAvailable
       && (
@@ -955,6 +963,29 @@ export function makeSupervisorAbiStubs(
       if ((completedSyncEffects & syncEffectSignalWaiters) !== 0) {
         action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_wake_signal_waiters;
       }
+    }
+    return action;
+  };
+  const supervisorWorkerSleepStatusAction = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    status: number,
+    completedSyncEffects: number,
+  ): number => {
+    if (status !== callOptionalNumber(receiver, "abi_status_sleep")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_none;
+    }
+    if (vmPtr === 0) {
+      return -14;
+    }
+    const seconds = callOptionalBigInt(receiver, "thread_sleep_seconds", vmPtr) ?? 0n;
+    const nanoseconds = callOptionalBigInt(receiver, "thread_sleep_nanoseconds", vmPtr) ?? 0n;
+    if (seconds !== 0n || nanoseconds !== 0n) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_arm_host_timer;
+    }
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_yield;
+    if ((completedSyncEffects & (1 << 0)) !== 0) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear;
     }
     return action;
   };
@@ -2890,6 +2921,14 @@ export function makeSupervisorAbiStubs(
       flags: number,
     ) {
       return supervisorWorkerStatusSyncAction(currentExports(this), status, completedSyncEffects, flags);
+    },
+    supervisor_worker_sleep_status_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      status: number,
+      completedSyncEffects: number,
+    ) {
+      return supervisorWorkerSleepStatusAction(currentExports(this), vmPtr, status, completedSyncEffects);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {

@@ -22,7 +22,6 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "../types.js";
-import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 import type { KernelRpcResumeOutcome } from "../../kernel-rpc/outcomes.js";
 import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
 import {
@@ -51,6 +50,7 @@ import {
 import {
   supervisorBlockedStatusNeedsNetworkSidecarRestore,
   supervisorBlockedWaitTimerRequired,
+  supervisorWorkerSleepStatusActions,
   supervisorWorkerStatusSyncActions,
   supervisorWorkerStatusTransitionAction,
 } from "../../../supervisor-blocked-resume.js";
@@ -153,7 +153,6 @@ function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
 }
 
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {
-  const syncEffects = resolveWorkerMessageHandlerSyncEffects(deps);
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
     worker: Worker,
@@ -466,9 +465,13 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (status === handle.kernel.abi_status_sleep()) {
-      const sec = handle.kernel.thread_sleep_seconds(thread.vmPtr);
-      const nsec = handle.kernel.thread_sleep_nanoseconds(thread.vmPtr);
-      if (sec === 0n && nsec === 0n) {
+      const sleepActions = supervisorWorkerSleepStatusActions(
+        handle.kernel,
+        thread.vmPtr,
+        status,
+        completedSyncEffects,
+      );
+      if (sleepActions.yieldThread) {
         deps.appendWorkerDebugLog(handle, `yield:0x${thread.vmPtr.toString(16)}`);
         const clearYieldingWorker = (): void => {
           if (hostExecutionState(handle).runningWorker === worker) {
@@ -476,8 +479,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           }
           clearThreadWaitingInWorkerStatus(thread);
         };
-        const shouldSyncPipeState = (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
-        if (shouldSyncPipeState) {
+        if (sleepActions.syncPipeBeforeYieldClear) {
           void deps.requestPipeStateSync(handle, false)
             .then(() => {
               if (!workerStillOwnedByHandle()) {
@@ -500,6 +502,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         deps.pumpProcess(handle);
         return;
       }
+      if (!sleepActions.armHostTimer) {
+        throw new Error(`kernel supervisor did not select a sleep status action for status ${status}`);
+      }
+      const sec = handle.kernel.thread_sleep_seconds(thread.vmPtr);
+      const nsec = handle.kernel.thread_sleep_nanoseconds(thread.vmPtr);
       deps.appendWorkerDebugLog(handle, `sleep:0x${thread.vmPtr.toString(16)}@${sec.toString()}s+${nsec.toString()}ns`);
       const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
       if (hostTimer === undefined) {

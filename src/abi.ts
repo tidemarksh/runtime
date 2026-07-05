@@ -715,6 +715,7 @@ export interface KernelExports {
   supervisor_wait_in_worker_status_action_sync_socket?(): number;
   supervisor_wait_in_worker_status_action_sync_epoll?(): number;
   supervisor_wait_in_worker_status_action_sync_pipe?(): number;
+  supervisor_wait_in_worker_status_action_drain_local_pipe?(): number;
   supervisor_wait_in_worker_status_action_flag_running_worker?(): number;
   supervisor_wait_in_worker_status_action_flag_kernel_worker_available?(): number;
   supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns?(): number;
@@ -747,6 +748,11 @@ export interface KernelExports {
   supervisor_worker_status_sync_action_sync_lifecycle?(): number;
   supervisor_worker_status_sync_action_wake_signal_waiters?(): number;
   supervisor_worker_status_sync_flag_wrote_or_drained_pipe?(): number;
+  supervisor_worker_sleep_status_action?(vmPtr: number, status: number, completedSyncEffects: number): number;
+  supervisor_worker_sleep_status_action_none?(): number;
+  supervisor_worker_sleep_status_action_yield?(): number;
+  supervisor_worker_sleep_status_action_arm_host_timer?(): number;
+  supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear?(): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2252,6 +2258,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_wait_in_worker_status_action_sync_socket",
   "supervisor_wait_in_worker_status_action_sync_epoll",
   "supervisor_wait_in_worker_status_action_sync_pipe",
+  "supervisor_wait_in_worker_status_action_drain_local_pipe",
   "supervisor_wait_in_worker_status_action_flag_running_worker",
   "supervisor_wait_in_worker_status_action_flag_kernel_worker_available",
   "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns",
@@ -2284,6 +2291,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_worker_status_sync_action_sync_lifecycle",
   "supervisor_worker_status_sync_action_wake_signal_waiters",
   "supervisor_worker_status_sync_flag_wrote_or_drained_pipe",
+  "supervisor_worker_sleep_status_action",
+  "supervisor_worker_sleep_status_action_none",
+  "supervisor_worker_sleep_status_action_yield",
+  "supervisor_worker_sleep_status_action_arm_host_timer",
+  "supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",

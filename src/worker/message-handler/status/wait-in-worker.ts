@@ -62,7 +62,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       );
     }
     deps.clearBlockedWorker(handle, worker);
-    const drainedPipe = kernelWorkerAvailable ? false : drainProcessOutput(handle);
+    const drainedPipe = waitActions.drainLocalPipe ? drainProcessOutput(handle) : false;
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
 
     if (waitActions.blockEpollTimeout) {

@@ -82,6 +82,7 @@ export interface SupervisorWaitInWorkerStatusActions {
   syncSocket: boolean;
   syncEpoll: boolean;
   syncPipe: boolean;
+  drainLocalPipe: boolean;
 }
 
 export interface SupervisorWait4ChildExitBlockedParentActions {
@@ -116,6 +117,12 @@ export interface SupervisorWorkerStatusSyncActions {
   syncSocketState: boolean;
   syncLifecycle: boolean;
   wakeSignalWaiters: boolean;
+}
+
+export interface SupervisorWorkerSleepStatusActions {
+  yieldThread: boolean;
+  armHostTimer: boolean;
+  syncPipeBeforeYieldClear: boolean;
 }
 
 export type SupervisorBlockedStaleRetryResultAction =
@@ -309,6 +316,7 @@ type SupervisorNumberConstExportName =
   | "supervisor_wait_in_worker_status_action_sync_socket"
   | "supervisor_wait_in_worker_status_action_sync_epoll"
   | "supervisor_wait_in_worker_status_action_sync_pipe"
+  | "supervisor_wait_in_worker_status_action_drain_local_pipe"
   | "supervisor_wait_in_worker_status_action_flag_running_worker"
   | "supervisor_wait_in_worker_status_action_flag_kernel_worker_available"
   | "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns"
@@ -333,7 +341,11 @@ type SupervisorNumberConstExportName =
   | "supervisor_worker_status_sync_action_sync_socket"
   | "supervisor_worker_status_sync_action_sync_lifecycle"
   | "supervisor_worker_status_sync_action_wake_signal_waiters"
-  | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe";
+  | "supervisor_worker_status_sync_flag_wrote_or_drained_pipe"
+  | "supervisor_worker_sleep_status_action_none"
+  | "supervisor_worker_sleep_status_action_yield"
+  | "supervisor_worker_sleep_status_action_arm_host_timer"
+  | "supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1534,13 +1546,18 @@ export function supervisorWaitInWorkerStatusActions(
     kernel,
     "supervisor_wait_in_worker_status_action_sync_pipe",
   );
+  const drainLocalPipe = readSupervisorNumberConst(
+    kernel,
+    "supervisor_wait_in_worker_status_action_drain_local_pipe",
+  );
   const known = readSupervisorNumberConst(kernel, "supervisor_wait_in_worker_status_action_none")
     | blockEpollTimeout
     | parkFutex
     | blockWait4AndSyncPipe
     | syncSocket
     | syncEpoll
-    | syncPipe;
+    | syncPipe
+    | drainLocalPipe;
   if ((result & ~known) !== 0) {
     throw new Error(`kernel supervisor wait-in-worker status action is unknown: ${result}`);
   }
@@ -1551,6 +1568,7 @@ export function supervisorWaitInWorkerStatusActions(
     syncSocket: (result & syncSocket) !== 0,
     syncEpoll: (result & syncEpoll) !== 0,
     syncPipe: (result & syncPipe) !== 0,
+    drainLocalPipe: (result & drainLocalPipe) !== 0,
   };
 }
 
@@ -1849,6 +1867,47 @@ export function supervisorWorkerStatusSyncActions(
     syncSocketState: (result & syncSocketState) !== 0,
     syncLifecycle: (result & syncLifecycle) !== 0,
     wakeSignalWaiters: (result & wakeSignalWaiters) !== 0,
+  };
+}
+
+export function supervisorWorkerSleepStatusActions(
+  kernel: KernelExports,
+  vmPtr: number,
+  status: number,
+  completedSyncEffects: number,
+): SupervisorWorkerSleepStatusActions {
+  const readAction = kernel.supervisor_worker_sleep_status_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_worker_sleep_status_action");
+  }
+  const result = readAction.call(kernel, vmPtr, status, completedSyncEffects);
+  if (result < 0) {
+    throw new Error(`kernel supervisor worker sleep status action failed: ${result}`);
+  }
+
+  const yieldThread = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_sleep_status_action_yield",
+  );
+  const armHostTimer = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_sleep_status_action_arm_host_timer",
+  );
+  const syncPipeBeforeYieldClear = readSupervisorNumberConst(
+    kernel,
+    "supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear",
+  );
+  const known = readSupervisorNumberConst(kernel, "supervisor_worker_sleep_status_action_none")
+    | yieldThread
+    | armHostTimer
+    | syncPipeBeforeYieldClear;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor worker sleep status action is unknown: ${result}`);
+  }
+  return {
+    yieldThread: (result & yieldThread) !== 0,
+    armHostTimer: (result & armHostTimer) !== 0,
+    syncPipeBeforeYieldClear: (result & syncPipeBeforeYieldClear) !== 0,
   };
 }
 
