@@ -615,31 +615,30 @@ export function createBlockedRetryCoordinator(
       return;
     }
 
-    if (status === handle.kernel.abi_status_futex_wait()) {
-      deps.clearBlockedWorker(handle, worker);
-      const readyIndex = hostExecutionState(handle).vforkReadyWorkers.indexOf(worker);
-      if (readyIndex >= 0) {
-        hostExecutionState(handle).vforkReadyWorkers.splice(readyIndex, 1);
-      }
-      if (hostExecutionState(handle).runningWorker === worker) {
-        hostExecutionState(handle).runningWorker = null;
-      }
-      const thread = deps.threadWorkerStates.get(worker);
-      if (thread !== undefined && thread.vmPtr === vmPtr) {
-        clearThreadRunningGeneration(thread);
-      }
-      deps.appendWorkerDebugLog(
-        handle,
-        `blocked-retry-futex-supervisor-owned:0x${vmPtr.toString(16)}`,
-      );
-      return;
-    }
-
     blocked.status = status;
     const action = supervisorBlockedRetryResultAction(handle.kernel, vmPtr, status);
     switch (action) {
       case "none":
         return;
+      case "park-futex": {
+        deps.clearBlockedWorker(handle, worker);
+        const readyIndex = hostExecutionState(handle).vforkReadyWorkers.indexOf(worker);
+        if (readyIndex >= 0) {
+          hostExecutionState(handle).vforkReadyWorkers.splice(readyIndex, 1);
+        }
+        if (hostExecutionState(handle).runningWorker === worker) {
+          hostExecutionState(handle).runningWorker = null;
+        }
+        const thread = deps.threadWorkerStates.get(worker);
+        if (thread !== undefined && thread.vmPtr === vmPtr) {
+          clearThreadRunningGeneration(thread);
+        }
+        deps.appendWorkerDebugLog(
+          handle,
+          `blocked-retry-futex-supervisor-owned:0x${vmPtr.toString(16)}`,
+        );
+        return;
+      }
       case "arm-wait-timer":
         if (deps.armBlockedSupervisorTimerForBlocked(handle, blocked)) {
           return;

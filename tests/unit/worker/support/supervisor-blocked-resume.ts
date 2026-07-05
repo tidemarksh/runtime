@@ -105,6 +105,7 @@ const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_ARM_WAIT_TIMER = 1;
 const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY = 2;
 const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP = 3;
+const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_PARK_FUTEX = 4;
 const SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_PIPE_RETRY_DIAGNOSTICS = 1;
 const SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_PUMP_BLOCKED_OUTCOME = 2;
@@ -304,6 +305,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_retry_result_action_arm_wait_timer"
   | "supervisor_blocked_retry_result_action_schedule_retry"
   | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
+  | "supervisor_blocked_retry_result_action_park_futex"
   | "supervisor_blocked_retry_status_action"
   | "supervisor_blocked_retry_status_action_none"
   | "supervisor_blocked_retry_status_action_pipe_retry_diagnostics"
@@ -1599,6 +1601,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY;
   nextKernel.supervisor_blocked_retry_result_action_schedule_retry_and_pump ??= () =>
     SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP;
+  nextKernel.supervisor_blocked_retry_result_action_park_futex ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_PARK_FUTEX;
   nextKernel.supervisor_blocked_retry_status_action_none ??= () =>
     SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_NONE;
   nextKernel.supervisor_blocked_retry_status_action_pipe_retry_diagnostics ??= () =>
@@ -1667,6 +1671,9 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     return SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY;
   };
   nextKernel.supervisor_blocked_retry_result_action ??= (vmPtr: number, resultStatus: number) => {
+    if (resultStatus === kernel.abi_status_futex_wait?.()) {
+      return SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_PARK_FUTEX;
+    }
     if (vmPtr === 0) {
       return -14;
     }

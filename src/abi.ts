@@ -593,6 +593,7 @@ export interface KernelExports {
   supervisor_blocked_retry_result_action_arm_wait_timer?(): number;
   supervisor_blocked_retry_result_action_schedule_retry?(): number;
   supervisor_blocked_retry_result_action_schedule_retry_and_pump?(): number;
+  supervisor_blocked_retry_result_action_park_futex?(): number;
   supervisor_blocked_retry_status_action?(status: number): number;
   supervisor_blocked_retry_status_action_none?(): number;
   supervisor_blocked_retry_status_action_pipe_retry_diagnostics?(): number;
@@ -2090,6 +2091,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_retry_result_action_arm_wait_timer",
   "supervisor_blocked_retry_result_action_schedule_retry",
   "supervisor_blocked_retry_result_action_schedule_retry_and_pump",
+  "supervisor_blocked_retry_result_action_park_futex",
   "supervisor_blocked_retry_status_action",
   "supervisor_blocked_retry_status_action_none",
   "supervisor_blocked_retry_status_action_pipe_retry_diagnostics",

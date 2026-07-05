@@ -57,7 +57,8 @@ export type SupervisorBlockedRetryResultAction =
   | "none"
   | "arm-wait-timer"
   | "schedule-retry"
-  | "schedule-retry-and-pump";
+  | "schedule-retry-and-pump"
+  | "park-futex";
 
 export type SupervisorBlockedPostNetworkPumpAction =
   | SupervisorBlockedRetryAction
@@ -189,6 +190,7 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_retry_result_action_arm_wait_timer"
   | "supervisor_blocked_retry_result_action_schedule_retry"
   | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
+  | "supervisor_blocked_retry_result_action_park_futex"
   | "supervisor_blocked_retry_status_action_none"
   | "supervisor_blocked_retry_status_action_pipe_retry_diagnostics"
   | "supervisor_blocked_retry_status_action_pump_blocked_outcome"
@@ -1044,6 +1046,8 @@ function supervisorBlockedRetryResultActionValue(
       return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_schedule_retry");
     case "schedule-retry-and-pump":
       return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_schedule_retry_and_pump");
+    case "park-futex":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_park_futex");
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -1060,6 +1064,7 @@ function normalizeSupervisorBlockedRetryResultAction(
     "arm-wait-timer",
     "schedule-retry",
     "schedule-retry-and-pump",
+    "park-futex",
   ];
   for (const action of actions) {
     if (result === supervisorBlockedRetryResultActionValue(kernel, action)) {

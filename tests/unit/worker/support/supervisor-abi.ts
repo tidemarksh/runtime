@@ -218,6 +218,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_retry_result_action_arm_wait_timer: 1,
   supervisor_blocked_retry_result_action_schedule_retry: 2,
   supervisor_blocked_retry_result_action_schedule_retry_and_pump: 3,
+  supervisor_blocked_retry_result_action_park_futex: 4,
   supervisor_blocked_retry_status_action_none: 0,
   supervisor_blocked_retry_status_action_pipe_retry_diagnostics: 1,
   supervisor_blocked_retry_status_action_pump_blocked_outcome: 2,
@@ -1872,10 +1873,13 @@ export function makeSupervisorAbiStubs(
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry;
     },
     supervisor_blocked_retry_result_action(this: KernelExports | undefined, vmPtr: number, resultStatus: number) {
+      const receiver = currentExports(this);
+      if (resultStatus === callNumber(receiver, "abi_status_futex_wait")) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_park_futex;
+      }
       if (vmPtr === 0) {
         return -14;
       }
-      const receiver = currentExports(this);
       if (blockedWaitTimerRequired(receiver, vmPtr)) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_arm_wait_timer;
       }
