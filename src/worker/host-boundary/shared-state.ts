@@ -49,7 +49,7 @@ import type {
   KernelWorkerSocketStateSnapshot,
 } from "../../messages.js";
 import {
-  copyLegacySharedKernelObjectsLocal,
+  copySharedKernelObjectsHostLocal,
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
@@ -1107,7 +1107,7 @@ export {
   PIPE_DEBUG_TAIL_OFFSET,
   PIPE_DEBUG_WRITE_OPEN_OFFSET,
   SOCKET_STATE_SHUTDOWN,
-  copyLegacySharedKernelObjectsLocal,
+  copySharedKernelObjectsHostLocal,
   kernelShareOtherMembers,
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,

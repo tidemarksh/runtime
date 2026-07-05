@@ -213,7 +213,7 @@ export function restoreLocalOfdSlots(
   }
 }
 
-export function copyLegacySharedKernelObjectsLocal(
+export function copySharedKernelObjectsHostLocal(
   source: KernelSyncHandle,
   target: KernelSyncHandle,
   sharedOfdIds: Iterable<number>,
