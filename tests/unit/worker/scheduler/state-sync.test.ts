@@ -18,6 +18,7 @@ import {
 } from "../../../../src/worker/network-socket-state.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeHandle(overrides: Record<string, unknown> = {}) {
   const hasKernelWorkerRequestOverride = Object.prototype.hasOwnProperty.call(
@@ -182,6 +183,7 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     ...handleOverrides,
   } as never;
   setProcessKernelWorkerRequest(handle, kernelWorkerRequest as never);
+  seedProcessHandleStateFixture(handle);
   return handle;
 }
 

@@ -8,6 +8,7 @@ import { createWorkerKernelRpcSocketHelpers } from "../../../../src/worker/kerne
 import { networkPendingConnectFds } from "../../../../src/worker/network-socket-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -155,6 +156,7 @@ test("resumeConnectViaKernelWorker adopts kernel-worker connect resume state", a
     workerDebugLog: [],
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
+  seedProcessHandleStateFixture(handle);
   networkPendingConnectFds(handle).add(6);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});

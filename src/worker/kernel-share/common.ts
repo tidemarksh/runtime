@@ -8,23 +8,9 @@ import type {
 const kernelShareGroups = new WeakMap<ProcessHandle, KernelShareGroup>();
 const PROCESS_KERNEL_SHARE_GROUP = Symbol.for("tidemark.worker.kernelShareGroup");
 
-type LegacyKernelShareSeed = {
-  kernelShare?: KernelShareGroup;
-};
-
 type KernelShareStateCarrier = ProcessHandle & {
   [PROCESS_KERNEL_SHARE_GROUP]?: KernelShareGroup;
 };
-
-function consumeLegacyKernelShareGroup(handle: ProcessHandle): KernelShareGroup | null {
-  const legacy = handle as LegacyKernelShareSeed;
-  if (legacy.kernelShare === undefined) {
-    return null;
-  }
-  const group = legacy.kernelShare;
-  delete legacy.kernelShare;
-  return group;
-}
 
 export function copyMemoryRange(
   sourceMemory: WebAssembly.Memory,
@@ -62,18 +48,12 @@ export function processKernelShareGroup(handle: ProcessHandle): KernelShareGroup
       return sharedGroup;
     }
   }
-  const legacy = consumeLegacyKernelShareGroup(handle);
-  if (legacy !== null) {
-    setProcessKernelShareGroup(handle, legacy);
-    return legacy;
-  }
   const created = createKernelShareGroup();
   setProcessKernelShareGroup(handle, created);
   return created;
 }
 
 export function setProcessKernelShareGroup(handle: ProcessHandle, group: KernelShareGroup): void {
-  consumeLegacyKernelShareGroup(handle);
   kernelShareGroups.set(handle, group);
   Object.defineProperty(handle, PROCESS_KERNEL_SHARE_GROUP, {
     configurable: true,

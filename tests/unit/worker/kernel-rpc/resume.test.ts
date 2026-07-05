@@ -18,6 +18,7 @@ import {
 } from "../../../../src/worker/thread-step-payload.js";
 import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import {
   isBlockedRpcPending,
   isPipeCanonicalEofReady,
@@ -320,6 +321,7 @@ function makeHandle(
   } as ProcessHandle;
   setProcessKernelWorkerRequest(handle, kernelWorkerRequest);
   setProcessDebugCommand(handle, "test");
+  seedProcessHandleStateFixture(handle);
   return handle;
 }
 

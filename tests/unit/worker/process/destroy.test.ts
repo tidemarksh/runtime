@@ -20,6 +20,7 @@ import { setProcessDebugCommand } from "../../../../src/worker/process-debug-sta
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { FakeWorker } from "../../../support/fake-worker.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   const primaryWorker = new FakeWorker() as unknown as Worker;
@@ -98,6 +99,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   } as unknown as ProcessHandle;
   seedProcessKernelWorkerRequestFixture(handle);
   setProcessDebugCommand(handle, "destroy-test");
+  seedProcessHandleStateFixture(handle);
   return handle;
 }
 

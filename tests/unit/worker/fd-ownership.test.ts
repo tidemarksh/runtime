@@ -33,6 +33,7 @@ import {
 import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import { refreshPipeControlFromKernelShare } from "../../../src/worker/ownership/pipe-control.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
+import { seedProcessHandleStateFixture } from "./support/process-handle-state-fixture.js";
 
 const FD_TYPE_FILE = 1;
 const FD_TYPE_PIPE = 6;
@@ -539,6 +540,7 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     workerDebugLog: [],
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "fd-ownership");
+  seedProcessHandleStateFixture(handle);
   kernel.setPrivatePipeMask(
     (1n << BigInt(processStdinPipe(handle)))
       | (1n << BigInt(processStdoutPipe(handle)))

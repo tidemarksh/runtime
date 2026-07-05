@@ -13,6 +13,7 @@ import {
   setThreadReinitCount,
   setThreadRunningGeneration,
 } from "../../../../src/worker/thread-host-state.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeDiagnosticsKernel(overrides: Partial<KernelExports> = {}): KernelExports {
   return new Proxy(overrides, {
@@ -178,6 +179,7 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
   } as ProcessHandle;
   setProcessDebugCommand(handle, "/usr/bin/rustc");
   setProcessLastDebugMessage(handle, null);
+  seedProcessHandleStateFixture(handle);
 
   const snapshot = debugRuntimeProcessHandles(
     7,
@@ -225,6 +227,7 @@ test("formatAllLiveThreadDebug keeps execve summary without investigation traces
       debug_execve_value1: () => 0x66n,
     },
   } as never;
+  seedProcessHandleStateFixture(handle);
 
   const out = formatAllLiveThreadDebug(handle, new WeakMap([[worker, { vmPtr: 0x1234 } as never]]));
 

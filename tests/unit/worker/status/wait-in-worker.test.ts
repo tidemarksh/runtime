@@ -9,6 +9,7 @@ import {
   setThreadRunningGeneration,
 } from "../../../../src/worker/thread-host-state.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function createWorkerWaitInWorkerStatusHandler(
@@ -17,6 +18,7 @@ function createWorkerWaitInWorkerStatusHandler(
   const handler = createRawWorkerWaitInWorkerStatusHandler(deps);
   return ((...args: Parameters<ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler>>) => {
     seedProcessKernelWorkerRequestFixture(args[0]);
+    seedProcessHandleStateFixture(args[0]);
     return handler(...args);
   }) as ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler>;
 }

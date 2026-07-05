@@ -26,6 +26,7 @@ import {
   writeSupervisorArmHostTimerHostOpRecord,
   writeSupervisorFaultExitDecisionRecord,
 } from "../support/supervisor-abi.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeKernelState() {
   return {
@@ -409,6 +410,7 @@ function makeHandle(worker: Worker) {
       thread_spawn_from_clone: vi.fn(() => 0x2000),
     },
   };
+  seedProcessHandleStateFixture(handle);
   setProcessLastDebugMessage(handle as never, undefined);
   return handle;
 }

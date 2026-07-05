@@ -28,6 +28,7 @@ import type {
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import { outputBacklog, stdinQueue } from "../../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -217,6 +218,7 @@ function makeHandle(
     ...overrides,
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "test");
+  seedProcessHandleStateFixture(handle);
   addKernelShareMember(handle);
   return { handle, releaseHostStdio };
 }

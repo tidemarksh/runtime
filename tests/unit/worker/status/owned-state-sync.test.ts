@@ -16,6 +16,7 @@ import {
   setProcessMemfsDirty,
 } from "../../../../src/worker/process-memfs-state.js";
 import { setProcessExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function seedKernelWorkerRequestFixture(handle: unknown): void {
   const fixture = handle as { kernelWorkerRequest?: unknown };
@@ -33,6 +34,7 @@ function createWorkerOwnedStateSyncHandler(
   const handler = createRawWorkerOwnedStateSyncHandler(deps);
   return ((request: Parameters<ReturnType<typeof createRawWorkerOwnedStateSyncHandler>>[0]) => {
     seedKernelWorkerRequestFixture(request.handle);
+    seedProcessHandleStateFixture(request.handle);
     return handler(request);
   }) as ReturnType<typeof createRawWorkerOwnedStateSyncHandler>;
 }

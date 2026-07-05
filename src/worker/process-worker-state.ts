@@ -3,10 +3,6 @@ import type { ProcessHandle } from "./types.js";
 const processWorkerSets = new WeakMap<ProcessHandle, Set<Worker>>();
 const PROCESS_WORKER_SET = Symbol.for("tidemark.worker.processWorkers");
 
-type LegacyProcessWorkersSeed = {
-  workers?: Set<Worker>;
-};
-
 type ProcessWorkerSetCarrier = ProcessHandle & {
   [PROCESS_WORKER_SET]?: Set<Worker>;
 };
@@ -35,17 +31,11 @@ export function processWorkers(handle: ProcessHandle): Set<Worker> {
       return sharedWorkers;
     }
   }
-  const legacyWorkers = (handle as LegacyProcessWorkersSeed).workers;
-  if (legacyWorkers !== undefined) {
-    delete (handle as LegacyProcessWorkersSeed).workers;
-    return storeProcessWorkers(handle, legacyWorkers);
-  }
   const created = new Set<Worker>();
   return storeProcessWorkers(handle, created);
 }
 
 export function setProcessWorkers(handle: ProcessHandle, workers: Iterable<Worker>): void {
-  delete (handle as LegacyProcessWorkersSeed).workers;
   storeProcessWorkers(handle, new Set(workers));
 }
 

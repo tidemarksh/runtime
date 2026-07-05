@@ -8,6 +8,7 @@ import {
 import { createWorkerKernelRpcVforkHelpers } from "../../../../src/worker/kernel-rpc/vfork.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -137,6 +138,7 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
     })),
   } as unknown as ProcessHandle;
   seedProcessKernelWorkerRequestFixture(handle);
+  seedProcessHandleStateFixture(handle);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, { vmPtr: 0x1234 } as ThreadWorkerState);
   const helpers = createWorkerKernelRpcVforkHelpers({

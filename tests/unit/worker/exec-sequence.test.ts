@@ -13,6 +13,7 @@ import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../src/worker/lifecycle.js";
 import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
+import { seedProcessHandleStateFixture } from "./support/process-handle-state-fixture.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -133,6 +134,7 @@ function makeHandle(
     ...overrides,
   } as unknown as ProcessHandle;
   setProcessDebugCommand(handle, "test");
+  seedProcessHandleStateFixture(handle);
   addKernelShareMember(handle);
   const executionState = hostExecutionState(handle);
   executionState.vforkSnapshot = {

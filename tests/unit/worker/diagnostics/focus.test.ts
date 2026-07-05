@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { summarizeProcessWorkerLogFocus } from "../../../../src/worker/diagnostics/debug.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-pc postmortem entries", () => {
   const worker = {} as Worker;
@@ -27,6 +28,7 @@ test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-
     ],
     kernel: {},
   } as never;
+  seedProcessHandleStateFixture(handle);
 
   const [focus] = summarizeProcessWorkerLogFocus(handle, threadWorkerStates);
   expect(focus?.lastStatus).toBe("status:0x1234@3:pc=0x2:ra=0x0:sp=0x0:s11=0x0:process_thread_count=0");
@@ -63,6 +65,7 @@ test("summarizeProcessWorkerLogFocus finds the last credible state outside the s
     workerDebugLog,
     kernel: {},
   } as never;
+  seedProcessHandleStateFixture(handle);
 
   const [focus] = summarizeProcessWorkerLogFocus(handle, threadWorkerStates);
   expect(focus?.lastStatus).toBe("status:0x1234@3:pc=0x2:ra=0x0:sp=0x0:s11=0x0:process_thread_count=0");

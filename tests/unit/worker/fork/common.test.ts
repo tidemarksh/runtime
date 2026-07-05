@@ -8,6 +8,7 @@ import {
   detachInheritedHostStdioFromChild,
   normalizeGuestMemoryPolicyLimitBytes,
 } from "../../../../src/worker/fork/common.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 test("detachInheritedHostStdioFromChild detaches guest host stdio without clearing hidden child pipe ids", () => {
   const processSetHostStdio = vi.fn();
@@ -21,6 +22,7 @@ test("detachInheritedHostStdioFromChild detaches guest host stdio without cleari
       process_set_host_stdio: processSetHostStdio,
     },
   } as never;
+  seedProcessHandleStateFixture(child);
 
   detachInheritedHostStdioFromChild(child);
 

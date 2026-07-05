@@ -21,6 +21,7 @@ import {
 import { drainProcessOutput } from "../../../../src/worker/stdio.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -189,6 +190,7 @@ function makeHandle(
     setProcessMemfsPublishPending(handle, memfsPublishPending);
   }
   seedProcessKernelWorkerRequestFixture(handle);
+  seedProcessHandleStateFixture(handle);
   return handle;
 }
 

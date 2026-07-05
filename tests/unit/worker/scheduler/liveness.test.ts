@@ -82,6 +82,7 @@ import {
   setProcessLastDebugMessage,
 } from "../../../../src/worker/process-debug-state.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import {
   writeSupervisorArmHostTimerHostOpRecord,
   writeSupervisorBlockedRetryHostOpRecord,
@@ -975,6 +976,7 @@ function makeHandle(
   };
   setProcessDebugCommand(handle, "/bin/sh");
   setProcessLastDebugMessage(handle, undefined);
+  seedProcessHandleStateFixture(handle);
   setPendingChildSpawnRecords(handle, 1);
   if (threadWorkerStates !== undefined) {
     installTestSupervisorProcessResume(kernel, handle, threadWorkerStates);

@@ -19,6 +19,7 @@ import {
   setThreadReinitCount,
 } from "../../../../src/worker/thread-host-state.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import { vi } from "vite-plus/test";
 
 export function makeHostBoundaryKernel() {
@@ -247,5 +248,6 @@ export function makeHostBoundaryHandle(
   };
   setProcessDebugCommand(handle, "/bin/sh");
   setProcessLastDebugMessage(handle, undefined);
+  seedProcessHandleStateFixture(handle);
   return handle;
 }

@@ -13,57 +13,9 @@ export interface ProcessStdioState {
 const processStdioStates = new WeakMap<ProcessHandle, ProcessStdioState>();
 const PROCESS_STDIO_STATE = Symbol.for("tidemark.worker.processStdioState");
 
-type LegacyProcessStdioSeed = {
-  stdinPipe?: number;
-  stdoutPipe?: number;
-  stderrPipe?: number;
-  ttyPtySlot?: number;
-  hostStdio?: SharedHostStdio;
-  stdinClosed?: boolean;
-  stdioOwner?: ProcessHandle | null;
-};
-
 type ProcessStdioStateCarrier = ProcessHandle & {
   [PROCESS_STDIO_STATE]?: ProcessStdioState;
 };
-
-function consumeLegacyProcessStdioState(handle: ProcessHandle): ProcessStdioState | null {
-  const legacy = handle as LegacyProcessStdioSeed;
-  if (
-    legacy.hostStdio === undefined
-    && legacy.stdinPipe === undefined
-    && legacy.stdoutPipe === undefined
-    && legacy.stderrPipe === undefined
-    && legacy.ttyPtySlot === undefined
-    && legacy.stdinClosed === undefined
-    && legacy.stdioOwner === undefined
-  ) {
-    return null;
-  }
-  const state: ProcessStdioState = {
-    stdinPipe: legacy.stdinPipe ?? 0,
-    stdoutPipe: legacy.stdoutPipe ?? 0,
-    stderrPipe: legacy.stderrPipe ?? 0,
-    ttyPtySlot: legacy.ttyPtySlot ?? 0,
-    hostStdio: legacy.hostStdio ?? {
-      stdinPipe: legacy.stdinPipe ?? 0,
-      stdoutPipe: legacy.stdoutPipe ?? 0,
-      stderrPipe: legacy.stderrPipe ?? 0,
-      ttyPtySlot: legacy.ttyPtySlot,
-      refCount: 1,
-    },
-    stdinClosed: legacy.stdinClosed ?? false,
-    stdioOwner: legacy.stdioOwner ?? null,
-  };
-  delete legacy.stdinPipe;
-  delete legacy.stdoutPipe;
-  delete legacy.stderrPipe;
-  delete legacy.ttyPtySlot;
-  delete legacy.hostStdio;
-  delete legacy.stdinClosed;
-  delete legacy.stdioOwner;
-  return state;
-}
 
 export function processStdioState(handle: ProcessHandle): ProcessStdioState {
   const state = processStdioStates.get(handle);
@@ -77,11 +29,6 @@ export function processStdioState(handle: ProcessHandle): ProcessStdioState {
       processStdioStates.set(handle, sharedState);
       return sharedState;
     }
-  }
-  const legacy = consumeLegacyProcessStdioState(handle);
-  if (legacy !== null) {
-    setProcessStdioState(handle, legacy);
-    return legacy;
   }
   const created: ProcessStdioState = {
     stdinPipe: 0,
@@ -102,7 +49,6 @@ export function processStdioState(handle: ProcessHandle): ProcessStdioState {
 }
 
 export function setProcessStdioState(handle: ProcessHandle, state: ProcessStdioState): void {
-  consumeLegacyProcessStdioState(handle);
   processStdioStates.set(handle, state);
   Object.defineProperty(handle, PROCESS_STDIO_STATE, {
     configurable: true,

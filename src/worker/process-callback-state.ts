@@ -8,57 +8,14 @@ const processExitCallbacks = new WeakMap<ProcessHandle, OnExitCallback>();
 const processErrorCallbacks = new WeakMap<ProcessHandle, OnErrorCallback>();
 const processStdoutCallbacks = new WeakMap<ProcessHandle, OnStdoutCallback>();
 
-type LegacyProcessCallbackSeed = {
-  onExit?: OnExitCallback | null;
-  onError?: OnErrorCallback | null;
-  onStdout?: OnStdoutCallback | null;
-};
-
-function consumeLegacyExitCallback(handle: ProcessHandle): OnExitCallback | undefined {
-  const legacyCallback = (handle as LegacyProcessCallbackSeed).onExit;
-  if (legacyCallback !== undefined) {
-    delete (handle as LegacyProcessCallbackSeed).onExit;
-    if (legacyCallback !== null) {
-      processExitCallbacks.set(handle, legacyCallback);
-      return legacyCallback;
-    }
-  }
-  return undefined;
-}
-
-function consumeLegacyErrorCallback(handle: ProcessHandle): OnErrorCallback | undefined {
-  const legacyCallback = (handle as LegacyProcessCallbackSeed).onError;
-  if (legacyCallback !== undefined) {
-    delete (handle as LegacyProcessCallbackSeed).onError;
-    if (legacyCallback !== null) {
-      processErrorCallbacks.set(handle, legacyCallback);
-      return legacyCallback;
-    }
-  }
-  return undefined;
-}
-
-function consumeLegacyStdoutCallback(handle: ProcessHandle): OnStdoutCallback | undefined {
-  const legacyCallback = (handle as LegacyProcessCallbackSeed).onStdout;
-  if (legacyCallback !== undefined) {
-    delete (handle as LegacyProcessCallbackSeed).onStdout;
-    if (legacyCallback !== null) {
-      processStdoutCallbacks.set(handle, legacyCallback);
-      return legacyCallback;
-    }
-  }
-  return undefined;
-}
-
 export function processOnExit(handle: ProcessHandle): OnExitCallback | undefined {
-  return processExitCallbacks.get(handle) ?? consumeLegacyExitCallback(handle);
+  return processExitCallbacks.get(handle);
 }
 
 export function setProcessOnExit(
   handle: ProcessHandle,
   callback: OnExitCallback | null | undefined,
 ): void {
-  delete (handle as LegacyProcessCallbackSeed).onExit;
   if (callback === undefined || callback === null) {
     processExitCallbacks.delete(handle);
     return;
@@ -73,14 +30,13 @@ export function takeProcessOnExit(handle: ProcessHandle): OnExitCallback | undef
 }
 
 export function processOnError(handle: ProcessHandle): OnErrorCallback | undefined {
-  return processErrorCallbacks.get(handle) ?? consumeLegacyErrorCallback(handle);
+  return processErrorCallbacks.get(handle);
 }
 
 export function setProcessOnError(
   handle: ProcessHandle,
   callback: OnErrorCallback | null | undefined,
 ): void {
-  delete (handle as LegacyProcessCallbackSeed).onError;
   if (callback === undefined || callback === null) {
     processErrorCallbacks.delete(handle);
     return;
@@ -89,14 +45,13 @@ export function setProcessOnError(
 }
 
 export function processOnStdout(handle: ProcessHandle): OnStdoutCallback | undefined {
-  return processStdoutCallbacks.get(handle) ?? consumeLegacyStdoutCallback(handle);
+  return processStdoutCallbacks.get(handle);
 }
 
 export function setProcessOnStdout(
   handle: ProcessHandle,
   callback: OnStdoutCallback | null | undefined,
 ): void {
-  delete (handle as LegacyProcessCallbackSeed).onStdout;
   if (callback === undefined || callback === null) {
     processStdoutCallbacks.delete(handle);
     return;

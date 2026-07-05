@@ -26,6 +26,7 @@ import {
 } from "../../../../src/worker/network-socket-state.js";
 import type { KernelWorkerRequestFn, ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 type NetworkPayloadSeed = Omit<NetworkRecvPayloadWatermark, "recvBufIdx"> & {
   recvBufIdx?: number;
@@ -199,6 +200,7 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     handle as ProcessHandle,
     initialKernelWorkerRequest as KernelWorkerRequestFn | undefined,
   );
+  seedProcessHandleStateFixture(handle);
   return handle;
 }
 

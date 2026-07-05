@@ -11,6 +11,7 @@ import { processExitInProgress } from "../../../../src/worker/process-lifecycle-
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -94,6 +95,7 @@ function makeHandle(
   } as unknown as ProcessHandle;
   seedProcessKernelWorkerRequestFixture(handle);
   setProcessDebugCommand(handle, "test");
+  seedProcessHandleStateFixture(handle);
   addKernelShareMember(handle);
   return { handle, releaseHostStdio };
 }

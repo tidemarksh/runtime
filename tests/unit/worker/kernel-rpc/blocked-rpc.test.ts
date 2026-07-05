@@ -11,6 +11,7 @@ import {
 import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../../src/worker/thread-step-payload.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -129,6 +130,7 @@ function makeHandle(
     ...overrides,
   } as unknown as ProcessHandle;
   seedProcessKernelWorkerRequestFixture(handle);
+  seedProcessHandleStateFixture(handle);
   addKernelShareMember(handle);
   return handle;
 }

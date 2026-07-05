@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerMessageHandler } from "../../../src/worker/message-handler.js";
+import { createWorkerMessageHandler as createRawWorkerMessageHandler } from "../../../src/worker/message-handler.js";
 import type { ThreadWorkerOutbound } from "../../../src/messages.js";
 import type { KernelExports } from "../../../src/abi.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
@@ -19,6 +19,17 @@ import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types
 import { workerMessageDebugStats } from "../../../src/worker/worker-debug-stats.js";
 import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
+import { seedProcessHandleStateFixture } from "./support/process-handle-state-fixture.js";
+
+function createWorkerMessageHandler(
+  deps: Parameters<typeof createRawWorkerMessageHandler>[0],
+): ReturnType<typeof createRawWorkerMessageHandler> {
+  const handler = createRawWorkerMessageHandler(deps);
+  return ((...args: Parameters<ReturnType<typeof createRawWorkerMessageHandler>>) => {
+    seedProcessHandleStateFixture(args[0]);
+    return handler(...args);
+  }) as ReturnType<typeof createRawWorkerMessageHandler>;
+}
 
 function makeThreadState(overrides: Partial<ThreadWorkerState> & {
   generation?: number;
