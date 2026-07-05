@@ -9,10 +9,10 @@ import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
 import {
-  supervisorBlockedEpollWaitRetryRequired,
   supervisorBlockedPipeSyncBeforeRetryRequested,
   supervisorBlockedPollWaitHasSocket,
   supervisorBlockedRetryAction,
+  supervisorBlockedRetryResultAction,
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusIsWait4,
@@ -617,27 +617,40 @@ export function createBlockedRetryCoordinator(
     }
 
     blocked.status = status;
-    const supervisorTimerArmed = deps.armBlockedSupervisorTimerForBlocked(handle, blocked);
-    if (supervisorTimerArmed) {
-      return;
-    }
-
-    if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {
-      if (supervisorBlockedEpollWaitRetryRequired(handle.kernel, vmPtr)) {
+    const action = supervisorBlockedRetryResultAction(handle.kernel, vmPtr, status);
+    switch (action) {
+      case "none":
+        return;
+      case "arm-wait-timer":
+        if (deps.armBlockedSupervisorTimerForBlocked(handle, blocked)) {
+          return;
+        }
+        deps.scheduleSupervisorBlockedRetry(
+          handle,
+          worker,
+          [],
+        );
+        return;
+      case "schedule-retry":
+        deps.scheduleSupervisorBlockedRetry(
+          handle,
+          worker,
+          [],
+        );
+        return;
+      case "schedule-retry-and-pump":
         deps.scheduleSupervisorBlockedRetry(
           handle,
           worker,
           [],
         );
         deps.pumpProcess(handle);
+        return;
+      default: {
+        const exhaustive: never = action;
+        throw new Error(`unhandled supervisor blocked retry result action: ${exhaustive}`);
       }
-      return;
     }
-    deps.scheduleSupervisorBlockedRetry(
-      handle,
-      worker,
-      [],
-    );
   }
 
   function blockedRetryActionFlags(

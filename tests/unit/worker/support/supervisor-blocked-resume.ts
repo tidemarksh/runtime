@@ -101,6 +101,10 @@ const SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_RPC_PENDING = 2;
 const SUPERVISOR_BLOCKED_INITIAL_ACTION_ARM_WAIT_TIMER = 3;
 const SUPERVISOR_BLOCKED_INITIAL_ACTION_RETRY_NOW = 4;
 const SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY = 5;
+const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_ARM_WAIT_TIMER = 1;
+const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY = 2;
+const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP = 3;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -243,6 +247,11 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_initial_action_arm_wait_timer"
   | "supervisor_blocked_initial_action_retry_now"
   | "supervisor_blocked_initial_action_schedule_retry"
+  | "supervisor_blocked_retry_result_action"
+  | "supervisor_blocked_retry_result_action_none"
+  | "supervisor_blocked_retry_result_action_arm_wait_timer"
+  | "supervisor_blocked_retry_result_action_schedule_retry"
+  | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -306,6 +315,35 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   const toNumber = (value: bigint | number | undefined): number => (
     typeof value === "bigint" ? Number(value) : (value ?? 0)
   );
+  const blockedWaitTimerRequired = (vmPtr: number): boolean => {
+    const explicit = kernel.supervisor_blocked_wait_timer_required?.(vmPtr);
+    if (explicit !== undefined) {
+      return toNumber(explicit) !== 0;
+    }
+    const status = toNumber(kernel.thread_status?.(vmPtr));
+    if (status === kernel.abi_status_epoll_wait?.()) {
+      const timeout = kernel.thread_epoll_wait_timeout?.(vmPtr);
+      if (timeout !== undefined && BigInt(timeout) >= 0n) {
+        return true;
+      }
+      return BigInt(kernel.thread_epoll_timerfd_deadline_ticks?.(vmPtr) ?? 0n) !== 0n;
+    }
+    if (status === kernel.abi_status_pipe_wait?.()) {
+      const timeout = kernel.thread_poll_wait_timeout?.(vmPtr);
+      return timeout !== undefined
+        && BigInt(timeout) >= 0n
+        && toNumber(kernel.thread_poll_wait_ready_count?.(vmPtr)) <= 0;
+    }
+    if (
+      status === kernel.abi_status_connect?.()
+      || status === kernel.abi_status_socket_recv?.()
+      || status === kernel.abi_status_socket_send?.()
+    ) {
+      const timeout = kernel.thread_socket_wait_timeout?.(vmPtr);
+      return timeout !== undefined && BigInt(timeout) >= 0n;
+    }
+    return false;
+  };
   const wakeMaskForSync = (source: number): number => {
     switch (source) {
       case SUPERVISOR_BLOCKED_WAIT_WAKE_SOURCE_PIPE_SYNC:
@@ -1227,6 +1265,14 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_INITIAL_ACTION_RETRY_NOW;
   nextKernel.supervisor_blocked_initial_action_schedule_retry ??= () =>
     SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY;
+  nextKernel.supervisor_blocked_retry_result_action_none ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_NONE;
+  nextKernel.supervisor_blocked_retry_result_action_arm_wait_timer ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_ARM_WAIT_TIMER;
+  nextKernel.supervisor_blocked_retry_result_action_schedule_retry ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY;
+  nextKernel.supervisor_blocked_retry_result_action_schedule_retry_and_pump ??= () =>
+    SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP;
   nextKernel.supervisor_blocked_initial_action ??= (vmPtr: number, blockedStatus: number, flags: number) => {
     if (vmPtr === 0) {
       return -14;
@@ -1237,7 +1283,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     if ((flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_RPC_PENDING) !== 0) {
       return SUPERVISOR_BLOCKED_INITIAL_ACTION_DEFER_RPC_PENDING;
     }
-    if (toNumber(kernel.supervisor_blocked_wait_timer_required?.(vmPtr)) !== 0) {
+    if (blockedWaitTimerRequired(vmPtr)) {
       return SUPERVISOR_BLOCKED_INITIAL_ACTION_ARM_WAIT_TIMER;
     }
     if (blockedStatus === kernel.abi_status_epoll_wait?.()) {
@@ -1249,6 +1295,20 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       return SUPERVISOR_BLOCKED_INITIAL_ACTION_RETRY_NOW;
     }
     return SUPERVISOR_BLOCKED_INITIAL_ACTION_SCHEDULE_RETRY;
+  };
+  nextKernel.supervisor_blocked_retry_result_action ??= (vmPtr: number, resultStatus: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (blockedWaitTimerRequired(vmPtr)) {
+      return SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_ARM_WAIT_TIMER;
+    }
+    if (resultStatus === kernel.abi_status_epoll_wait?.()) {
+      return toNumber(nextKernel.supervisor_blocked_epoll_wait_retry_required?.(vmPtr)) !== 0
+        ? SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP
+        : SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_NONE;
+    }
+    return SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY;
   };
   nextKernel.supervisor_blocked_retry_action ??= (vmPtr: number, flags: number) => {
     if (vmPtr === 0) {
@@ -1275,7 +1335,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     if (
       (flags & SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_WAIT_TIMER_ALREADY_CHECKED) === 0
-      && toNumber(kernel.supervisor_blocked_wait_timer_required?.(vmPtr)) !== 0
+      && blockedWaitTimerRequired(vmPtr)
     ) {
       return SUPERVISOR_BLOCKED_RETRY_ACTION_ARM_WAIT_TIMER;
     }

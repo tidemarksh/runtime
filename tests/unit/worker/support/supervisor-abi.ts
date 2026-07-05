@@ -214,6 +214,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_initial_action_arm_wait_timer: 3,
   supervisor_blocked_initial_action_retry_now: 4,
   supervisor_blocked_initial_action_schedule_retry: 5,
+  supervisor_blocked_retry_result_action_none: 0,
+  supervisor_blocked_retry_result_action_arm_wait_timer: 1,
+  supervisor_blocked_retry_result_action_schedule_retry: 2,
+  supervisor_blocked_retry_result_action_schedule_retry_and_pump: 3,
   supervisor_blocked_wait_wake_source_pipe_sync: 1,
   supervisor_blocked_wait_wake_source_epoll_sync: 2,
   supervisor_blocked_wait_wake_source_socket_sync: 3,
@@ -334,6 +338,35 @@ export function makeSupervisorAbiStubs(
   };
   const statusFor = (receiver: Partial<KernelExports>, vmPtr: number): number =>
     callNumber(receiver, "thread_status", vmPtr);
+  const blockedWaitTimerRequired = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
+    const explicit = callOptionalNumber(receiver, "supervisor_blocked_wait_timer_required", vmPtr);
+    if (explicit !== undefined && explicit !== 0) {
+      return true;
+    }
+    const status = statusFor(receiver, vmPtr);
+    if (status === callNumber(receiver, "abi_status_epoll_wait")) {
+      const timeout = callOptionalBigInt(receiver, "thread_epoll_wait_timeout", vmPtr);
+      if (timeout !== undefined && timeout >= 0n) {
+        return true;
+      }
+      return (callOptionalBigInt(receiver, "thread_epoll_timerfd_deadline_ticks", vmPtr) ?? 0n) !== 0n;
+    }
+    if (status === callNumber(receiver, "abi_status_pipe_wait")) {
+      const timeout = callOptionalBigInt(receiver, "thread_poll_wait_timeout", vmPtr);
+      return timeout !== undefined
+        && timeout >= 0n
+        && callNumber(receiver, "thread_poll_wait_ready_count", vmPtr) <= 0;
+    }
+    if (
+      status === callNumber(receiver, "abi_status_connect")
+      || status === callNumber(receiver, "abi_status_socket_recv")
+      || status === callNumber(receiver, "abi_status_socket_send")
+    ) {
+      const timeout = callOptionalBigInt(receiver, "thread_socket_wait_timeout", vmPtr);
+      return timeout !== undefined && timeout >= 0n;
+    }
+    return false;
+  };
   const pipeWaitStatusFor = (receiver: Partial<KernelExports>): number =>
     callNumber(receiver, "abi_status_pipe_wait");
   const pollWaitIsPollLike = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
@@ -1605,7 +1638,7 @@ export function makeSupervisorAbiStubs(
       if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_rpc_pending) !== 0) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_defer_rpc_pending;
       }
-      if (callOptionalNumber(receiver, "supervisor_blocked_wait_timer_required", vmPtr) !== 0) {
+      if (blockedWaitTimerRequired(receiver, vmPtr)) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_arm_wait_timer;
       }
       if (blockedStatus === callNumber(receiver, "abi_status_epoll_wait")) {
@@ -1617,6 +1650,21 @@ export function makeSupervisorAbiStubs(
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_retry_now;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry;
+    },
+    supervisor_blocked_retry_result_action(this: KernelExports | undefined, vmPtr: number, resultStatus: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      if (blockedWaitTimerRequired(receiver, vmPtr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_arm_wait_timer;
+      }
+      if (resultStatus === callNumber(receiver, "abi_status_epoll_wait")) {
+        return callNumber(receiver, "thread_process_thread_count", vmPtr) > 1
+          ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_schedule_retry_and_pump
+          : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_none;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_schedule_retry;
     },
     supervisor_blocked_status_transition_action(this: KernelExports | undefined, vmPtr: number, status: number, flags: number) {
       if (vmPtr === 0) {
@@ -2470,7 +2518,7 @@ export function makeSupervisorAbiStubs(
       }
       if (
         (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_wait_timer_already_checked) === 0
-        && Number(receiver?.supervisor_blocked_wait_timer_required?.(vmPtr) ?? 0) !== 0
+        && blockedWaitTimerRequired(receiver, vmPtr)
       ) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_arm_wait_timer;
       }

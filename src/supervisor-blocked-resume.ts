@@ -53,6 +53,12 @@ export type SupervisorBlockedInitialAction =
   | "retry-now"
   | "schedule-retry";
 
+export type SupervisorBlockedRetryResultAction =
+  | "none"
+  | "arm-wait-timer"
+  | "schedule-retry"
+  | "schedule-retry-and-pump";
+
 export type SupervisorBlockedRetryActionFlag =
   | "supervisor-timer-armed"
   | "rpc-pending"
@@ -107,6 +113,10 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_initial_action_arm_wait_timer"
   | "supervisor_blocked_initial_action_retry_now"
   | "supervisor_blocked_initial_action_schedule_retry"
+  | "supervisor_blocked_retry_result_action_none"
+  | "supervisor_blocked_retry_result_action_arm_wait_timer"
+  | "supervisor_blocked_retry_result_action_schedule_retry"
+  | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
   | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
   | "supervisor_blocked_retry_action_flag_rpc_pending"
   | "supervisor_blocked_retry_action_flag_owner_async"
@@ -895,6 +905,60 @@ export function supervisorBlockedInitialAction(
     throw new Error(`kernel supervisor blocked initial action failed: ${result}`);
   }
   return normalizeSupervisorBlockedInitialAction(kernel, result);
+}
+
+function supervisorBlockedRetryResultActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedRetryResultAction,
+): number {
+  switch (action) {
+    case "none":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_none");
+    case "arm-wait-timer":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_arm_wait_timer");
+    case "schedule-retry":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_schedule_retry");
+    case "schedule-retry-and-pump":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_retry_result_action_schedule_retry_and_pump");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedRetryResultAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedRetryResultAction {
+  const actions: SupervisorBlockedRetryResultAction[] = [
+    "none",
+    "arm-wait-timer",
+    "schedule-retry",
+    "schedule-retry-and-pump",
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedRetryResultActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked retry result action is unknown: ${result}`);
+}
+
+export function supervisorBlockedRetryResultAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  resultStatus: number,
+): SupervisorBlockedRetryResultAction {
+  const readAction = kernel.supervisor_blocked_retry_result_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_retry_result_action");
+  }
+  const result = readAction.call(kernel, vmPtr, resultStatus);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked retry result action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedRetryResultAction(kernel, result);
 }
 
 export function supervisorBlockedRetryAction(
