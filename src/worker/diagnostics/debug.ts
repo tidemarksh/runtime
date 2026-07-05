@@ -33,6 +33,7 @@ import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import { networkConnections } from "../network-socket-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import { transferDebugStats, workerMessageDebugStats } from "../worker-debug-stats.js";
+import { processMemoryOwnership } from "../memory-ownership-state.js";
 import {
   getHandleForkSharedSync,
   getKernelShareForkSharedSync,
@@ -917,7 +918,7 @@ export function debugRuntimeExecutionStats(
     .sort((left, right) => left.pid - right.pid)
     .map((handle) => {
       const statusNames = readStatusNames(handle);
-      const ownership = handle.memoryOwnership;
+      const ownership = processMemoryOwnership(handle);
       const processCommittedBytes = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
       const processMaxMemoryBytes = handle.maxMemoryPages * 65536;
       const forkProcessMaxMemoryBytes = handle.forkMaxMemoryPages * 65536;
@@ -938,7 +939,7 @@ export function debugRuntimeExecutionStats(
         kernelWorkerPrivateMemoryBytes: ownership?.kernelWorkerPrivateMemoryBytes ?? null,
         artifactMaterializationBudgetBytes: ownership?.artifactMaterializationBudgetBytes ?? null,
         artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
-        memoryOwnership: handle.memoryOwnership,
+        memoryOwnership: processMemoryOwnership(handle),
         guestBase: handle.guestBase,
         vforkReadyWorkers: hostExecutionState(handle).vforkReadyWorkers.length,
         hostBlockedWorkers: hostExecutionState(handle).hostBlockedWorkers.size,

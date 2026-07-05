@@ -12,8 +12,20 @@ import { FS_RING_TOTAL_BYTES } from "../../../../src/layout/fs-ring.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
+type ProcessMemoryOwnershipFn =
+  typeof import("../../../../src/worker/memory-ownership-state.js").processMemoryOwnership;
 
 let workerModule: WorkerModule | null = null;
+let processMemoryOwnershipImpl: ProcessMemoryOwnershipFn | null = null;
+
+function processMemoryOwnership(
+  handle: Parameters<ProcessMemoryOwnershipFn>[0],
+): ReturnType<ProcessMemoryOwnershipFn> {
+  if (processMemoryOwnershipImpl === null) {
+    throw new Error("processMemoryOwnership accessor not loaded");
+  }
+  return processMemoryOwnershipImpl(handle);
+}
 
 function clearRuntimeFsState(runtimeId: number): void {
   workerModule?.clearRuntimeFsState(runtimeId);
@@ -628,6 +640,9 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  processMemoryOwnershipImpl = (
+    await import("../../../../src/worker/memory-ownership-state.js")
+  ).processMemoryOwnership;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -656,6 +671,7 @@ afterEach(() => {
   workerModule?.destroyWorkerPool();
   clearModuleCache();
   workerModule = null;
+  processMemoryOwnershipImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -1739,7 +1755,7 @@ test("createProcess routes explicit preload file payloads through kernel-worker 
     type: "snapshot-fs",
     includeData: false,
   }));
-  expect(handle.memoryOwnership).toEqual({
+  expect(processMemoryOwnership(handle)).toEqual({
     guestAddressProfile: 1,
     guestAddressLimitBytes: "4294967295",
     guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
@@ -1781,11 +1797,11 @@ test("createProcess reports published metadata capacity independently from page-
     sabPageCache: new SharedArrayBuffer(8 * 1024 * 1024),
   });
 
-  expect(smallPageCache.memoryOwnership?.pageCacheDataCapacityBytes).toBe(1024 * 1024);
-  expect(largePageCache.memoryOwnership?.pageCacheDataCapacityBytes).toBe(8 * 1024 * 1024);
-  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes).toBeGreaterThan(0);
-  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes)
-    .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
+  expect(processMemoryOwnership(smallPageCache)?.pageCacheDataCapacityBytes).toBe(1024 * 1024);
+  expect(processMemoryOwnership(largePageCache)?.pageCacheDataCapacityBytes).toBe(8 * 1024 * 1024);
+  expect(processMemoryOwnership(smallPageCache)?.publishedMetadataCapacityBytes).toBeGreaterThan(0);
+  expect(processMemoryOwnership(smallPageCache)?.publishedMetadataCapacityBytes)
+    .toBe(processMemoryOwnership(largePageCache)?.publishedMetadataCapacityBytes);
 });
 
 test("createProcess reports FS RPC ring capacity independently from page-cache data and metadata capacity", async () => {
@@ -1798,12 +1814,12 @@ test("createProcess reports FS RPC ring capacity independently from page-cache d
     fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
   });
 
-  expect(smallPageCache.memoryOwnership?.pageCacheDataCapacityBytes).not
-    .toBe(largePageCache.memoryOwnership?.pageCacheDataCapacityBytes);
-  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes)
-    .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
-  expect(smallPageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
-  expect(largePageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
+  expect(processMemoryOwnership(smallPageCache)?.pageCacheDataCapacityBytes).not
+    .toBe(processMemoryOwnership(largePageCache)?.pageCacheDataCapacityBytes);
+  expect(processMemoryOwnership(smallPageCache)?.publishedMetadataCapacityBytes)
+    .toBe(processMemoryOwnership(largePageCache)?.publishedMetadataCapacityBytes);
+  expect(processMemoryOwnership(smallPageCache)?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
+  expect(processMemoryOwnership(largePageCache)?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
 });
 
 test("createProcess rejects artifact materialization budget separately from guest policy", async () => {

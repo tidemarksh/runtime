@@ -2,6 +2,7 @@ import { createRuntimeStateBridge } from "../../bridge/runtime-state.js";
 import { createInheritedErrorSink, retainSharedHostStdio } from "../stdio.js";
 import type { KernelExports } from "../../abi.js";
 import { copyGuestWriteWatchRegions } from "../guest-write-watch-state.js";
+import { copyProcessMemoryOwnership } from "../memory-ownership-state.js";
 import { copyNetworkSocketState } from "../network-socket-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
@@ -75,9 +76,9 @@ export function createForkChildHandle({
       (pid) => deps.processHandles.get(pid),
       deps.failProcess,
     ),
-    ...(parent.memoryOwnership ? { memoryOwnership: { ...parent.memoryOwnership } } : {}),
   };
   copyGuestWriteWatchRegions(childHandle, parent);
+  copyProcessMemoryOwnership(childHandle, parent);
   copyNetworkSocketState(childHandle, parent);
   return childHandle;
 }

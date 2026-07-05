@@ -19,6 +19,7 @@ import {
   snapshotEntriesEqual,
   snapshotProcessFs,
 } from "./process-fs.js";
+import { processMemoryOwnership } from "./memory-ownership-state.js";
 import {
   kernelShareOtherMembers,
   kernelShareRepresentative,
@@ -116,7 +117,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function captureFailureMemorySnapshot(handle: ProcessHandle): RuntimeFailureSnapshot["memory"] {
-    const ownership = handle.memoryOwnership;
+    const ownership = processMemoryOwnership(handle);
     const memoryBytes = handle.memory.buffer.byteLength;
     return {
       memoryBytes,

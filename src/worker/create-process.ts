@@ -43,6 +43,7 @@ import {
   MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   normalizeGuestMemoryPolicyLimitBytesWithMinimum,
 } from "./memory-policy.js";
+import { setProcessMemoryOwnership } from "./memory-ownership-state.js";
 import type {
   AttachThreadWorkerRequest,
   CreateProcessOptions,
@@ -628,7 +629,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       artifactMaterializedBytes,
     };
 
-    return {
+    const handle: ProcessHandle = {
       runtimeId,
       pid: options.pid ?? 0,
       parentPid: options.parentPid ?? null,
@@ -668,8 +669,9 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       onExit: options.onExit,
       onError: options.onError,
       onStdout: options.onStdout,
-      memoryOwnership,
     };
+    setProcessMemoryOwnership(handle, memoryOwnership);
+    return handle;
   }
 
   async function createProcess(

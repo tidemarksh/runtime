@@ -1,5 +1,6 @@
 import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
 import { supervisorProcessIdentityMatches } from "../process-identity.js";
+import { processMemoryOwnership } from "../memory-ownership-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 import { getThreadActivityState } from "../thread-activity-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
@@ -138,7 +139,7 @@ export function appendPlainForkMemoryDebug(
   snapshot: ForkMemorySnapshot,
   childMemoryBytes: number,
 ): void {
-  const ownership = handle.memoryOwnership;
+  const ownership = processMemoryOwnership(handle);
   const processCommittedBytes = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
   workerDebugLog(handle).push([
     "plain-fork-memory",
