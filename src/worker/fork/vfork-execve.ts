@@ -28,6 +28,7 @@ import {
 import { supervisorResidentPageTableAuthority } from "../../fs/supervisor-page-table.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
+import { getThreadExecveProcessState } from "../thread-execve-state.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
 import { snapshotProcessFdEntries, restoreProcessFdEntries } from "../ownership/fd-table.js";
 import {
@@ -379,7 +380,7 @@ export async function handleVforkExecve(
       handoffBeforePreflight.path,
       handoffBeforePreflight.argv,
       handoffBeforePreflight.envp,
-      parentThread.execveProcessState,
+      getThreadExecveProcessState(parentThread),
     );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,

@@ -36,6 +36,7 @@ import {
   incrementBoundedCounter,
   readLocalProcessPid,
 } from "./route-state.js";
+import { setThreadExecveProcessState } from "../../thread-execve-state.js";
 import {
   applyThreadGuestMemoryWrites,
   applyThreadKernelMemoryWrites,
@@ -217,7 +218,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     thread.lastStatusSp = msg.sp ?? null;
     thread.lastStatusS11 = msg.s11 ?? null;
     if (msg.processState) {
-      thread.execveProcessState = msg.processState;
+      setThreadExecveProcessState(thread, msg.processState);
     }
     incrementBoundedCounter(thread.hotStatusPcs, `0x${msg.pc.toString(16)}`);
     const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);

@@ -116,7 +116,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStatusPc: 0x5678n,
     lastStatusSp: null,
     lastStatusS11: null,
-    execveProcessState: undefined,
     hotStatusPcs: {},
     initialized: true,
     waitingInWorkerStatus: null,

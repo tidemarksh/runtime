@@ -6,6 +6,7 @@ import {
   setThreadOwnerAsyncStatus,
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
+import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -1658,7 +1659,7 @@ test("status handler dispatches execve_spawn into the ownership handoff path", (
   expect(clearBlockedWorker).toHaveBeenCalledWith(handle, worker);
   expect(handleExecveSpawn).toHaveBeenCalledTimes(1);
   expect(handleExecveSpawn).toHaveBeenCalledWith(handle, worker, expect.objectContaining({ vmPtr: 0x1234 }));
-  expect((threadWorkerStates.get(worker) as { execveProcessState?: Uint8Array }).execveProcessState).toBe(execveProcessState);
+  expect(getThreadExecveProcessState(threadWorkerStates.get(worker) as never)).toBe(execveProcessState);
 });
 
 test("status handler keeps full debug for zeroed OK state", () => {

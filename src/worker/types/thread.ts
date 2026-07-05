@@ -24,7 +24,6 @@ export interface ThreadWorkerState {
   lastStatusPc: bigint | null;
   lastStatusSp: bigint | null;
   lastStatusS11: bigint | null;
-  execveProcessState?: Uint8Array;
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
 }
