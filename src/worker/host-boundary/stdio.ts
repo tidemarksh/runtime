@@ -16,15 +16,17 @@ import {
 } from "../ownership/pipe-slot.js";
 import { supervisorProcessFdIsOpen } from "../ownership/fd-table.js";
 import { replacePendingPipeSlotSnapshotForSlot } from "../pending-pipe-slot-state.js";
+import { outputBacklog, stdinQueue } from "../stdio-buffer-state.js";
 import type { ProcessHandle, SharedHostStdio } from "../types.js";
 
 function flushOutputBacklog(handle: ProcessHandle): void {
   const onStdout = handle.onStdout;
-  if (!onStdout || handle.outputBacklog.length === 0) {
+  const backlog = outputBacklog(handle);
+  if (!onStdout || backlog.length === 0) {
     return;
   }
-  while (handle.outputBacklog.length > 0) {
-    const chunk = handle.outputBacklog.shift();
+  while (backlog.length > 0) {
+    const chunk = backlog.shift();
     if (!chunk) {
       continue;
     }
@@ -33,7 +35,7 @@ function flushOutputBacklog(handle: ProcessHandle): void {
 }
 
 function enqueueOutput(handle: ProcessHandle, data: Uint8Array): void {
-  handle.outputBacklog.push(new Uint8Array(data));
+  outputBacklog(handle).push(new Uint8Array(data));
   flushOutputBacklog(handle);
 }
 
@@ -228,7 +230,7 @@ export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void
   if (data.length === 0) {
     return;
   }
-  handle.stdinQueue.push(new Uint8Array(data));
+  stdinQueue(handle).push(new Uint8Array(data));
 }
 
 export function flushStdin(handle: ProcessHandle): boolean {
@@ -237,10 +239,11 @@ export function flushStdin(handle: ProcessHandle): boolean {
   }
 
   let wrote = false;
-  while (handle.stdinQueue.length > 0) {
-    const chunk = handle.stdinQueue[0];
+  const queue = stdinQueue(handle);
+  while (queue.length > 0) {
+    const chunk = queue[0];
     if (!chunk) {
-      handle.stdinQueue.shift();
+      queue.shift();
       continue;
     }
     if (handle.ttyPtySlot !== 0 && handle.kernel.process_host_write_stdin) {
@@ -254,15 +257,15 @@ export function flushStdin(handle: ProcessHandle): boolean {
       }
       wrote = true;
       if (written >= chunk.length) {
-        handle.stdinQueue.shift();
+        queue.shift();
         continue;
       }
-      handle.stdinQueue[0] = chunk.slice(written);
+      queue[0] = chunk.slice(written);
       break;
     } else {
       const result = writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe, chunk);
       if (result.broken) {
-        handle.stdinQueue.length = 0;
+        queue.length = 0;
         return wrote;
       }
       if (result.written <= 0) {
@@ -270,10 +273,10 @@ export function flushStdin(handle: ProcessHandle): boolean {
       }
       wrote = true;
       if (result.written >= chunk.length) {
-        handle.stdinQueue.shift();
+        queue.shift();
         continue;
       }
-      handle.stdinQueue[0] = chunk.slice(result.written);
+      queue[0] = chunk.slice(result.written);
       break;
     }
   }

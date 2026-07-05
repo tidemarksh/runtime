@@ -50,6 +50,7 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "./worker/guest-write-watch-state.js";
+import { outputBacklog } from "./worker/stdio-buffer-state.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -741,10 +742,11 @@ export class Runtime {
       throw new Error(`unknown pid: ${pid}`);
     }
     handle.onStdout = cb;
-    for (const chunk of handle.outputBacklog) {
+    const backlog = outputBacklog(handle);
+    for (const chunk of backlog) {
       cb(chunk);
     }
-    handle.outputBacklog.length = 0;
+    backlog.length = 0;
   }
 
   writeStdin(pid: number, data: Uint8Array): void {
@@ -836,10 +838,11 @@ export class Process {
 
   onStdout(cb: (data: Uint8Array) => void): void {
     this.handle.onStdout = cb;
-    for (const chunk of this.handle.outputBacklog) {
+    const backlog = outputBacklog(this.handle);
+    for (const chunk of backlog) {
       cb(chunk);
     }
-    this.handle.outputBacklog.length = 0;
+    backlog.length = 0;
   }
 
   writeStdin(_data: Uint8Array): void {

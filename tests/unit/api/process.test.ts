@@ -4,6 +4,7 @@ import {
   guestWriteWatchRegions,
   setGuestWriteWatchRegions,
 } from "../../../src/worker/guest-write-watch-state.js";
+import { outputBacklog } from "../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(): ProcessHandle {
@@ -75,8 +76,8 @@ test("Process.onStdout flushes queued backlog before delivering later bytes", ()
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const handle = makeHandle();
-  handle.outputBacklog.push(encoder.encode("stdout-1\n"));
-  handle.outputBacklog.push(encoder.encode("stderr-1\n"));
+  outputBacklog(handle).push(encoder.encode("stdout-1\n"));
+  outputBacklog(handle).push(encoder.encode("stderr-1\n"));
   const proc = new Process(handle.pid, handle);
   const seen: string[] = [];
 
@@ -90,7 +91,7 @@ test("Process.onStdout flushes queued backlog before delivering later bytes", ()
     "stderr-1\n",
     "stdout-2\n",
   ]);
-  expect(handle.outputBacklog).toEqual([]);
+  expect(outputBacklog(handle)).toEqual([]);
 });
 
 test("Process guest write watch coerces numeric regions to kernel u64 arguments", () => {

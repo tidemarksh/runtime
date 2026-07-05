@@ -95,9 +95,7 @@ export interface ProcessHandle {
   stdinClosed?: boolean;
   stdioOwner: ProcessHandle | null;
   kernelShare: KernelShareGroup;
-  stdinQueue: Uint8Array[];
   stdinFlushPromise: Promise<void> | null;
-  outputBacklog: Uint8Array[];
   debugCommand: string;
   lastDebugMessage?: string;
   runtimeBridge: RuntimeStateBridge;

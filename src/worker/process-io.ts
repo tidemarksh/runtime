@@ -25,6 +25,7 @@ import {
   networkSocketSlotWatermarks,
 } from "./network-socket-state.js";
 import { getRuntimeStateSyncPromise, runtimeStateSyncInFlight } from "./state-sync-inflight.js";
+import { stdinQueue } from "./stdio-buffer-state.js";
 import type { ProcessHandle } from "./types.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { transferDebugStats } from "./worker-debug-stats.js";
@@ -1014,7 +1015,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     }).finally(() => {
       handle.stdinFlushPromise = null;
-      if (deps.isActiveHandle(handle) && handle.stdinQueue.length > 0) {
+      if (deps.isActiveHandle(handle) && stdinQueue(handle).length > 0) {
         scheduleQueuedStdinFlush(handle);
       }
     });

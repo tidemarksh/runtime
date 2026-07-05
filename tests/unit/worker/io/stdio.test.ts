@@ -17,6 +17,7 @@ import type {
   KernelWorkerOutbound,
   KernelWorkerRequest,
 } from "../../../../src/messages.js";
+import { outputBacklog, stdinQueue } from "../../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -272,8 +273,8 @@ test("drainProcessOutput does not emit visible bytes from child handles owned by
 
   expect(drainProcessOutput(child)).toBe(false);
   expect(delivered).toEqual([]);
-  expect(child.outputBacklog).toEqual([]);
-  expect(owner.outputBacklog).toEqual([]);
+  expect(outputBacklog(child)).toEqual([]);
+  expect(outputBacklog(owner)).toEqual([]);
 });
 
 test("drainHiddenProcessOutput flushes child bytes into the visible parent output", () => {
@@ -555,7 +556,7 @@ test("drainProcessOutput queues merged output when no stdout callback is install
   seedPipe(handle.memory, handle.kernelState, handle.stderrPipe, "second\n");
 
   expect(drainProcessOutput(handle)).toBe(true);
-  expect(handle.outputBacklog.map((chunk) => new TextDecoder().decode(chunk))).toEqual([
+  expect(outputBacklog(handle).map((chunk) => new TextDecoder().decode(chunk))).toEqual([
     "first\n",
     "second\n",
   ]);
@@ -750,7 +751,7 @@ test("flushStdin writes inherited stdin without breaking the next output drain",
   };
 
   setPipeEnds(handle.memory, handle.kernelState, handle.stdinPipe, 1, 1);
-  handle.stdinQueue.push(new TextEncoder().encode(stdinText));
+  stdinQueue(handle).push(new TextEncoder().encode(stdinText));
   expect(flushStdin(handle)).toBe(true);
   expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe).data)).toBe(stdinText);
 
@@ -777,7 +778,7 @@ test("flushStdin supports a second child capture phase after the first inherited
   };
 
   setPipeEnds(handle.memory, handle.kernelState, handle.stdinPipe, 1, 1);
-  handle.stdinQueue.push(new TextEncoder().encode("stdin-phase-1\n"));
+  stdinQueue(handle).push(new TextEncoder().encode("stdin-phase-1\n"));
   expect(flushStdin(handle)).toBe(true);
   expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe).data)).toBe(
     "stdin-phase-1\n",
@@ -788,7 +789,7 @@ test("flushStdin supports a second child capture phase after the first inherited
   expect(drainProcessOutput(handle)).toBe(true);
 
   setPipeEnds(handle.memory, handle.kernelState, handle.stdinPipe, 1, 1);
-  handle.stdinQueue.push(new TextEncoder().encode("stdin-phase-2\n"));
+  stdinQueue(handle).push(new TextEncoder().encode("stdin-phase-2\n"));
   expect(flushStdin(handle)).toBe(true);
   expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, handle.stdinPipe).data)).toBe(
     "stdin-phase-2\n",
@@ -819,12 +820,12 @@ test("flushStdin routes controlling-tty input through process_host_write_stdin",
     } as unknown as KernelExports,
   });
   handle.memory = (handle.kernel as unknown as KernelExports).memory;
-  handle.stdinQueue.push(new TextEncoder().encode("ls\n"));
+  stdinQueue(handle).push(new TextEncoder().encode("ls\n"));
 
   expect(flushStdin(handle)).toBe(true);
   expect(hostWrite).toHaveBeenCalledTimes(1);
   expect(hostWrite).toHaveBeenCalledWith(handle.vmPtr, expect.any(Number), 3);
-  expect(handle.stdinQueue).toHaveLength(0);
+  expect(stdinQueue(handle)).toHaveLength(0);
 });
 
 test("releaseSharedHostStdioViaKernelWorker clears local pipe slots while other shared references remain", async () => {

@@ -1,6 +1,7 @@
 import { hostExecutionState } from "./host-execution-state.js";
 import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
+import { outputBacklog } from "./stdio-buffer-state.js";
 import { settleInheritedChildOutput, settleVisibleProcessOutput } from "./stdio.js";
 import { ensureMemoryCapacityFor, scratchBaseFor } from "../kernel-worker/common.js";
 import { readInodeRecord } from "../fs/sab-page-cache.js";
@@ -1635,7 +1636,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     };
     return [
       `on=${handle.onStdout ? 1 : 0}`,
-      `backlog=${handle.outputBacklog.length}`,
+      `backlog=${outputBacklog(handle).length}`,
       formatSlot("stdout", handle.hostStdio.stdoutPipe),
       formatSlot("stderr", handle.hostStdio.stderrPipe),
     ].join(":");
