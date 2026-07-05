@@ -16,6 +16,7 @@ import {
 } from "../../../src/worker/thread-host-state.js";
 import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
+import { workerMessageDebugStats } from "../../../src/worker/worker-debug-stats.js";
 import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
 
@@ -734,6 +735,6 @@ test("active vfork child fault remains routed through the parent handle", () => 
     12,
     0,
   );
-  expect(parentHandle.workerMessageDebugStats.rerouted).toBe(0);
+  expect(workerMessageDebugStats(parentHandle).rerouted).toBe(0);
   expect(failProcess).not.toHaveBeenCalled();
 });

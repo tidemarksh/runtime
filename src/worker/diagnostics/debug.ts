@@ -4,6 +4,7 @@ import type {
   RuntimeMemoryOwnership,
   ThreadWorkerState,
   TransferDebugStats,
+  WorkerMessageDebugStats,
 } from "../types.js";
 import { readRuntimeBridgeDebugStage } from "../../bridge/runtime-state.js";
 import { kernelSocketCount } from "../../kernel-socket-layout.js";
@@ -31,6 +32,7 @@ import {
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import { networkConnections } from "../network-socket-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
+import { transferDebugStats, workerMessageDebugStats } from "../worker-debug-stats.js";
 import {
   getHandleForkSharedSync,
   getKernelShareForkSharedSync,
@@ -157,7 +159,7 @@ export interface ProcessExecutionStats {
   pendingChildSpawnRecords: number;
   activeChildren: number;
   runtimeBridgeDebugStage: { stage: number; value: number };
-  workerMessageDebugStats: ProcessHandle["workerMessageDebugStats"];
+  workerMessageDebugStats: WorkerMessageDebugStats;
   transferDebugStats: TransferDebugStats;
   memoryLogTail: string[];
   memoryVmas: Array<{
@@ -944,10 +946,10 @@ export function debugRuntimeExecutionStats(
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
         runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),
         workerMessageDebugStats: {
-          ...handle.workerMessageDebugStats,
-          lastEvents: handle.workerMessageDebugStats.lastEvents.slice(-16),
+          ...workerMessageDebugStats(handle),
+          lastEvents: workerMessageDebugStats(handle).lastEvents.slice(-16),
         },
-        transferDebugStats: { ...handle.transferDebugStats },
+        transferDebugStats: { ...transferDebugStats(handle) },
         memoryLogTail: workerDebugLog(handle)
           .filter((entry) =>
             entry.startsWith("memory-state:")

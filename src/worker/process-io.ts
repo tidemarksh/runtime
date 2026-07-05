@@ -25,8 +25,9 @@ import {
   networkSocketSlotWatermarks,
 } from "./network-socket-state.js";
 import { getRuntimeStateSyncPromise, runtimeStateSyncInFlight } from "./state-sync-inflight.js";
-import { createTransferDebugStats, type ProcessHandle } from "./types.js";
+import type { ProcessHandle } from "./types.js";
 import { workerDebugLog } from "./worker-debug-log.js";
+import { transferDebugStats } from "./worker-debug-stats.js";
 
 interface WorkerProcessIoDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -270,8 +271,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function recordNetworkPendingInbound(handle: ProcessHandle, bytes: Uint8Array<ArrayBuffer> | null): void {
-    if (bytes !== null && bytes.length > handle.transferDebugStats.networkPendingInboundBytesMax) {
-      handle.transferDebugStats.networkPendingInboundBytesMax = bytes.length;
+    if (bytes !== null && bytes.length > transferDebugStats(handle).networkPendingInboundBytesMax) {
+      transferDebugStats(handle).networkPendingInboundBytesMax = bytes.length;
     }
   }
 
@@ -288,8 +289,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (value === undefined || value === null) {
       return;
     }
-    handle.transferDebugStats.networkBridgeReadCalls += 1;
-    handle.transferDebugStats.networkBridgeReadBytes += value.length;
+    transferDebugStats(handle).networkBridgeReadCalls += 1;
+    transferDebugStats(handle).networkBridgeReadBytes += value.length;
   }
 
   function recordGuestSocketReadProgress(handle: ProcessHandle, socketIdx: number | undefined): void {
@@ -313,10 +314,10 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return;
     }
     if (current.calls > previous.calls) {
-      handle.transferDebugStats.networkGuestSocketReadCalls += current.calls - previous.calls;
+      transferDebugStats(handle).networkGuestSocketReadCalls += current.calls - previous.calls;
     }
     if (current.bytes > previous.bytes) {
-      handle.transferDebugStats.networkGuestSocketReadBytes += Number(current.bytes - previous.bytes);
+      transferDebugStats(handle).networkGuestSocketReadBytes += Number(current.bytes - previous.bytes);
     }
   }
 
@@ -325,7 +326,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function ensureNetworkBookkeeping(handle: ProcessHandle): void {
-    handle.transferDebugStats ??= createTransferDebugStats();
+    transferDebugStats(handle);
     networkConnections(handle);
   }
 
@@ -847,7 +848,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       deps.appendWorkerDebugLog(handle, `net-read-skip:${handle.pid}:vm=0x${vmPtr.toString(16)}`);
       return;
     }
-    handle.transferDebugStats.networkBridgeReadQueued += 1;
+    transferDebugStats(handle).networkBridgeReadQueued += 1;
     deps.appendWorkerDebugLog(handle, `net-read-queue:${handle.pid}:vm=0x${vmPtr.toString(16)}`);
     appendNetworkLifecycle(handle, `net-read-queue:${handle.pid}:0x${vmPtr.toString(16)}`);
     const pending = Promise.resolve(read)
@@ -1308,7 +1309,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   async function pumpNetworkConnections(handle: ProcessHandle, vmPtr = handle.vmPtr): Promise<boolean> {
     const pumpStartedAtMs = Date.now();
     ensureNetworkBookkeeping(handle);
-    handle.transferDebugStats.networkPumpCalls += 1;
+    transferDebugStats(handle).networkPumpCalls += 1;
     const drainOutbound = handle.kernel.thread_socket_drain_outbound;
     const injectInbound = handle.kernel.thread_socket_inject_inbound;
     const prepareExternalPeer = requireSupervisorSocketPrepareExternalPeer(handle);
@@ -1316,9 +1317,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     let changed = false;
     const finishPump = (): boolean => {
       if (changed) {
-        handle.transferDebugStats.networkPumpChangedCalls += 1;
+        transferDebugStats(handle).networkPumpChangedCalls += 1;
       }
-      handle.transferDebugStats.networkPumpElapsedMs += Date.now() - pumpStartedAtMs;
+      transferDebugStats(handle).networkPumpElapsedMs += Date.now() - pumpStartedAtMs;
       return changed;
     };
     if (!drainOutbound || !injectInbound || networkConnections(handle).size === 0) {
@@ -1622,8 +1623,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         deps.appendWorkerDebugLog(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         appendNetworkLifecycle(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         if (written > 0) {
-          handle.transferDebugStats.networkInboundInjectCalls += 1;
-          handle.transferDebugStats.networkInboundInjectedBytes += written;
+          transferDebugStats(handle).networkInboundInjectCalls += 1;
+          transferDebugStats(handle).networkInboundInjectedBytes += written;
           rememberNetworkOfdSlot(handle, supervisorSocketOfdForFd(handle, vmPtr, fd));
           rememberNetworkRecvPayload(handle, vmPtr, fd, written);
           networkDrainMisses.delete(connection);
@@ -1652,7 +1653,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           return "closed";
         }
         if (written <= 0) {
-          handle.transferDebugStats.networkInboundBlockedCalls += 1;
+          transferDebugStats(handle).networkInboundBlockedCalls += 1;
           deps.appendWorkerDebugLog(handle, `net-inject:${handle.pid}:fd=${fd}:blocked=${written}:pending=${owned.length}`);
           appendNetworkLifecycle(handle, `net-inject-blocked:${handle.pid}:fd=${fd}:written=${written}:pending=${owned.length}`);
           logNetworkDebug(`inject-blocked pid=${handle.pid} fd=${fd} written=${written} pending=${owned.length}`);
@@ -1797,8 +1798,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           }
           const outbound = new Uint8Array(handle.memory.buffer.slice(scratch, scratch + n));
           await connection.write(outbound);
-          handle.transferDebugStats.networkOutboundDrainCalls += 1;
-          handle.transferDebugStats.networkOutboundDrainedBytes += n;
+          transferDebugStats(handle).networkOutboundDrainCalls += 1;
+          transferDebugStats(handle).networkOutboundDrainedBytes += n;
           await Promise.resolve();
           if (pendingNetworkReads.has(connection)) {
             retryNetworkReadAfterPending.add(connection);

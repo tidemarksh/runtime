@@ -23,6 +23,7 @@ import {
 } from "../../thread-host-state.js";
 import { getThreadActivityState } from "../../thread-activity-state.js";
 import { isBlockedRpcPending } from "../../host-blocked-state.js";
+import { workerMessageDebugStats } from "../../worker-debug-stats.js";
 
 function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   handle: ProcessHandle;
@@ -200,7 +201,7 @@ export function handleOwnerAsyncStatusReturn(args: {
       + `:ownerMatch=${statusBelongsToHandle ? 1 : 0}`,
   );
   recordWorkerMessageDebugEvent(
-    handle.workerMessageDebugStats,
+    workerMessageDebugStats(handle),
     "ownerAsyncStatusReturns",
     `status-owner-async:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`,
   );

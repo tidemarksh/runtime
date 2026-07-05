@@ -3,7 +3,6 @@ import { createInheritedErrorSink, retainSharedHostStdio } from "../stdio.js";
 import type { KernelExports } from "../../abi.js";
 import { copyGuestWriteWatchRegions } from "../guest-write-watch-state.js";
 import { copyNetworkSocketState } from "../network-socket-state.js";
-import { createTransferDebugStats, createWorkerMessageDebugStats } from "../types.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
@@ -78,8 +77,6 @@ export function createForkChildHandle({
       (pid) => deps.processHandles.get(pid),
       deps.failProcess,
     ),
-    workerMessageDebugStats: createWorkerMessageDebugStats(),
-    transferDebugStats: createTransferDebugStats(),
     ...(parent.memoryOwnership ? { memoryOwnership: { ...parent.memoryOwnership } } : {}),
   };
   copyGuestWriteWatchRegions(childHandle, parent);

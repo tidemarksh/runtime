@@ -35,10 +35,10 @@ import {
   setProcessMemfsPublishPending,
 } from "../process-memfs-state.js";
 import {
-  createTransferDebugStats,
   type ProcessHandle,
   type ThreadWorkerState,
 } from "../types.js";
+import { transferDebugStats } from "../worker-debug-stats.js";
 import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
@@ -1009,8 +1009,7 @@ function recordFsTransferStats(
   viaKernelWorker: boolean,
   memfsPublishReady: boolean,
 ): void {
-  handle.transferDebugStats ??= createTransferDebugStats();
-  const stats = handle.transferDebugStats;
+  const stats = transferDebugStats(handle);
   stats.fsResumeCalls += 1;
   if (viaKernelWorker) {
     stats.fsKernelWorkerCalls += 1;
@@ -1350,7 +1349,7 @@ async function resumeFsViaKernelWorkerInner(
           && hostExecutionState(member).runningWorker === null
           && members.indexOf(member) === index
         ));
-      peer.transferDebugStats.forkSharedMemfsSyncCalls += 1;
+      transferDebugStats(peer).forkSharedMemfsSyncCalls += 1;
       await deps.syncDirtyMemfsPeerViaKernelWorker(peer, targets, {
         cause: { kind: "syscall", nr: -1n, name: "fs-dirty-memfs-peer" },
         includeMemfs: true,

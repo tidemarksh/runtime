@@ -13,10 +13,6 @@ import type {
   KernelWorkerRequest,
   ThreadWorkerMemoryPreserveRange,
 } from "../../messages.js";
-import type {
-  TransferDebugStats,
-  WorkerMessageDebugStats,
-} from "./debug.js";
 
 export interface SharedHostStdio {
   stdinPipe: number;
@@ -113,8 +109,6 @@ export interface ProcessHandle {
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;
-  workerMessageDebugStats: WorkerMessageDebugStats;
-  transferDebugStats: TransferDebugStats;
   memoryOwnership?: RuntimeMemoryOwnership;
 }
 

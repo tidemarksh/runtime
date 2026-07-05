@@ -43,7 +43,6 @@ import {
   MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   normalizeGuestMemoryPolicyLimitBytesWithMinimum,
 } from "./memory-policy.js";
-import { createTransferDebugStats, createWorkerMessageDebugStats } from "./types.js";
 import type {
   AttachThreadWorkerRequest,
   CreateProcessOptions,
@@ -671,8 +670,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       onExit: options.onExit,
       onError: options.onError,
       onStdout: options.onStdout,
-      workerMessageDebugStats: createWorkerMessageDebugStats(),
-      transferDebugStats: createTransferDebugStats(),
       memoryOwnership,
     };
   }

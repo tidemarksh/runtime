@@ -10,6 +10,7 @@ import {
   setBlockedRpcPending,
 } from "../../../../src/worker/host-blocked-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
+import { workerMessageDebugStats } from "../../../../src/worker/worker-debug-stats.js";
 import { makeHandle, makeKernel, makeStatusMessage, makeThreadState } from "./helpers.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 
@@ -53,7 +54,7 @@ test("owner-async status return clears the running generation and records the st
     handle,
     "status-owner-async:0x1234:owner=4:status=4:ownerMatch=1",
   );
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(1);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(1);
 });
 
 test("owner-async status return does not apply ownership payloads for another process", () => {
@@ -122,7 +123,7 @@ test("owner-async STATUS_OK return seeds recovery pump while async remains pendi
   expect(handled).toBe(true);
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(1);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(1);
 });
 
 test("owner-async STATUS_FS return seeds blocking recovery pump while async remains pending", () => {
@@ -162,7 +163,7 @@ test("owner-async STATUS_FS return seeds blocking recovery pump while async rema
   expect(handled).toBe(true);
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(6);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(1);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(1);
 });
 
 test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same worker", () => {
@@ -310,7 +311,7 @@ test("owner-async STATUS_FS from an unanswered running step routes to transition
     handle,
     "status-owner-async-stale-unanswered-fs:0x1234:status=6",
   );
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(0);
 });
 
 test("owner-async STATUS_FS from an unanswered non-running step routes to transition", () => {
@@ -354,7 +355,7 @@ test("owner-async STATUS_FS from an unanswered non-running step routes to transi
     handle,
     "status-owner-async-stale-unanswered-fs:0x1234:status=6",
   );
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(0);
 });
 
 test("owner-async generationless STATUS_FS from an unanswered step routes to transition", () => {
@@ -396,7 +397,7 @@ test("owner-async generationless STATUS_FS from an unanswered step routes to tra
     handle,
     "status-owner-async-stale-unanswered-fs:0x1234:status=6",
   );
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(0);
 });
 
 test("owner-async STATUS_OK from an unanswered step routes to transition", () => {
@@ -439,7 +440,7 @@ test("owner-async STATUS_OK from an unanswered step routes to transition", () =>
     handle,
     "status-owner-async-stale-unanswered-ok:0x1234:status=0",
   );
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(0);
 });
 
 test("owner-async STATUS_OK return completes a supervisor-selected faulted process before preserving stale OK", () => {
@@ -521,7 +522,7 @@ test("owner-async STATUS_OK return completes a supervisor-selected faulted proce
   expect(lifecycle).toContain(
     "complete-exit-request:owner-async-ok-fault:7:vm=0x1234:exitVm=0x1234:decision=1:exit=13:0:threads=1",
   );
-  expect(handle.workerMessageDebugStats.ownerAsyncStatusReturns).toBe(0);
+  expect(workerMessageDebugStats(handle).ownerAsyncStatusReturns).toBe(0);
 });
 
 test("owner-async status return does not consume a fault from resumed guest execution", () => {

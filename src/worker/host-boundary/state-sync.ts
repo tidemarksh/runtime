@@ -52,6 +52,7 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import { transferDebugStats } from "../worker-debug-stats.js";
 import type { WorkerSchedulerStateSyncHelpers } from "../scheduler/types.js";
 
 interface WorkerSchedulerStateSyncDeps {
@@ -350,7 +351,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
-    handle.transferDebugStats.pipeSyncRequests += 1;
+    transferDebugStats(handle).pipeSyncRequests += 1;
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
@@ -385,7 +386,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           }
           const shouldWake = run.wakeWaiters;
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
-          handle.transferDebugStats.pipeSyncKernelCalls += 1;
+          transferDebugStats(handle).pipeSyncKernelCalls += 1;
           const pipeUsed = await syncPipeStateViaKernelWorker(
             handle,
             shouldWake
@@ -403,7 +404,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             : deps.drainProcessOutput(visibleHandle);
           if (drainedHiddenOutput) {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-hidden-drain:${handle.pid}`);
-            handle.transferDebugStats.pipeSyncKernelCalls += 1;
+            transferDebugStats(handle).pipeSyncKernelCalls += 1;
             const refreshedPipeUsed = await syncPipeStateViaKernelWorker(
               handle,
               syscallSyncCause("pipe-hidden-output-drain"),
@@ -419,8 +420,8 @@ export function createWorkerSchedulerStateSyncHelpers(
             && kernelWorkerOwnsPipeState(visibleHandle)
           ) {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
-            handle.transferDebugStats.pipeSyncVisibleDrainCalls += 1;
-            visibleHandle.transferDebugStats.pipeSyncKernelCalls += 1;
+            transferDebugStats(handle).pipeSyncVisibleDrainCalls += 1;
+            transferDebugStats(visibleHandle).pipeSyncKernelCalls += 1;
             const visiblePipeUsed = await syncPipeStateViaKernelWorker(
               visibleHandle,
               syscallSyncCause("pipe-visible-output-drain"),
@@ -466,7 +467,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
-    handle.transferDebugStats.socketSyncRequests += 1;
+    transferDebugStats(handle).socketSyncRequests += 1;
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
@@ -500,7 +501,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             break;
           }
           const shouldWake = run.wakeWaiters;
-          handle.transferDebugStats.socketSyncKernelCalls += 1;
+          transferDebugStats(handle).socketSyncKernelCalls += 1;
           const { socketUsed, netBufUsed, socketState } = await syncSocketStateViaKernelWorker(
             handle,
             shouldWake

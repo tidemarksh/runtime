@@ -36,6 +36,7 @@ import {
   hasSuspiciousLowStateDebug,
   readLocalProcessPid,
 } from "./route-state.js";
+import { workerMessageDebugStats } from "../../worker-debug-stats.js";
 import { setThreadExecveProcessState } from "../../thread-execve-state.js";
 import {
   getThreadActivityState,
@@ -104,7 +105,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         );
       }
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "statusHandlerNoThreadDrops",
         `status-no-thread:${handle.pid}:${msg.status}`,
       );
@@ -192,7 +193,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     const activity = getThreadActivityState(thread);
     activity.statusCount += 1;
-    recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
+    recordWorkerMessageDebugEvent(workerMessageDebugStats(handle), "statusHandled");
     activity.statusCounts[String(status)] = (activity.statusCounts[String(status)] ?? 0) + 1;
     activity.lastStatus = status;
     if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
@@ -288,7 +289,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     const isRunningWorker = hostExecutionState(handle).runningWorker === worker;
     if (!isRunningWorker) {
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "statusNotRunning",
         `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
@@ -405,7 +406,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       hostExecutionState(handle).runningWorker = null;
       clearThreadRunningGeneration(thread);
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "statusClearedRunning",
         `status-cleared-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );

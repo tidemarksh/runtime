@@ -15,7 +15,6 @@ import {
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
-import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending-pipe-slot-state.js";
 import { setProcessMemfsDirty } from "../../../../src/worker/process-memfs-state.js";
 import {
@@ -25,6 +24,7 @@ import {
   networkRecvTailWatermarks,
 } from "../../../../src/worker/network-socket-state.js";
 import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
+import { workerMessageDebugStats } from "../../../../src/worker/worker-debug-stats.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { seedNetworkSocketState } from "./helpers.js";
@@ -38,7 +38,7 @@ const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   networkConnections(handle);
   workerDebugLog(handle);
-  handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
+  workerMessageDebugStats(handle);
   hostExecutionState(handle).vforkSnapshot ??= null;
   return handle;
 }
