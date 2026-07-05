@@ -218,6 +218,11 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_retry_result_action_arm_wait_timer: 1,
   supervisor_blocked_retry_result_action_schedule_retry: 2,
   supervisor_blocked_retry_result_action_schedule_retry_and_pump: 3,
+  supervisor_blocked_post_network_pump_action_schedule_retry: 22,
+  supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress: 23,
+  supervisor_blocked_stale_retry_result_action_none: 0,
+  supervisor_blocked_stale_retry_result_action_handle_current_result: 1,
+  supervisor_blocked_stale_retry_result_action_handle_current_result_wait4: 2,
   supervisor_blocked_wait_wake_source_pipe_sync: 1,
   supervisor_blocked_wait_wake_source_epoll_sync: 2,
   supervisor_blocked_wait_wake_source_socket_sync: 3,
@@ -1665,6 +1670,54 @@ export function makeSupervisorAbiStubs(
           : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_none;
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_schedule_retry;
+    },
+    supervisor_blocked_post_network_pump_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      changed: number,
+      flags: number,
+    ) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      if (changed === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress;
+      }
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      if (
+        !supervisorStatusIsPipeWait(receiver, status)
+        || !supervisorPollWaitHasSocket(receiver, vmPtr)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_post_network_pump_action_schedule_retry;
+      }
+      return receiver?.supervisor_blocked_retry_action?.(
+        vmPtr,
+        flags | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_wait_timer_already_checked,
+      ) ?? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_direct;
+    },
+    supervisor_blocked_stale_retry_result_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      blockedStatus: number,
+    ) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const currentStatus = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      if (currentStatus === blockedStatus) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_none;
+      }
+      const okStatus = Number(receiver?.abi_status_ok?.() ?? overrides.abi_status_ok?.() ?? 0);
+      const faultStatus = Number(receiver?.abi_status_fault?.() ?? overrides.abi_status_fault?.() ?? -1);
+      if (currentStatus !== okStatus && currentStatus !== faultStatus) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_none;
+      }
+      if (blockedStatus === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_handle_current_result_wait4;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_handle_current_result;
     },
     supervisor_blocked_status_transition_action(this: KernelExports | undefined, vmPtr: number, status: number, flags: number) {
       if (vmPtr === 0) {

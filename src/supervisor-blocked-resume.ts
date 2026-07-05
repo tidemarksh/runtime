@@ -59,6 +59,16 @@ export type SupervisorBlockedRetryResultAction =
   | "schedule-retry"
   | "schedule-retry-and-pump";
 
+export type SupervisorBlockedPostNetworkPumpAction =
+  | SupervisorBlockedRetryAction
+  | "schedule-retry"
+  | "schedule-retry-with-host-progress";
+
+export type SupervisorBlockedStaleRetryResultAction =
+  | "none"
+  | "handle-current-result"
+  | "handle-current-result-wait4";
+
 export type SupervisorBlockedRetryActionFlag =
   | "supervisor-timer-armed"
   | "rpc-pending"
@@ -117,6 +127,11 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_retry_result_action_arm_wait_timer"
   | "supervisor_blocked_retry_result_action_schedule_retry"
   | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
+  | "supervisor_blocked_post_network_pump_action_schedule_retry"
+  | "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress"
+  | "supervisor_blocked_stale_retry_result_action_none"
+  | "supervisor_blocked_stale_retry_result_action_handle_current_result"
+  | "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4"
   | "supervisor_blocked_retry_action_flag_supervisor_timer_armed"
   | "supervisor_blocked_retry_action_flag_rpc_pending"
   | "supervisor_blocked_retry_action_flag_owner_async"
@@ -959,6 +974,120 @@ export function supervisorBlockedRetryResultAction(
     throw new Error(`kernel supervisor blocked retry result action failed: ${result}`);
   }
   return normalizeSupervisorBlockedRetryResultAction(kernel, result);
+}
+
+function supervisorBlockedPostNetworkPumpActionValue(
+  kernel: KernelExports,
+  action: Exclude<SupervisorBlockedPostNetworkPumpAction, SupervisorBlockedRetryAction>,
+): number {
+  switch (action) {
+    case "schedule-retry":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_post_network_pump_action_schedule_retry");
+    case "schedule-retry-with-host-progress":
+      return readSupervisorNumberConst(
+        kernel,
+        "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress",
+      );
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedPostNetworkPumpAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedPostNetworkPumpAction {
+  const postNetworkActions: Exclude<SupervisorBlockedPostNetworkPumpAction, SupervisorBlockedRetryAction>[] = [
+    "schedule-retry",
+    "schedule-retry-with-host-progress",
+  ];
+  for (const action of postNetworkActions) {
+    if (result === supervisorBlockedPostNetworkPumpActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  return normalizeSupervisorBlockedRetryAction(kernel, result);
+}
+
+export function supervisorBlockedPostNetworkPumpAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  changed: boolean,
+  flags: SupervisorBlockedRetryActionFlags = [],
+): SupervisorBlockedPostNetworkPumpAction {
+  const readAction = kernel.supervisor_blocked_post_network_pump_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_post_network_pump_action");
+  }
+  const result = readAction.call(
+    kernel,
+    vmPtr,
+    changed ? 1 : 0,
+    supervisorBlockedRetryActionFlagsValue(kernel, flags),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked post-network pump action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedPostNetworkPumpAction(kernel, result);
+}
+
+function supervisorBlockedStaleRetryResultActionValue(
+  kernel: KernelExports,
+  action: SupervisorBlockedStaleRetryResultAction,
+): number {
+  switch (action) {
+    case "none":
+      return readSupervisorNumberConst(kernel, "supervisor_blocked_stale_retry_result_action_none");
+    case "handle-current-result":
+      return readSupervisorNumberConst(
+        kernel,
+        "supervisor_blocked_stale_retry_result_action_handle_current_result",
+      );
+    case "handle-current-result-wait4":
+      return readSupervisorNumberConst(
+        kernel,
+        "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4",
+      );
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorBlockedStaleRetryResultAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorBlockedStaleRetryResultAction {
+  const actions: SupervisorBlockedStaleRetryResultAction[] = [
+    "none",
+    "handle-current-result",
+    "handle-current-result-wait4",
+  ];
+  for (const action of actions) {
+    if (result === supervisorBlockedStaleRetryResultActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor blocked stale retry result action is unknown: ${result}`);
+}
+
+export function supervisorBlockedStaleRetryResultAction(
+  kernel: KernelExports,
+  vmPtr: number,
+  blockedStatus: number,
+): SupervisorBlockedStaleRetryResultAction {
+  const readAction = kernel.supervisor_blocked_stale_retry_result_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_blocked_stale_retry_result_action");
+  }
+  const result = readAction.call(kernel, vmPtr, blockedStatus);
+  if (result < 0) {
+    throw new Error(`kernel supervisor blocked stale retry result action failed: ${result}`);
+  }
+  return normalizeSupervisorBlockedStaleRetryResultAction(kernel, result);
 }
 
 export function supervisorBlockedRetryAction(

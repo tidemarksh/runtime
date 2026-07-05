@@ -105,6 +105,11 @@ const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_NONE = 0;
 const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_ARM_WAIT_TIMER = 1;
 const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY = 2;
 const SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP = 3;
+const SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY = 22;
+const SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY_WITH_HOST_PROGRESS = 23;
+const SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_NONE = 0;
+const SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT = 1;
+const SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT_WAIT4 = 2;
 const SUPERVISOR_STATE_SYNC_KIND_PIPE = 1;
 const SUPERVISOR_STATE_SYNC_KIND_EPOLL = 2;
 const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
@@ -252,6 +257,13 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_retry_result_action_arm_wait_timer"
   | "supervisor_blocked_retry_result_action_schedule_retry"
   | "supervisor_blocked_retry_result_action_schedule_retry_and_pump"
+  | "supervisor_blocked_post_network_pump_action"
+  | "supervisor_blocked_post_network_pump_action_schedule_retry"
+  | "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress"
+  | "supervisor_blocked_stale_retry_result_action"
+  | "supervisor_blocked_stale_retry_result_action_none"
+  | "supervisor_blocked_stale_retry_result_action_handle_current_result"
+  | "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4"
   | "supervisor_blocked_wait_wake_source_pipe_sync"
   | "supervisor_blocked_wait_wake_source_epoll_sync"
   | "supervisor_blocked_wait_wake_source_socket_sync"
@@ -1273,6 +1285,16 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY;
   nextKernel.supervisor_blocked_retry_result_action_schedule_retry_and_pump ??= () =>
     SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY_AND_PUMP;
+  nextKernel.supervisor_blocked_post_network_pump_action_schedule_retry ??= () =>
+    SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY;
+  nextKernel.supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress ??= () =>
+    SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY_WITH_HOST_PROGRESS;
+  nextKernel.supervisor_blocked_stale_retry_result_action_none ??= () =>
+    SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_NONE;
+  nextKernel.supervisor_blocked_stale_retry_result_action_handle_current_result ??= () =>
+    SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT;
+  nextKernel.supervisor_blocked_stale_retry_result_action_handle_current_result_wait4 ??= () =>
+    SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT_WAIT4;
   nextKernel.supervisor_blocked_initial_action ??= (vmPtr: number, blockedStatus: number, flags: number) => {
     if (vmPtr === 0) {
       return -14;
@@ -1309,6 +1331,41 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
         : SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_NONE;
     }
     return SUPERVISOR_BLOCKED_RETRY_RESULT_ACTION_SCHEDULE_RETRY;
+  };
+  nextKernel.supervisor_blocked_post_network_pump_action ??= (
+    vmPtr: number,
+    changed: number,
+    flags: number,
+  ) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (changed === 0) {
+      return SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY_WITH_HOST_PROGRESS;
+    }
+    if (kernel.thread_status?.(vmPtr) !== kernel.abi_status_pipe_wait?.() || !pollWaitHasSocket(vmPtr)) {
+      return SUPERVISOR_BLOCKED_POST_NETWORK_PUMP_ACTION_SCHEDULE_RETRY;
+    }
+    return nextKernel.supervisor_blocked_retry_action?.(
+      vmPtr,
+      flags | SUPERVISOR_BLOCKED_RETRY_ACTION_FLAG_WAIT_TIMER_ALREADY_CHECKED,
+    ) ?? SUPERVISOR_BLOCKED_RETRY_ACTION_RESUME_DIRECT;
+  };
+  nextKernel.supervisor_blocked_stale_retry_result_action ??= (vmPtr: number, blockedStatus: number) => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    const currentStatus = kernel.thread_status?.(vmPtr);
+    if (currentStatus === blockedStatus) {
+      return SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_NONE;
+    }
+    if (currentStatus !== kernel.abi_status_ok?.() && currentStatus !== kernel.abi_status_fault?.()) {
+      return SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_NONE;
+    }
+    if (blockedStatus === kernel.abi_status_wait4?.()) {
+      return SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT_WAIT4;
+    }
+    return SUPERVISOR_BLOCKED_STALE_RETRY_RESULT_ACTION_HANDLE_CURRENT_RESULT;
   };
   nextKernel.supervisor_blocked_retry_action ??= (vmPtr: number, flags: number) => {
     if (vmPtr === 0) {

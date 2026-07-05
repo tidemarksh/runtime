@@ -10,16 +10,19 @@ import {
 } from "../../bridge/runtime-state.js";
 import {
   supervisorBlockedPipeSyncBeforeRetryRequested,
-  supervisorBlockedPollWaitHasSocket,
+  supervisorBlockedPostNetworkPumpAction,
   supervisorBlockedRetryAction,
   supervisorBlockedRetryResultAction,
+  supervisorBlockedStaleRetryResultAction,
   supervisorBlockedStatusIsEpollWait,
   supervisorBlockedStatusIsPipeWait,
   supervisorBlockedStatusIsWait4,
   supervisorCompleteBlockedWaitNetworkPump,
+  type SupervisorBlockedPostNetworkPumpAction,
   type SupervisorBlockedRetryAction,
   type SupervisorBlockedRetryActionFlag,
   type SupervisorBlockedRetryActionFlags,
+  type SupervisorBlockedStaleRetryResultAction,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
 import {
@@ -264,19 +267,109 @@ export function createBlockedRetryCoordinator(
     return flags;
   }
 
-  function readPostNetworkPumpRetryAction(
+  function readPostNetworkPumpAction(
     handle: ProcessHandle,
     latestBlocked: HostBlockedWorkerState,
-  ): SupervisorBlockedRetryAction | null {
+    changed: boolean,
+  ): SupervisorBlockedPostNetworkPumpAction | null {
     try {
-      return supervisorBlockedRetryAction(
+      return supervisorBlockedPostNetworkPumpAction(
         handle.kernel,
         latestBlocked.vmPtr,
+        changed,
         postNetworkPumpRetryActionFlags(handle),
       );
     } catch (error) {
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       return null;
+    }
+  }
+
+  function executePostNetworkPumpAction(
+    handle: ProcessHandle,
+    worker: Worker,
+    latestBlocked: HostBlockedWorkerState,
+    changed: boolean,
+  ): void {
+    const action = readPostNetworkPumpAction(handle, latestBlocked, changed);
+    switch (action) {
+      case null:
+        return;
+      case "schedule-retry":
+        deps.scheduleSupervisorBlockedRetry(handle, worker, []);
+        return;
+      case "schedule-retry-with-host-progress":
+        deps.scheduleSupervisorBlockedRetry(handle, worker, ["host-progress"]);
+        return;
+      case "defer-running-worker":
+      case "defer-process-gate":
+      case "defer-passive-wait":
+        deps.scheduleSupervisorBlockedRetry(handle, worker);
+        return;
+      case "park-active-child":
+        if (!parkBehindSupervisorActiveChild(
+          handle,
+          worker,
+          latestBlocked,
+          handle.kernel.thread_poll_wait_ready_count?.(latestBlocked.vmPtr),
+        )) {
+          deps.failProcess(
+            handle,
+            new Error(`kernel supervisor selected active-child retry for unsupported status ${latestBlocked.status}`),
+          );
+        }
+        return;
+      case "request-pipe-sync":
+      case "request-pipe-sync-and-drain-output":
+        executePipeSyncBeforeRetryAction(
+          handle,
+          worker,
+          latestBlocked,
+          action === "request-pipe-sync-and-drain-output",
+        );
+        return;
+      case "schedule-pipe-sync-retry":
+        deps.scheduleSupervisorBlockedRetry(handle, worker);
+        return;
+      case "arm-wait-timer":
+        if (deps.armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
+          return;
+        }
+        resumeBlockedSyscallViaResumeOutcome(
+          handle,
+          worker,
+          latestBlocked,
+          processHasKernelWorkerOwnership(handle)
+            ? `pipe-retry-rpc:${handle.pid}`
+            : `pipe-retry-host-boundary:${handle.pid}`,
+          (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
+          processHasKernelWorkerOwnership(handle),
+        );
+        return;
+      case "resume-kernel-worker":
+        resumeBlockedSyscallViaResumeOutcome(
+          handle,
+          worker,
+          latestBlocked,
+          `pipe-retry-rpc:${handle.pid}`,
+          (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
+        );
+        return;
+      case "resume-direct":
+        resumeBlockedSyscallViaResumeOutcome(
+          handle,
+          worker,
+          latestBlocked,
+          `pipe-retry-host-boundary:${handle.pid}`,
+          (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
+          false,
+        );
+        return;
+      default:
+        deps.failProcess(
+          handle,
+          new Error(`kernel supervisor returned invalid post-network retry action: ${action}`),
+        );
     }
   }
 
@@ -304,92 +397,7 @@ export function createBlockedRetryCoordinator(
           return;
         }
         deps.appendWorkerDebugLog(handle, `net-pump-done:${handle.pid}:status=${blocked.status}`);
-        if (
-          changed
-          && supervisorBlockedStatusIsPipeWait(handle.kernel, latestBlocked.status)
-          && supervisorBlockedPollWaitHasSocket(handle.kernel, latestBlocked.vmPtr)
-        ) {
-          const action = readPostNetworkPumpRetryAction(handle, latestBlocked);
-          switch (action) {
-            case null:
-              return;
-            case "defer-running-worker":
-            case "defer-process-gate":
-            case "defer-passive-wait":
-              deps.scheduleSupervisorBlockedRetry(
-                handle,
-                worker,
-              );
-              return;
-            case "park-active-child":
-              if (!parkBehindSupervisorActiveChild(
-                handle,
-                worker,
-                latestBlocked,
-                handle.kernel.thread_poll_wait_ready_count?.(latestBlocked.vmPtr),
-              )) {
-                deps.failProcess(
-                  handle,
-                  new Error(`kernel supervisor selected active-child retry for unsupported status ${latestBlocked.status}`),
-                );
-              }
-              return;
-            case "request-pipe-sync":
-            case "request-pipe-sync-and-drain-output":
-              executePipeSyncBeforeRetryAction(
-                handle,
-                worker,
-                latestBlocked,
-                action === "request-pipe-sync-and-drain-output",
-              );
-              return;
-            case "schedule-pipe-sync-retry":
-              deps.scheduleSupervisorBlockedRetry(handle, worker);
-              return;
-            case "arm-wait-timer":
-              if (deps.armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
-                return;
-              }
-              break;
-            case "resume-kernel-worker":
-            case "resume-direct":
-              break;
-            default:
-              deps.failProcess(
-                handle,
-                new Error(`kernel supervisor returned invalid post-network retry action: ${action}`),
-              );
-              return;
-          }
-          if (
-            processHasKernelWorkerOwnership(handle)
-          ) {
-            resumeBlockedSyscallViaResumeOutcome(
-              handle,
-              worker,
-              latestBlocked,
-              `pipe-retry-rpc:${handle.pid}`,
-              (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
-            );
-            return;
-          }
-          resumeBlockedSyscallViaResumeOutcome(
-            handle,
-            worker,
-            latestBlocked,
-            `pipe-retry-host-boundary:${handle.pid}`,
-            (outcome) => pumpProcessIfPipeWaitBlocked(handle, outcome),
-            false,
-          );
-          return;
-        }
-        deps.scheduleSupervisorBlockedRetry(
-          handle,
-          worker,
-          changed
-            ? []
-            : ["host-progress"],
-        );
+        executePostNetworkPumpAction(handle, worker, latestBlocked, changed);
       })
       .catch((error) => {
         deps.finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
@@ -449,22 +457,33 @@ export function createBlockedRetryCoordinator(
     );
   }
 
+  function readStaleRetryResultAction(
+    handle: ProcessHandle,
+    blocked: HostBlockedWorkerState,
+  ): SupervisorBlockedStaleRetryResultAction | null {
+    try {
+      return supervisorBlockedStaleRetryResultAction(
+        handle.kernel,
+        blocked.vmPtr,
+        blocked.status,
+      );
+    } catch (error) {
+      deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      return null;
+    }
+  }
+
   function clearStaleHostBlockedWorker(
     handle: ProcessHandle,
     worker: Worker,
     blocked: HostBlockedWorkerState,
   ): boolean {
+    const action = readStaleRetryResultAction(handle, blocked);
+    if (action === null || action === "none") {
+      return false;
+    }
     const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
-    if (currentStatus === blocked.status) {
-      return false;
-    }
-    if (
-      currentStatus !== handle.kernel.abi_status_ok()
-      && currentStatus !== handle.kernel.abi_status_fault()
-    ) {
-      return false;
-    }
-    if (supervisorBlockedStatusIsWait4(handle.kernel, blocked.status)) {
+    if (action === "handle-current-result-wait4") {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `wait4-retry-stale:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}:status=${currentStatus}`,

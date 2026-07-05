@@ -593,6 +593,13 @@ export interface KernelExports {
   supervisor_blocked_retry_result_action_arm_wait_timer?(): number;
   supervisor_blocked_retry_result_action_schedule_retry?(): number;
   supervisor_blocked_retry_result_action_schedule_retry_and_pump?(): number;
+  supervisor_blocked_post_network_pump_action?(vmPtr: number, changed: number, flags: number): number;
+  supervisor_blocked_post_network_pump_action_schedule_retry?(): number;
+  supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress?(): number;
+  supervisor_blocked_stale_retry_result_action?(vmPtr: number, blockedStatus: number): number;
+  supervisor_blocked_stale_retry_result_action_none?(): number;
+  supervisor_blocked_stale_retry_result_action_handle_current_result?(): number;
+  supervisor_blocked_stale_retry_result_action_handle_current_result_wait4?(): number;
   supervisor_blocked_retry_action?(vmPtr: number, flags: number): number;
   supervisor_blocked_retry_action_flag_supervisor_timer_armed?(): number;
   supervisor_blocked_retry_action_flag_rpc_pending?(): number;
@@ -2024,6 +2031,13 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_retry_result_action_arm_wait_timer",
   "supervisor_blocked_retry_result_action_schedule_retry",
   "supervisor_blocked_retry_result_action_schedule_retry_and_pump",
+  "supervisor_blocked_post_network_pump_action",
+  "supervisor_blocked_post_network_pump_action_schedule_retry",
+  "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress",
+  "supervisor_blocked_stale_retry_result_action",
+  "supervisor_blocked_stale_retry_result_action_none",
+  "supervisor_blocked_stale_retry_result_action_handle_current_result",
+  "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4",
   "supervisor_blocked_retry_action",
   "supervisor_blocked_retry_action_flag_supervisor_timer_armed",
   "supervisor_blocked_retry_action_flag_rpc_pending",
