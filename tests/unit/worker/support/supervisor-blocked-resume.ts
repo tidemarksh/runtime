@@ -160,6 +160,13 @@ const SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_INVALIDATE_RPC = 1;
 const SUPERVISOR_WAIT4_CHILD_EXIT_BLOCKED_PARENT_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY = 2;
 const SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_SKIP = 0;
 const SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_START = 1;
+const SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_ACTION_NONE = 0;
+const SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY = 1;
+const SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_FLAG_CLEAR_PIPE_SYNC_BEFORE_RETRY = 1;
+const SUPERVISOR_SCHEDULER_BLOCK_WORKER_ACTION_RECORD_BLOCKED = 0;
+const SUPERVISOR_SCHEDULER_BLOCK_WORKER_ACTION_PARK_FUTEX = 1;
+const SUPERVISOR_SCHEDULER_FUTEX_WAITER_ACTION_NOT_WAITER = 0;
+const SUPERVISOR_SCHEDULER_FUTEX_WAITER_ACTION_WAITER = 1;
 const POLLFD_BYTES = 8;
 
 export function installSupervisorBlockedResumeStub<T extends Partial<KernelExports>>(
@@ -354,6 +361,16 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_wait4_rpc_local_status_action"
   | "supervisor_wait4_rpc_local_status_action_skip"
   | "supervisor_wait4_rpc_local_status_action_start"
+  | "supervisor_scheduler_clear_blocked_action"
+  | "supervisor_scheduler_clear_blocked_action_none"
+  | "supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry"
+  | "supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry"
+  | "supervisor_scheduler_block_worker_action"
+  | "supervisor_scheduler_block_worker_action_record_blocked"
+  | "supervisor_scheduler_block_worker_action_park_futex"
+  | "supervisor_scheduler_futex_waiter_action"
+  | "supervisor_scheduler_futex_waiter_action_not_waiter"
+  | "supervisor_scheduler_futex_waiter_action_waiter"
   | "supervisor_state_sync_kind_pipe"
   | "supervisor_state_sync_kind_epoll"
   | "supervisor_state_sync_kind_socket"
@@ -563,6 +580,23 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     kernel.abi_status_wait4?.() === status
       ? SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_START
       : SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_SKIP;
+  const schedulerClearBlockedAction = (status: number, flags: number): number => {
+    if (
+      (flags & SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_FLAG_CLEAR_PIPE_SYNC_BEFORE_RETRY) !== 0
+      && kernel.abi_status_pipe_wait?.() === status
+    ) {
+      return SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY;
+    }
+    return SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_ACTION_NONE;
+  };
+  const schedulerBlockWorkerAction = (status: number): number =>
+    kernel.abi_status_futex_wait?.() === status
+      ? SUPERVISOR_SCHEDULER_BLOCK_WORKER_ACTION_PARK_FUTEX
+      : SUPERVISOR_SCHEDULER_BLOCK_WORKER_ACTION_RECORD_BLOCKED;
+  const schedulerFutexWaiterAction = (status: number): number =>
+    kernel.abi_status_futex_wait?.() === status
+      ? SUPERVISOR_SCHEDULER_FUTEX_WAITER_ACTION_WAITER
+      : SUPERVISOR_SCHEDULER_FUTEX_WAITER_ACTION_NOT_WAITER;
   const retryStatusAction = (status: number): number => {
     if (kernel.abi_status_pipe_wait?.() === status) {
       return SUPERVISOR_BLOCKED_RETRY_STATUS_ACTION_PIPE_RETRY_DIAGNOSTICS
@@ -787,6 +821,16 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_wait4_rpc_local_status_action"
     | "supervisor_wait4_rpc_local_status_action_skip"
     | "supervisor_wait4_rpc_local_status_action_start"
+    | "supervisor_scheduler_clear_blocked_action"
+    | "supervisor_scheduler_clear_blocked_action_none"
+    | "supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry"
+    | "supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry"
+    | "supervisor_scheduler_block_worker_action"
+    | "supervisor_scheduler_block_worker_action_record_blocked"
+    | "supervisor_scheduler_block_worker_action_park_futex"
+    | "supervisor_scheduler_futex_waiter_action"
+    | "supervisor_scheduler_futex_waiter_action_not_waiter"
+    | "supervisor_scheduler_futex_waiter_action_waiter"
     | "supervisor_state_sync_kind_pipe"
     | "supervisor_state_sync_kind_epoll"
     | "supervisor_state_sync_kind_socket"
@@ -1847,6 +1891,26 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     SUPERVISOR_WAIT4_RPC_LOCAL_STATUS_ACTION_START;
   nextKernel.supervisor_wait4_rpc_local_status_action ??= (status: number) =>
     wait4RpcLocalStatusAction(status);
+  nextKernel.supervisor_scheduler_clear_blocked_action_none ??= () =>
+    SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_ACTION_NONE;
+  nextKernel.supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry ??= () =>
+    SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_ACTION_CLEAR_PIPE_SYNC_BEFORE_RETRY;
+  nextKernel.supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry ??= () =>
+    SUPERVISOR_SCHEDULER_CLEAR_BLOCKED_FLAG_CLEAR_PIPE_SYNC_BEFORE_RETRY;
+  nextKernel.supervisor_scheduler_clear_blocked_action ??= (status: number, flags: number) =>
+    schedulerClearBlockedAction(status, flags);
+  nextKernel.supervisor_scheduler_block_worker_action_record_blocked ??= () =>
+    SUPERVISOR_SCHEDULER_BLOCK_WORKER_ACTION_RECORD_BLOCKED;
+  nextKernel.supervisor_scheduler_block_worker_action_park_futex ??= () =>
+    SUPERVISOR_SCHEDULER_BLOCK_WORKER_ACTION_PARK_FUTEX;
+  nextKernel.supervisor_scheduler_block_worker_action ??= (status: number) =>
+    schedulerBlockWorkerAction(status);
+  nextKernel.supervisor_scheduler_futex_waiter_action_not_waiter ??= () =>
+    SUPERVISOR_SCHEDULER_FUTEX_WAITER_ACTION_NOT_WAITER;
+  nextKernel.supervisor_scheduler_futex_waiter_action_waiter ??= () =>
+    SUPERVISOR_SCHEDULER_FUTEX_WAITER_ACTION_WAITER;
+  nextKernel.supervisor_scheduler_futex_waiter_action ??= (status: number) =>
+    schedulerFutexWaiterAction(status);
   nextKernel.supervisor_state_sync_kind_pipe ??= () => SUPERVISOR_STATE_SYNC_KIND_PIPE;
   nextKernel.supervisor_state_sync_kind_epoll ??= () => SUPERVISOR_STATE_SYNC_KIND_EPOLL;
   nextKernel.supervisor_state_sync_kind_socket ??= () => SUPERVISOR_STATE_SYNC_KIND_SOCKET;

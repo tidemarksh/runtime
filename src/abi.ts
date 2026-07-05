@@ -687,6 +687,16 @@ export interface KernelExports {
   supervisor_wait4_rpc_local_status_action?(status: number): number;
   supervisor_wait4_rpc_local_status_action_skip?(): number;
   supervisor_wait4_rpc_local_status_action_start?(): number;
+  supervisor_scheduler_clear_blocked_action?(status: number, flags: number): number;
+  supervisor_scheduler_clear_blocked_action_none?(): number;
+  supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry?(): number;
+  supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry?(): number;
+  supervisor_scheduler_block_worker_action?(status: number): number;
+  supervisor_scheduler_block_worker_action_record_blocked?(): number;
+  supervisor_scheduler_block_worker_action_park_futex?(): number;
+  supervisor_scheduler_futex_waiter_action?(status: number): number;
+  supervisor_scheduler_futex_waiter_action_not_waiter?(): number;
+  supervisor_scheduler_futex_waiter_action_waiter?(): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2164,6 +2174,16 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_wait4_rpc_local_status_action",
   "supervisor_wait4_rpc_local_status_action_skip",
   "supervisor_wait4_rpc_local_status_action_start",
+  "supervisor_scheduler_clear_blocked_action",
+  "supervisor_scheduler_clear_blocked_action_none",
+  "supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry",
+  "supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry",
+  "supervisor_scheduler_block_worker_action",
+  "supervisor_scheduler_block_worker_action_record_blocked",
+  "supervisor_scheduler_block_worker_action_park_futex",
+  "supervisor_scheduler_futex_waiter_action",
+  "supervisor_scheduler_futex_waiter_action_not_waiter",
+  "supervisor_scheduler_futex_waiter_action_waiter",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",

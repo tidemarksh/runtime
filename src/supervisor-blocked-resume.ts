@@ -92,6 +92,18 @@ export type SupervisorWait4RpcLocalStatusAction =
   | "skip"
   | "start";
 
+export interface SupervisorSchedulerClearBlockedWorkerActions {
+  clearPipeSyncBeforeRetry: boolean;
+}
+
+export type SupervisorSchedulerBlockWorkerAction =
+  | "record-blocked"
+  | "park-futex";
+
+export type SupervisorSchedulerFutexWaiterAction =
+  | "not-waiter"
+  | "waiter";
+
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
@@ -247,7 +259,14 @@ type SupervisorNumberConstExportName =
   | "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc"
   | "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry"
   | "supervisor_wait4_rpc_local_status_action_skip"
-  | "supervisor_wait4_rpc_local_status_action_start";
+  | "supervisor_wait4_rpc_local_status_action_start"
+  | "supervisor_scheduler_clear_blocked_action_none"
+  | "supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry"
+  | "supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry"
+  | "supervisor_scheduler_block_worker_action_record_blocked"
+  | "supervisor_scheduler_block_worker_action_park_futex"
+  | "supervisor_scheduler_futex_waiter_action_not_waiter"
+  | "supervisor_scheduler_futex_waiter_action_waiter";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1282,6 +1301,125 @@ export function supervisorWait4RpcLocalStatusAction(
     }
   }
   throw new Error(`kernel supervisor wait4 RPC local status action is unknown: ${result}`);
+}
+
+function supervisorSchedulerClearBlockedActionFlags(
+  kernel: KernelExports,
+  options: {
+    clearPipeSyncBeforeRetry: boolean;
+  },
+): number {
+  return options.clearPipeSyncBeforeRetry
+    ? readSupervisorNumberConst(
+        kernel,
+        "supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry",
+      )
+    : 0;
+}
+
+export function supervisorSchedulerClearBlockedWorkerActions(
+  kernel: KernelExports,
+  status: number,
+  options: {
+    clearPipeSyncBeforeRetry: boolean;
+  },
+): SupervisorSchedulerClearBlockedWorkerActions {
+  const readAction = kernel.supervisor_scheduler_clear_blocked_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_scheduler_clear_blocked_action");
+  }
+  const result = readAction.call(
+    kernel,
+    status,
+    supervisorSchedulerClearBlockedActionFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor scheduler clear-blocked action failed: ${result}`);
+  }
+  const clearPipeSyncBeforeRetry = readSupervisorNumberConst(
+    kernel,
+    "supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry",
+  );
+  const known = readSupervisorNumberConst(kernel, "supervisor_scheduler_clear_blocked_action_none")
+    | clearPipeSyncBeforeRetry;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor scheduler clear-blocked action is unknown: ${result}`);
+  }
+  return {
+    clearPipeSyncBeforeRetry: (result & clearPipeSyncBeforeRetry) !== 0,
+  };
+}
+
+function supervisorSchedulerBlockWorkerActionValue(
+  kernel: KernelExports,
+  action: SupervisorSchedulerBlockWorkerAction,
+): number {
+  switch (action) {
+    case "record-blocked":
+      return readSupervisorNumberConst(kernel, "supervisor_scheduler_block_worker_action_record_blocked");
+    case "park-futex":
+      return readSupervisorNumberConst(kernel, "supervisor_scheduler_block_worker_action_park_futex");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+export function supervisorSchedulerBlockWorkerAction(
+  kernel: KernelExports,
+  status: number,
+): SupervisorSchedulerBlockWorkerAction {
+  const readAction = kernel.supervisor_scheduler_block_worker_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_scheduler_block_worker_action");
+  }
+  const result = readAction.call(kernel, status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor scheduler block-worker action failed: ${result}`);
+  }
+  for (const action of ["record-blocked", "park-futex"] as const) {
+    if (result === supervisorSchedulerBlockWorkerActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor scheduler block-worker action is unknown: ${result}`);
+}
+
+function supervisorSchedulerFutexWaiterActionValue(
+  kernel: KernelExports,
+  action: SupervisorSchedulerFutexWaiterAction,
+): number {
+  switch (action) {
+    case "not-waiter":
+      return readSupervisorNumberConst(kernel, "supervisor_scheduler_futex_waiter_action_not_waiter");
+    case "waiter":
+      return readSupervisorNumberConst(kernel, "supervisor_scheduler_futex_waiter_action_waiter");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+export function supervisorSchedulerFutexWaiterAction(
+  kernel: KernelExports,
+  status: number,
+): SupervisorSchedulerFutexWaiterAction {
+  const readAction = kernel.supervisor_scheduler_futex_waiter_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_scheduler_futex_waiter_action");
+  }
+  const result = readAction.call(kernel, status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor scheduler futex-waiter action failed: ${result}`);
+  }
+  for (const action of ["not-waiter", "waiter"] as const) {
+    if (result === supervisorSchedulerFutexWaiterActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor scheduler futex-waiter action is unknown: ${result}`);
 }
 
 function supervisorBlockedPostNetworkPumpActionValue(

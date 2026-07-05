@@ -3,8 +3,10 @@ import { processHasWorker } from "../process-worker-state.js";
 import {
   supervisorBlockedInitialAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
-  supervisorBlockedStatusIsPipeWait,
   supervisorClearBlockedWaitNetworkPump,
+  supervisorSchedulerBlockWorkerAction,
+  supervisorSchedulerClearBlockedWorkerActions,
+  supervisorSchedulerFutexWaiterAction,
   type SupervisorBlockedRetryActionFlag,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
@@ -96,10 +98,12 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (!blocked) {
       return;
     }
-    if (
-      (options.clearPipeSyncBeforeRetry ?? true)
-      && supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
-    ) {
+    const clearActions = supervisorSchedulerClearBlockedWorkerActions(
+      handle.kernel,
+      blocked.status,
+      { clearPipeSyncBeforeRetry: options.clearPipeSyncBeforeRetry ?? true },
+    );
+    if (clearActions.clearPipeSyncBeforeRetry) {
       try {
         supervisorBlockedPipeSyncBeforeRetryClear(handle.kernel, blocked.vmPtr);
       } catch (error) {
@@ -165,7 +169,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const thread = threadWorkerStates.get(worker);
     return thread !== undefined
       && processHasWorker(handle, worker)
-      && handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait();
+      && supervisorSchedulerFutexWaiterAction(
+        handle.kernel,
+        handle.kernel.thread_status(thread.vmPtr),
+      ) === "waiter";
   }
 
   function parkSupervisorFutexWait(
@@ -239,7 +246,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   });
 
   function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
-    if (status === handle.kernel.abi_status_futex_wait()) {
+    if (supervisorSchedulerBlockWorkerAction(handle.kernel, status) === "park-futex") {
       parkSupervisorFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
       return;
     }

@@ -267,6 +267,13 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry: 2,
   supervisor_wait4_rpc_local_status_action_skip: 0,
   supervisor_wait4_rpc_local_status_action_start: 1,
+  supervisor_scheduler_clear_blocked_action_none: 0,
+  supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry: 1,
+  supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry: 1,
+  supervisor_scheduler_block_worker_action_record_blocked: 0,
+  supervisor_scheduler_block_worker_action_park_futex: 1,
+  supervisor_scheduler_futex_waiter_action_not_waiter: 0,
+  supervisor_scheduler_futex_waiter_action_waiter: 1,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -687,6 +694,33 @@ export function makeSupervisorAbiStubs(
     status === callOptionalNumber(receiver, "abi_status_wait4")
       ? DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_rpc_local_status_action_start
       : DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_rpc_local_status_action_skip;
+  const supervisorSchedulerClearBlockedAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    flags: number,
+  ): number => {
+    const clearPipeSyncBeforeRetry =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry) !== 0;
+    if (clearPipeSyncBeforeRetry && status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_clear_blocked_action_none;
+  };
+  const supervisorSchedulerBlockWorkerAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number =>
+    status === callOptionalNumber(receiver, "abi_status_futex_wait")
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_block_worker_action_park_futex
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_block_worker_action_record_blocked;
+  const supervisorSchedulerFutexWaiterAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number =>
+    status === callOptionalNumber(receiver, "abi_status_futex_wait")
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_futex_waiter_action_waiter
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_futex_waiter_action_not_waiter;
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
     && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
@@ -2573,6 +2607,19 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_wait4_rpc_local_status_action(this: KernelExports | undefined, status: number) {
       return supervisorWait4RpcLocalStatusAction(currentExports(this), status);
+    },
+    supervisor_scheduler_clear_blocked_action(
+      this: KernelExports | undefined,
+      status: number,
+      flags: number,
+    ) {
+      return supervisorSchedulerClearBlockedAction(currentExports(this), status, flags);
+    },
+    supervisor_scheduler_block_worker_action(this: KernelExports | undefined, status: number) {
+      return supervisorSchedulerBlockWorkerAction(currentExports(this), status);
+    },
+    supervisor_scheduler_futex_waiter_action(this: KernelExports | undefined, status: number) {
+      return supervisorSchedulerFutexWaiterAction(currentExports(this), status);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {
