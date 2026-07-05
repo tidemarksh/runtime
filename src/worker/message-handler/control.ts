@@ -26,6 +26,7 @@ import {
   takeThreadResumeWorkersOnReady,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
+import { getThreadActivityState } from "../thread-activity-state.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -205,8 +206,9 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       thread.initialized = true;
       clearThreadWaitingInWorkerStatus(thread);
       deps.clearBlockedWorker(handle, worker);
+      const activity = getThreadActivityState(thread);
       const readyThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
-        sequence: thread.statusCount,
+        sequence: activity.statusCount,
         vmPtr: thread.vmPtr,
         pid: handle.pid,
         tid: handle.kernel.thread_tid?.(thread.vmPtr) ?? 0,

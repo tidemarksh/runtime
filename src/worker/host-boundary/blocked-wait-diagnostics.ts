@@ -18,6 +18,7 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
 } from "../thread-host-state.js";
+import { maybeThreadActivityState } from "../thread-activity-state.js";
 import { pendingGuestMemoryWritesForNextStepCount } from "../thread-step-payload.js";
 
 export interface BlockedWaitDiagnosticsDeps {
@@ -131,14 +132,15 @@ export function formatRunningRetryBlocker(
   const runningStatus = runningVmPtr === 0 ? -1 : handle.kernel.thread_status(runningVmPtr);
   const activeStepVmPtr = handle.kernel.debug_thread_step_vm_ptr?.() ?? 0;
   const now = Date.now();
-  const lastStepAge = runningThread?.lastStepAtMs == null ? "null" : String(now - runningThread.lastStepAtMs);
-  const lastStatusAge = runningThread?.lastStatusAtMs == null ? "null" : String(now - runningThread.lastStatusAtMs);
+  const activity = maybeThreadActivityState(runningThread);
+  const lastStepAge = activity?.lastStepAtMs == null ? "null" : String(now - activity.lastStepAtMs);
+  const lastStatusAge = activity?.lastStatusAtMs == null ? "null" : String(now - activity.lastStatusAtMs);
   const processPtr = runningVmPtr === 0 ? 0 : handle.kernel.thread_process_ptr(runningVmPtr);
   const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(runningThread);
   const ownerAsyncStatus = getThreadOwnerAsyncStatus(runningThread);
   return `runningVm=0x${runningVmPtr.toString(16)}:runningStatus=${runningStatus}`
-    + `:runningLast=${runningThread?.lastStatus ?? "null"}:runningWait=${waitingInWorkerStatus ?? "null"}`
-    + `:runningSteps=${runningThread === undefined ? "null" : `${runningThread.stepCount}/${runningThread.statusCount}`}`
+    + `:runningLast=${activity?.lastStatus ?? "null"}:runningWait=${waitingInWorkerStatus ?? "null"}`
+    + `:runningSteps=${runningThread === undefined ? "null" : `${activity?.stepCount ?? 0}/${activity?.statusCount ?? 0}`}`
     + `:pendingWrites=${runningThread === undefined ? "null" : pendingGuestMemoryWritesForNextStepCount(runningThread)}`
     + `:lastStepAge=${lastStepAge}:lastStatusAge=${lastStatusAge}`
     + `:proc=0x${processPtr.toString(16)}`

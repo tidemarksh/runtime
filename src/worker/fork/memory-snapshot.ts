@@ -1,6 +1,7 @@
 import type { ThreadWorkerMemoryPreserveRange } from "../../messages.js";
 import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
+import { getThreadActivityState } from "../thread-activity-state.js";
 
 export type ParentProcessSnapshot = {
   processPtr: number;
@@ -30,7 +31,8 @@ export function captureParentProcessSnapshot(
   handle: ProcessHandle,
   parentThread: ThreadWorkerState,
 ): ParentProcessSnapshot {
-  const processPtr = parentThread.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(parentThread.vmPtr);
+  const activity = getThreadActivityState(parentThread);
+  const processPtr = activity.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(parentThread.vmPtr);
   const processStateBytes = handle.kernel.process_state_bytes();
   const guestBytes = new Uint8Array(handle.memory.buffer);
   return {

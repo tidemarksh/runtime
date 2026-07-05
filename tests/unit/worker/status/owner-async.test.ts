@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import { handleOwnerAsyncStatusReturn } from "../../../../src/worker/message-handler/status/owner-async.js";
 import { getThreadOwnerAsyncStatus } from "../../../../src/worker/thread-host-state.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { makeHandle, makeKernel, makeStatusMessage, makeThreadState } from "./helpers.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 

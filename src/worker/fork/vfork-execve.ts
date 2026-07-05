@@ -29,6 +29,7 @@ import { supervisorResidentPageTableAuthority } from "../../fs/supervisor-page-t
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
 import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { getThreadExecveProcessState } from "../thread-execve-state.js";
+import { getThreadActivityState } from "../thread-activity-state.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
 import { snapshotProcessFdEntries, restoreProcessFdEntries } from "../ownership/fd-table.js";
 import {
@@ -395,6 +396,7 @@ export async function handleVforkExecve(
     deps.appendWorkerDebugLog(handle, `vfork-parent-fds:${childPid}:${formatOpenFdSummary(handle)}`);
     handle.lastDebugMessage = `vfork-execve:start child=${childPid}`;
     const snapshot = handle.vforkSnapshot ?? captureVforkSnapshot(handle, parentThread);
+    const parentActivity = getThreadActivityState(parentThread);
     const childLifecycle = readKernelChildLifecycle(handle.kernel, childPid);
     const inheritedSharedOfdIds = new Set(snapshot.inheritedSharedOfdIds);
     const handoff = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
@@ -409,8 +411,8 @@ export async function handleVforkExecve(
         + `:vfork_child=${handle.kernel.thread_vfork_child_pid?.() ?? "n/a"}`
         + `:${debugVforkVmState(handle, parentThread.vmPtr)}`
         + `:${formatThreadSyscallArgsForDebug(handle, parentThread.vmPtr)}`
-        + `:last_pc=${parentThread.lastStatusPc === null ? "n/a" : `0x${parentThread.lastStatusPc.toString(16)}`}`
-        + `:last_sp=${parentThread.lastStatusSp === null ? "n/a" : `0x${parentThread.lastStatusSp.toString(16)}`}`,
+        + `:last_pc=${parentActivity.lastStatusPc === null ? "n/a" : `0x${parentActivity.lastStatusPc.toString(16)}`}`
+        + `:last_sp=${parentActivity.lastStatusSp === null ? "n/a" : `0x${parentActivity.lastStatusSp.toString(16)}`}`,
     );
     const debugPath = decodeExecveBytes(execveGuestPayload.path);
     const debugArgv0 = execveGuestPayload.argv[0]
@@ -434,7 +436,7 @@ export async function handleVforkExecve(
       + `:parent=${handle.memory.buffer.byteLength}`
       + `:guestBase=${handle.guestBase}`
       + `:heap=${Math.max(handle.kernelState.heapPtr, handle.kernel.kernel_heap_ptr?.() ?? 0)}`
-      + `:sp=${parentThread.lastStatusSp ?? parentThread.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr)}`,
+      + `:sp=${parentActivity.lastStatusSp ?? parentActivity.lastStepSp ?? handle.kernel.thread_sp(parentThread.vmPtr)}`,
   );
   const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(
     handle.wasmModule,

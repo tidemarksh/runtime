@@ -30,6 +30,12 @@ import {
   getThreadWaitingInWorkerStatus,
 } from "../thread-host-state.js";
 import {
+  getThreadActivityState,
+  incrementBoundedActivityCounter,
+  pushRecentStepActivity,
+  resetThreadActivityState,
+} from "../thread-activity-state.js";
+import {
   takePendingGuestMemoryWritesForNextStep,
   takePendingKernelStateForNextStep,
   takePendingPipeSlotsForNextStep,
@@ -39,7 +45,6 @@ import {
   formatSchedulerStepDebugSuffix,
   formatSchedulerStepFdSnapshot,
   hasBrokenSchedulerThreadState,
-  incrementBoundedSchedulerCounter,
 } from "../diagnostics/scheduler-queue.js";
 import type {
   ThreadWorkerInbound,
@@ -246,35 +251,16 @@ export function createWorkerSchedulerQueueHelpers(
       handle,
       `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
     );
-    deps.threadWorkerStates.set(worker, {
+    const thread: ThreadWorkerState = {
       vmPtr,
       ownerPid: handle.pid,
       generation,
       runningGeneration: null,
       reinitCount: reinitWithinHandle ? (existingThread?.reinitCount ?? 0) + 1 : 0,
-      stepCount: 0,
-      totalStepBudget: 0,
-      totalStepWallMs: 0,
-      maxStepWallMs: 0,
-      lastStepDurationMs: null,
-      statusCount: 0,
-      statusCounts: {},
-      lastStatus: null,
-      recentStatuses: [],
-      lastStepAtMs: null,
-      lastStatusAtMs: null,
-      lastStepProcessPtr: null,
-      lastStepPc: null,
-      lastStepSp: null,
-      lastStepS11: null,
-      hotStepPcs: {},
-      recentSteps: [],
-      lastStatusPc: null,
-      lastStatusSp: null,
-      lastStatusS11: null,
-      hotStatusPcs: {},
       initialized: false,
-    });
+    };
+    deps.threadWorkerStates.set(worker, thread);
+    resetThreadActivityState(thread);
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
       deps.handleWorkerMessage(handle, worker, event.data);
     });
@@ -491,25 +477,22 @@ export function createWorkerSchedulerQueueHelpers(
       );
       restoreRegularFileOffsetsForStep(handle);
       reconcileKernelSharePipeControl(handle);
-      thread.stepCount += 1;
+      const activity = getThreadActivityState(thread);
+      activity.stepCount += 1;
       thread.runningGeneration = thread.generation;
-      thread.totalStepBudget += stepBudget;
-      thread.lastStepAtMs = Date.now();
-      thread.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
-      thread.lastStepPc = handle.kernel.thread_pc(vmPtr);
-      thread.lastStepSp = handle.kernel.thread_sp(vmPtr);
-      thread.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
-      incrementBoundedSchedulerCounter(thread.hotStepPcs, `0x${thread.lastStepPc.toString(16)}`);
-      const recentSteps = thread.recentSteps ??= [];
-      recentSteps.push({
-        pc: thread.lastStepPc,
-        sp: thread.lastStepSp,
-        s11: thread.lastStepS11,
-        atMs: thread.lastStepAtMs,
+      activity.totalStepBudget += stepBudget;
+      activity.lastStepAtMs = Date.now();
+      activity.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);
+      activity.lastStepPc = handle.kernel.thread_pc(vmPtr);
+      activity.lastStepSp = handle.kernel.thread_sp(vmPtr);
+      activity.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
+      incrementBoundedActivityCounter(activity.hotStepPcs, `0x${activity.lastStepPc.toString(16)}`);
+      pushRecentStepActivity(activity, {
+        pc: activity.lastStepPc,
+        sp: activity.lastStepSp,
+        s11: activity.lastStepS11,
+        atMs: activity.lastStepAtMs,
       });
-      if (recentSteps.length > 16) {
-        recentSteps.splice(0, recentSteps.length - 16);
-      }
       const brokenThreadState = hasBrokenSchedulerThreadState(handle, vmPtr);
       appendSchedulerQueueDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`);
       if (brokenThreadState) {

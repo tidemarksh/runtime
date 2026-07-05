@@ -32,6 +32,7 @@ import {
   getPendingKernelStateForNextStep,
   setPendingKernelStateForNextStep,
 } from "../../../../src/worker/thread-step-payload.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -1261,8 +1262,8 @@ test("blocked FS retry defers owner-async enqueue until async clears", async () 
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x1234);
-  thread.stepCount = 3;
-  thread.statusCount = 2;
+  getThreadActivityState(thread).stepCount = 3;
+  getThreadActivityState(thread).statusCount = 2;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
@@ -1311,9 +1312,9 @@ test("pumpProcess keeps a fresh owner-async worker parked", () => {
   } as unknown as Worker;
   const thread = makeThreadState(0x1234);
   setThreadOwnerAsyncStatus(thread as never, 6);
-  thread.stepCount = 8;
-  thread.statusCount = 8;
-  thread.lastStatusAtMs = 9_000;
+  getThreadActivityState(thread).stepCount = 8;
+  getThreadActivityState(thread).statusCount = 8;
+  getThreadActivityState(thread).lastStatusAtMs = 9_000;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
@@ -3468,10 +3469,10 @@ test("pumpProcess preserves an unanswered ok running worker that has not returne
   const runningThread = makeThreadState(0x66c42c8);
   const readyThread = makeThreadState(0x64a6e20);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 1;
-  runningThread.lastStepAtMs = 7_500;
-  runningThread.lastStatusAtMs = null;
-  runningThread.lastStatus = null;
+  getThreadActivityState(runningThread).stepCount = 1;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatusAtMs = null;
+  getThreadActivityState(runningThread).lastStatus = null;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(readyWorker, readyThread);
@@ -3512,10 +3513,10 @@ test("pumpProcess keeps an unanswered running worker after an active step clears
   const runningThread = makeThreadState(0x66c42c8);
   const readyThread = makeThreadState(0x64a6e20);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 1;
-  runningThread.lastStepAtMs = 7_500;
-  runningThread.lastStatusAtMs = null;
-  runningThread.lastStatus = null;
+  getThreadActivityState(runningThread).stepCount = 1;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatusAtMs = null;
+  getThreadActivityState(runningThread).lastStatus = null;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(readyWorker, readyThread);
@@ -3608,9 +3609,9 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
   } as unknown as Worker;
   const readyThread = makeThreadState(0x7127a90);
   const blockedThread = makeThreadState(0x7141c68);
-  readyThread.lastStatus = 0;
-  readyThread.stepCount = 27;
-  readyThread.statusCount = 27;
+  getThreadActivityState(readyThread).lastStatus = 0;
+  getThreadActivityState(readyThread).stepCount = 27;
+  getThreadActivityState(readyThread).statusCount = 27;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(readyWorker, readyThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
@@ -3659,9 +3660,9 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
   threadWorkerStates.set(readyWorker, readyThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
-  readyThread.lastStatus = kernel.abi_status_clone_spawn();
-  readyThread.stepCount = 59;
-  readyThread.statusCount = 59;
+  getThreadActivityState(readyThread).lastStatus = kernel.abi_status_clone_spawn();
+  getThreadActivityState(readyThread).stepCount = 59;
+  getThreadActivityState(readyThread).statusCount = 59;
   kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, readyWorker, threadWorkerStates);
   handle.workers.add(blockedWorker);
@@ -3703,7 +3704,7 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
   } as unknown as Worker;
   const readyThread = makeThreadState(0x70bf0d8);
   const blockedThread = makeThreadState(0x7141c68);
-  readyThread.lastStatus = 0;
+  getThreadActivityState(readyThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(readyWorker, readyThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
@@ -3746,7 +3747,7 @@ test("pumpProcess runs yield-ready workers when no other ready worker exists", (
   } as unknown as Worker;
   const yieldThread = makeThreadState(0x70c8e98);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
-  yieldThread.lastStatus = 26;
+  getThreadActivityState(yieldThread).lastStatus = 26;
   threadWorkerStates.set(yieldWorker, yieldThread);
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
@@ -3781,11 +3782,11 @@ test("pumpProcess preserves a stale unanswered ok running worker without active-
   } as unknown as Worker;
   const thread = makeThreadState(0x9ba7260);
   thread.runningGeneration = thread.generation;
-  thread.stepCount = 12;
-  thread.statusCount = 11;
-  thread.lastStepAtMs = 7_500;
-  thread.lastStatusAtMs = 7_000;
-  thread.lastStatus = 0;
+  getThreadActivityState(thread).stepCount = 12;
+  getThreadActivityState(thread).statusCount = 11;
+  getThreadActivityState(thread).lastStepAtMs = 7_500;
+  getThreadActivityState(thread).lastStatusAtMs = 7_000;
+  getThreadActivityState(thread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
@@ -3808,7 +3809,7 @@ test("pumpProcess preserves a stale unanswered ok running worker without active-
 
   expect(handle.runningWorker).toBe(worker);
   expect(thread.runningGeneration).toBe(thread.generation);
-  expect(thread.stepCount).toBe(12);
+  expect(getThreadActivityState(thread).stepCount).toBe(12);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
@@ -3819,11 +3820,11 @@ test("pumpProcess preserves a stale unanswered ok running worker when last trace
   } as unknown as Worker;
   const thread = makeThreadState(0x57fe3d0);
   thread.runningGeneration = thread.generation;
-  thread.stepCount = 101;
-  thread.statusCount = 100;
-  thread.lastStepAtMs = 7_500;
-  thread.lastStatusAtMs = 7_500;
-  thread.lastStatus = 0;
+  getThreadActivityState(thread).stepCount = 101;
+  getThreadActivityState(thread).statusCount = 100;
+  getThreadActivityState(thread).lastStepAtMs = 7_500;
+  getThreadActivityState(thread).lastStatusAtMs = 7_500;
+  getThreadActivityState(thread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
@@ -3846,7 +3847,7 @@ test("pumpProcess preserves a stale unanswered ok running worker when last trace
 
   expect(handle.runningWorker).toBe(worker);
   expect(thread.runningGeneration).toBe(thread.generation);
-  expect(thread.stepCount).toBe(101);
+  expect(getThreadActivityState(thread).stepCount).toBe(101);
   expect(worker.postMessage).not.toHaveBeenCalled();
 });
 
@@ -3857,11 +3858,11 @@ test("pumpProcess preserves a stale unanswered no-ready running worker with pend
   } as unknown as Worker;
   const thread = makeThreadState(0x9ba7260);
   thread.runningGeneration = thread.generation;
-  thread.stepCount = 12;
-  thread.statusCount = 11;
-  thread.lastStepAtMs = 7_500;
-  thread.lastStatusAtMs = 7_000;
-  thread.lastStatus = 0;
+  getThreadActivityState(thread).stepCount = 12;
+  getThreadActivityState(thread).statusCount = 11;
+  getThreadActivityState(thread).lastStepAtMs = 7_500;
+  getThreadActivityState(thread).lastStatusAtMs = 7_000;
+  getThreadActivityState(thread).lastStatus = 0;
   appendPendingGuestMemoryWrites(thread, [{
     guestPtr: 0x4000,
     bytes: new Uint8Array([1, 2, 3]),
@@ -3901,17 +3902,17 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
   } as unknown as Worker;
   const runningThread = makeThreadState(0x9ba7260);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 70;
-  runningThread.statusCount = 11;
-  runningThread.lastStepAtMs = 7_500;
-  runningThread.lastStatusAtMs = 7_000;
-  runningThread.lastStatus = 0;
+  getThreadActivityState(runningThread).stepCount = 70;
+  getThreadActivityState(runningThread).statusCount = 11;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatusAtMs = 7_000;
+  getThreadActivityState(runningThread).lastStatus = 0;
   const idleThread = makeThreadState(0x6648420);
-  idleThread.stepCount = 162;
-  idleThread.statusCount = 161;
-  idleThread.lastStepAtMs = 7_500;
-  idleThread.lastStatusAtMs = 7_499;
-  idleThread.lastStatus = 0;
+  getThreadActivityState(idleThread).stepCount = 162;
+  getThreadActivityState(idleThread).statusCount = 161;
+  getThreadActivityState(idleThread).lastStepAtMs = 7_500;
+  getThreadActivityState(idleThread).lastStatusAtMs = 7_499;
+  getThreadActivityState(idleThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(idleWorker, idleThread);
@@ -3935,9 +3936,9 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
   scheduler.pumpProcess(handle);
 
   expect(runningThread.runningGeneration).toBe(runningThread.generation);
-  expect(runningThread.stepCount).toBe(70);
+  expect(getThreadActivityState(runningThread).stepCount).toBe(70);
   expect(idleThread.runningGeneration).toBeUndefined();
-  expect(idleThread.stepCount).toBe(162);
+  expect(getThreadActivityState(idleThread).stepCount).toBe(162);
   expect(handle.runningWorker).toBe(runningWorker);
   expect(runningWorker.postMessage).not.toHaveBeenCalled();
   expect(idleWorker.postMessage).not.toHaveBeenCalled();
@@ -3951,9 +3952,9 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     postMessage: vi.fn(),
   } as unknown as Worker;
   const readyThread = makeThreadState(0x5860320);
-  readyThread.stepCount = 42;
-  readyThread.statusCount = 42;
-  readyThread.lastStatus = 0;
+  getThreadActivityState(readyThread).stepCount = 42;
+  getThreadActivityState(readyThread).statusCount = 42;
+  getThreadActivityState(readyThread).lastStatus = 0;
   const blockedThread = makeThreadState(0x6286130);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(readyWorker, readyThread);
@@ -4004,11 +4005,11 @@ test("pumpProcess preserves an unanswered running worker when the step shares a 
   const runningThread = makeThreadState(0x66c42c8);
   const readyThread = makeThreadState(0x64a6e20);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 3;
-  runningThread.statusCount = 2;
-  runningThread.lastStepAtMs = 7_500;
-  runningThread.lastStatusAtMs = 7_500;
-  runningThread.lastStatus = 0;
+  getThreadActivityState(runningThread).stepCount = 3;
+  getThreadActivityState(runningThread).statusCount = 2;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatusAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(readyWorker, readyThread);
@@ -4049,11 +4050,11 @@ test("pumpProcess preserves an unanswered ok running worker when status covers t
   const runningThread = makeThreadState(0x6648420);
   const readyThread = makeThreadState(0x9ba7260);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 162;
-  runningThread.statusCount = 161;
-  runningThread.lastStepAtMs = 7_500;
-  runningThread.lastStatusAtMs = 7_500;
-  runningThread.lastStatus = 0;
+  getThreadActivityState(runningThread).stepCount = 162;
+  getThreadActivityState(runningThread).statusCount = 161;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatusAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(readyWorker, readyThread);
@@ -4094,11 +4095,11 @@ test("pumpProcess preserves an unanswered ok running worker when the step is sta
   const runningThread = makeThreadState(0x6648420);
   const readyThread = makeThreadState(0x9ba7260);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 162;
-  runningThread.statusCount = 161;
-  runningThread.lastStepAtMs = 7_500;
-  runningThread.lastStatusAtMs = 7_000;
-  runningThread.lastStatus = 0;
+  getThreadActivityState(runningThread).stepCount = 162;
+  getThreadActivityState(runningThread).statusCount = 161;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_500;
+  getThreadActivityState(runningThread).lastStatusAtMs = 7_000;
+  getThreadActivityState(runningThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(readyWorker, readyThread);
@@ -4191,13 +4192,13 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   const runningThread = makeThreadState(0x7127a90);
   const blockedThread = makeThreadState(0x7141c68);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 2;
-  runningThread.statusCount = 1;
+  getThreadActivityState(runningThread).stepCount = 2;
+  getThreadActivityState(runningThread).statusCount = 1;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
-  runningThread.lastStatus = kernel.abi_status_futex_wait();
+  getThreadActivityState(runningThread).lastStatus = kernel.abi_status_futex_wait();
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => 0;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
@@ -4233,13 +4234,13 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   const blockedThread = makeThreadState(0x7141c68);
   const stackPointer = 0xa467710n;
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 2;
-  runningThread.statusCount = 1;
+  getThreadActivityState(runningThread).stepCount = 2;
+  getThreadActivityState(runningThread).statusCount = 1;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
-  runningThread.lastStatus = kernel.abi_status_futex_wait();
+  getThreadActivityState(runningThread).lastStatus = kernel.abi_status_futex_wait();
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => 0;
   kernel.thread_sp = (vmPtr: number) => (
@@ -4281,16 +4282,16 @@ test("epoll retry keeps active unanswered ok running worker", () => {
   const runningThread = makeThreadState(0x585f220);
   const blockedThread = makeThreadState(0x6285030);
   runningThread.runningGeneration = runningThread.generation;
-  runningThread.stepCount = 827;
-  runningThread.statusCount = 825;
-  runningThread.lastStatus = 0;
-  runningThread.lastStatusAtMs = 7_000;
-  runningThread.lastStepAtMs = 7_100;
+  getThreadActivityState(runningThread).stepCount = 827;
+  getThreadActivityState(runningThread).statusCount = 825;
+  getThreadActivityState(runningThread).lastStatus = 0;
+  getThreadActivityState(runningThread).lastStatusAtMs = 7_000;
+  getThreadActivityState(runningThread).lastStepAtMs = 7_100;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(runningWorker, runningThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
-  runningThread.lastStatus = kernel.abi_status_ok();
+  getThreadActivityState(runningThread).lastStatus = kernel.abi_status_ok();
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => runningThread.vmPtr;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
@@ -4954,8 +4955,8 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
   } as unknown as Worker;
   const selectedThread = makeThreadState(0x1234);
   const unselectedThread = makeThreadState(0x5678);
-  selectedThread.lastStatus = 26;
-  unselectedThread.lastStatus = 0;
+  getThreadActivityState(selectedThread).lastStatus = 26;
+  getThreadActivityState(unselectedThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(selectedWorker, selectedThread);
   threadWorkerStates.set(unselectedWorker, unselectedThread);
@@ -5038,8 +5039,8 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
   threadWorkerStates.set(ordinaryWorker, ordinaryThread);
   threadWorkerStates.set(continuationWorker, continuationThread);
   const { exports: kernel } = makeKernel();
-  ordinaryThread.lastStatus = kernel.abi_status_ok();
-  continuationThread.lastStatus = kernel.abi_status_pipe_wait();
+  getThreadActivityState(ordinaryThread).lastStatus = kernel.abi_status_ok();
+  getThreadActivityState(continuationThread).lastStatus = kernel.abi_status_pipe_wait();
   kernel.kernel_scratch_base = () => 0;
   kernel.supervisor_resume_record_bytes = () => 48;
   kernel.supervisor_process_resume = vi.fn((
@@ -5095,9 +5096,9 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
   const blockedThread = makeThreadState(0x7759fb0);
   const stackPointer = 0xa4676f0n;
   const stackLocalFutexAddr = 0xa467858n;
-  waitingThread.stepCount = 97;
-  waitingThread.statusCount = 97;
-  waitingThread.lastStatus = 20;
+  getThreadActivityState(waitingThread).stepCount = 97;
+  getThreadActivityState(waitingThread).statusCount = 97;
+  getThreadActivityState(waitingThread).lastStatus = 20;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(waitingWorker, waitingThread);
   threadWorkerStates.set(blockedWorker, blockedThread);
@@ -5165,9 +5166,9 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
   } as unknown as Worker;
   const waitingThread = makeThreadState(0x57fe3d0);
   const blockedThread = makeThreadState(0x7759fb0);
-  waitingThread.stepCount = 97;
-  waitingThread.statusCount = 97;
-  waitingThread.lastStatus = 20;
+  getThreadActivityState(waitingThread).stepCount = 97;
+  getThreadActivityState(waitingThread).statusCount = 97;
+  getThreadActivityState(waitingThread).lastStatus = 20;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(waitingWorker, waitingThread);
   threadWorkerStates.set(blockedWorker, blockedThread);

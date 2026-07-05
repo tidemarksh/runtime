@@ -18,6 +18,7 @@ import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
 } from "../../thread-host-state.js";
+import { getThreadActivityState } from "../../thread-activity-state.js";
 
 function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   handle: ProcessHandle;
@@ -117,11 +118,12 @@ export function handleOwnerAsyncStatusReturn(args: {
   const fsStatus = handle.kernel.abi_status_fs?.();
   const generationMatches = msg.generation === undefined
     || thread.runningGeneration === msg.generation;
+  const activity = getThreadActivityState(thread);
   if (
     fsStatus !== undefined
     && msg.status === fsStatus
     && generationMatches
-    && thread.stepCount > thread.statusCount
+    && activity.stepCount > activity.statusCount
   ) {
     clearThreadOwnerAsyncStatus(thread);
     deps.appendWorkerDebugLog(
@@ -138,7 +140,7 @@ export function handleOwnerAsyncStatusReturn(args: {
     okStatus !== undefined
     && msg.status === okStatus
     && generationMatches
-    && thread.stepCount > thread.statusCount
+    && activity.stepCount > activity.statusCount
   ) {
     clearThreadOwnerAsyncStatus(thread);
     deps.appendWorkerDebugLog(

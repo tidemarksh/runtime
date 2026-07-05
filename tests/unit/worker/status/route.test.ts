@@ -7,6 +7,7 @@ import {
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -132,6 +133,7 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     generation: 1,
     ...rest,
   };
+  Object.assign(getThreadActivityState(thread as never), rest);
   if (typeof ownerAsyncStatus === "number") {
     setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
   }
@@ -368,9 +370,9 @@ test("status handler logs futex resume with compact debug fields", () => {
   dateNow.mockRestore();
 
   expect(clearBlockedWorker).toHaveBeenCalledWith(expect.anything(), worker);
-  expect(thread.lastStepDurationMs).toBe(25);
-  expect(thread.totalStepWallMs).toBe(25);
-  expect(thread.maxStepWallMs).toBe(25);
+  expect(getThreadActivityState(thread as never).lastStepDurationMs).toBe(25);
+  expect(getThreadActivityState(thread as never).totalStepWallMs).toBe(25);
+  expect(getThreadActivityState(thread as never).maxStepWallMs).toBe(25);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     expect.anything(),
     "resume:0x1234@20->0:"

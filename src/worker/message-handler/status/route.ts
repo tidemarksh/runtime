@@ -33,10 +33,14 @@ import {
 } from "./debug.js";
 import {
   hasSuspiciousLowStateDebug,
-  incrementBoundedCounter,
   readLocalProcessPid,
 } from "./route-state.js";
 import { setThreadExecveProcessState } from "../../thread-execve-state.js";
+import {
+  getThreadActivityState,
+  incrementBoundedActivityCounter,
+  pushRecentStatusActivity,
+} from "../../thread-activity-state.js";
 import {
   applyThreadGuestMemoryWrites,
   applyThreadKernelMemoryWrites,
@@ -180,22 +184,22 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-fds:${handle.pid}:0x${msg.vmPtr.toString(16)}:status=${status}:${formatStatusFdEntries(handle, msg)}`,
       );
     }
-    thread.statusCount += 1;
+    const activity = getThreadActivityState(thread);
+    activity.statusCount += 1;
     recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
-    thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
-    thread.lastStatus = status;
+    activity.statusCounts[String(status)] = (activity.statusCounts[String(status)] ?? 0) + 1;
+    activity.lastStatus = status;
     if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `clone-status-route:${handle.pid}:0x${thread.vmPtr.toString(16)}`
           + `:generation=${msg.generation ?? "n/a"}`
-          + `:count=${thread.statusCounts[String(status)] ?? 0}`,
+          + `:count=${activity.statusCounts[String(status)] ?? 0}`,
       );
     }
     const statusAtMs = Date.now();
-    thread.lastStatusAtMs = statusAtMs;
-    const recentStatuses = thread.recentStatuses ??= [];
-    recentStatuses.push({
+    activity.lastStatusAtMs = statusAtMs;
+    pushRecentStatusActivity(activity, {
       status,
       pc: msg.pc,
       syscallNr: msg.syscallNr ?? null,
@@ -205,22 +209,19 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       futexBlockedAddr: msg.futexBlockedAddr ?? null,
       atMs: statusAtMs,
     });
-    if (recentStatuses.length > 16) {
-      recentStatuses.splice(0, recentStatuses.length - 16);
+    if (thread.runningGeneration === msg.generation && activity.lastStepAtMs !== null) {
+      const stepWallMs = Math.max(0, statusAtMs - activity.lastStepAtMs);
+      activity.lastStepDurationMs = stepWallMs;
+      activity.totalStepWallMs += stepWallMs;
+      activity.maxStepWallMs = Math.max(activity.maxStepWallMs, stepWallMs);
     }
-    if (thread.runningGeneration === msg.generation && thread.lastStepAtMs !== null) {
-      const stepWallMs = Math.max(0, statusAtMs - thread.lastStepAtMs);
-      thread.lastStepDurationMs = stepWallMs;
-      thread.totalStepWallMs += stepWallMs;
-      thread.maxStepWallMs = Math.max(thread.maxStepWallMs, stepWallMs);
-    }
-    thread.lastStatusPc = msg.pc;
-    thread.lastStatusSp = msg.sp ?? null;
-    thread.lastStatusS11 = msg.s11 ?? null;
+    activity.lastStatusPc = msg.pc;
+    activity.lastStatusSp = msg.sp ?? null;
+    activity.lastStatusS11 = msg.s11 ?? null;
     if (msg.processState) {
       setThreadExecveProcessState(thread, msg.processState);
     }
-    incrementBoundedCounter(thread.hotStatusPcs, `0x${msg.pc.toString(16)}`);
+    incrementBoundedActivityCounter(activity.hotStatusPcs, `0x${msg.pc.toString(16)}`);
     const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);
     deps.appendWorkerDebugLog(
       handle,
@@ -355,7 +356,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       completedSyncEffects: number,
     ): void => {
       const shadowThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
-        sequence: thread.statusCount,
+        sequence: activity.statusCount,
         vmPtr: shadowMsg.vmPtr,
         pid: handle.pid,
         tid: handle.kernel.thread_tid?.(shadowMsg.vmPtr) ?? 0,

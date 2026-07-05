@@ -9,9 +9,12 @@ export type {
 } from "./types/debug.js";
 export type {
   ThreadWorkerState,
+} from "./types/thread.js";
+export type {
+  ThreadWorkerActivityState,
   ThreadWorkerStatusSnapshot,
   ThreadWorkerStepSnapshot,
-} from "./types/thread.js";
+} from "./thread-activity-state.js";
 export type {
   AttachThreadWorkerRequest,
   CanonicalizedChildLifecycle,

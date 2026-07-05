@@ -2,6 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../../src/abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 
 function makeDiagnosticsKernel(overrides: Partial<KernelExports> = {}): KernelExports {
   return new Proxy(overrides, {
@@ -121,6 +122,15 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
   };
+  Object.assign(getThreadActivityState(thread), {
+    stepCount: 7,
+    statusCount: 6,
+    lastStatus: 0,
+    lastStepAtMs: 17_500,
+    lastStatusAtMs: 16_000,
+    lastStepPc: 0x1234n,
+    lastStatusPc: 0x5678n,
+  });
   const handle = {
     pid: 1,
     runtimeId: 7,

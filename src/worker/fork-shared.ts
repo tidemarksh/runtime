@@ -1,4 +1,5 @@
 import type { ProcessHandle, ThreadWorkerState, VforkSnapshot } from "./types.js";
+import { getThreadActivityState } from "./thread-activity-state.js";
 import {
   activeKernelShareOfdIds,
   collectProcessHeldOfdRefcounts,
@@ -179,9 +180,10 @@ export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfd
 
 export function captureVforkSnapshot(
   handle: ProcessHandle,
-  thread: Pick<ThreadWorkerState, "vmPtr" | "lastStepProcessPtr" | "lastStepPc" | "lastStepSp" | "lastStepS11">,
+  thread: ThreadWorkerState,
 ): VforkSnapshot {
   const ofdIds = trackForkSharedOfds(handle, thread.vmPtr, true);
+  const activity = getThreadActivityState(thread);
   return {
     vmPtr: thread.vmPtr,
     childPid: null,
@@ -189,10 +191,10 @@ export function captureVforkSnapshot(
     pgid: null,
     sid: null,
     parentPid: handle.pid,
-    parentProcessPtr: thread.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(thread.vmPtr),
-    parentPc: thread.lastStepPc ?? handle.kernel.thread_pc(thread.vmPtr),
-    parentSp: thread.lastStepSp ?? handle.kernel.thread_sp(thread.vmPtr),
-    parentS11: thread.lastStepS11 ?? (handle.kernel.thread_s11?.(thread.vmPtr) ?? 0n),
+    parentProcessPtr: activity.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(thread.vmPtr),
+    parentPc: activity.lastStepPc ?? handle.kernel.thread_pc(thread.vmPtr),
+    parentSp: activity.lastStepSp ?? handle.kernel.thread_sp(thread.vmPtr),
+    parentS11: activity.lastStepS11 ?? (handle.kernel.thread_s11?.(thread.vmPtr) ?? 0n),
     inheritedSharedOfdIds: ofdIds,
   };
 }

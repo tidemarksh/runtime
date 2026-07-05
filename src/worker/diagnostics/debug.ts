@@ -33,6 +33,7 @@ import {
   getThreadWaitingInWorkerStatus,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
+import { getThreadActivityState } from "../thread-activity-state.js";
 import {
   pendingGuestMemoryWritesForNextStepCount,
   pendingPipeSlotsForNextStepCount,
@@ -238,6 +239,7 @@ function readWorkerOwnerState(
 
 function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, state: ThreadWorkerState): string {
   const ownerState = readWorkerOwnerState(handle, worker, state);
+  const activity = getThreadActivityState(state);
   const threadStatus = handle.kernel.thread_status?.(state.vmPtr);
   const processPtr = handle.kernel.thread_process_ptr?.(state.vmPtr);
   const currentPid = handle.kernel.process_current_pid?.(state.vmPtr);
@@ -251,13 +253,13 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
   const stepExecTrace = formatWorkerStepExecTraceSummary(handle, state.vmPtr);
   const execTrace = formatWorkerExecTrace(handle, state.vmPtr)?.replaceAll(" ", "|") ?? null;
   const nowMs = Date.now();
-  const recentSteps = (state.recentSteps ?? [])
+  const recentSteps = activity.recentSteps
     .map((entry, index) => {
       const ageMs = Math.max(0, nowMs - entry.atMs);
       return `${index}:pc=0x${entry.pc.toString(16)}:sp=0x${entry.sp.toString(16)}:s11=0x${entry.s11.toString(16)}:ageMs=${ageMs}`;
     })
     .join("|");
-  const recentStatuses = (state.recentStatuses ?? [])
+  const recentStatuses = activity.recentStatuses
     .map((entry, index) => {
       const ageMs = Math.max(0, nowMs - entry.atMs);
       const syscallNr = entry.syscallNr === null ? "null" : entry.syscallNr.toString();
@@ -268,9 +270,9 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
       return `${index}:status=${entry.status}:pc=0x${entry.pc.toString(16)}:sys=${syscallNr}:fdSys=${fdTraceSyscallNr}:fdRet=${fdTraceResult}:futex=${futexWaitAddr}:blocked=${futexBlockedAddr}:ageMs=${ageMs}`;
     })
     .join("|");
-  const lastStepAgeMs = state.lastStepAtMs === null ? "null" : Math.max(0, nowMs - state.lastStepAtMs);
-  const lastStatusAgeMs = state.lastStatusAtMs === null ? "null" : Math.max(0, nowMs - state.lastStatusAtMs);
-  const statusCounts = Object.entries(state.statusCounts)
+  const lastStepAgeMs = activity.lastStepAtMs === null ? "null" : Math.max(0, nowMs - activity.lastStepAtMs);
+  const lastStatusAgeMs = activity.lastStatusAtMs === null ? "null" : Math.max(0, nowMs - activity.lastStatusAtMs);
+  const statusCounts = Object.entries(activity.statusCounts)
     .sort(([left], [right]) => Number(left) - Number(right))
     .map(([status, count]) => `${status}=${count}`)
     .join(",");
@@ -294,17 +296,17 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `spawnKind=${spawnKind ?? "n/a"}`,
     `spawnChild=${spawnChildPid ?? "n/a"}`,
     `process=0x${(processPtr ?? 0).toString(16)}`,
-    `steps=${state.stepCount}`,
-    `statuses=${state.statusCount}`,
+    `steps=${activity.stepCount}`,
+    `statuses=${activity.statusCount}`,
     `counts=${statusCounts}`,
-    `unansweredStep=${state.stepCount > state.statusCount ? 1 : 0}`,
+    `unansweredStep=${activity.stepCount > activity.statusCount ? 1 : 0}`,
     `lastStepAgeMs=${lastStepAgeMs}`,
     `lastStatusAgeMs=${lastStatusAgeMs}`,
     `activeStepVm=${activeStepVmPtr === undefined ? "n/a" : `0x${activeStepVmPtr.toString(16)}`}`,
     `activeStepSelf=${activeStepVmPtr === undefined ? "n/a" : activeStepVmPtr === state.vmPtr ? 1 : 0}`,
-    `last=${state.lastStatus ?? "null"}`,
-    `lastPc=${state.lastStatusPc === null ? "null" : `0x${state.lastStatusPc.toString(16)}`}`,
-    `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,
+    `last=${activity.lastStatus ?? "null"}`,
+    `lastPc=${activity.lastStatusPc === null ? "null" : `0x${activity.lastStatusPc.toString(16)}`}`,
+    `lastStepPc=${activity.lastStepPc === null ? "null" : `0x${activity.lastStepPc.toString(16)}`}`,
     `pendingPipeSlots=${pendingPipeSlotsForNextStepCount(state)}`,
     `pendingGuestWrites=${pendingGuestMemoryWritesForNextStepCount(state)}`,
     `resumeReady=${threadResumeWorkersOnReadyCount(state)}`,
@@ -956,32 +958,33 @@ export function debugRuntimeExecutionStats(
             if (!state || state.vmPtr === 0) {
               return null;
             }
+            const activity = getThreadActivityState(state);
             return {
               vmPtr: state.vmPtr,
               ownerState: readWorkerOwnerState(handle, worker, state),
-              stepCount: state.stepCount,
-              totalStepBudget: state.totalStepBudget,
-              totalStepWallMs: state.totalStepWallMs,
-              maxStepWallMs: state.maxStepWallMs,
-              lastStepDurationMs: state.lastStepDurationMs,
-              statusCount: state.statusCount,
-              statusCounts: { ...state.statusCounts },
-              statusCountsByName: formatStatusCountsByName(state.statusCounts, statusNames),
-              lastStatus: state.lastStatus,
-              lastStatusName: state.lastStatus === null ? null : statusNames.get(state.lastStatus) ?? String(state.lastStatus),
-              lastStepAtMs: state.lastStepAtMs,
-              lastStatusAtMs: state.lastStatusAtMs,
-              lastStepPc: formatOptionalBigIntHex(state.lastStepPc),
-              lastStepSp: formatOptionalBigIntHex(state.lastStepSp),
-              lastStepS11: formatOptionalBigIntHex(state.lastStepS11),
-              hotStepPcs: formatHotCounters(state.hotStepPcs),
-              recentSteps: (state.recentSteps ?? []).map((entry) => ({
+              stepCount: activity.stepCount,
+              totalStepBudget: activity.totalStepBudget,
+              totalStepWallMs: activity.totalStepWallMs,
+              maxStepWallMs: activity.maxStepWallMs,
+              lastStepDurationMs: activity.lastStepDurationMs,
+              statusCount: activity.statusCount,
+              statusCounts: { ...activity.statusCounts },
+              statusCountsByName: formatStatusCountsByName(activity.statusCounts, statusNames),
+              lastStatus: activity.lastStatus,
+              lastStatusName: activity.lastStatus === null ? null : statusNames.get(activity.lastStatus) ?? String(activity.lastStatus),
+              lastStepAtMs: activity.lastStepAtMs,
+              lastStatusAtMs: activity.lastStatusAtMs,
+              lastStepPc: formatOptionalBigIntHex(activity.lastStepPc),
+              lastStepSp: formatOptionalBigIntHex(activity.lastStepSp),
+              lastStepS11: formatOptionalBigIntHex(activity.lastStepS11),
+              hotStepPcs: formatHotCounters(activity.hotStepPcs),
+              recentSteps: activity.recentSteps.map((entry) => ({
                 pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
                 sp: formatOptionalBigIntHex(entry.sp) ?? "0x0",
                 s11: formatOptionalBigIntHex(entry.s11) ?? "0x0",
                 ageMs: Math.max(0, Date.now() - entry.atMs),
               })),
-              recentStatuses: (state.recentStatuses ?? []).map((entry) => ({
+              recentStatuses: activity.recentStatuses.map((entry) => ({
                 status: entry.status,
                 pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
                 syscallNr: entry.syscallNr === null ? null : entry.syscallNr.toString(),
@@ -991,10 +994,10 @@ export function debugRuntimeExecutionStats(
                 futexBlockedAddr: formatOptionalBigIntHex(entry.futexBlockedAddr),
                 ageMs: Math.max(0, Date.now() - entry.atMs),
               })),
-              lastStatusPc: formatOptionalBigIntHex(state.lastStatusPc),
-              lastStatusSp: formatOptionalBigIntHex(state.lastStatusSp),
-              lastStatusS11: formatOptionalBigIntHex(state.lastStatusS11),
-              hotStatusPcs: formatHotCounters(state.hotStatusPcs),
+              lastStatusPc: formatOptionalBigIntHex(activity.lastStatusPc),
+              lastStatusSp: formatOptionalBigIntHex(activity.lastStatusSp),
+              lastStatusS11: formatOptionalBigIntHex(activity.lastStatusS11),
+              hotStatusPcs: formatHotCounters(activity.hotStatusPcs),
               waitingInWorkerStatus: getThreadWaitingInWorkerStatus(state),
               threadStepEntry: readThreadStepEntryDebug(handle, state.vmPtr),
               threadStepStatus: readThreadStepStatusDebug(handle, state.vmPtr),

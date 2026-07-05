@@ -37,6 +37,7 @@ import {
   getThreadWaitingInWorkerStatus,
   setThreadOwnerAsyncStatus,
 } from "../thread-host-state.js";
+import { maybeThreadActivityState, getThreadActivityState } from "../thread-activity-state.js";
 import { setPendingKernelStateForNextStep } from "../thread-step-payload.js";
 import type {
   GuestMemoryWriteSnapshot,
@@ -650,7 +651,7 @@ function supervisorFsResponseDisposition(
     pendingFs.opcode,
     fsResult,
     getThreadOwnerAsyncStatus(threadState) ?? 0,
-    threadState?.lastStatus ?? 0,
+    maybeThreadActivityState(threadState)?.lastStatus ?? 0,
   );
   return {
     adoptKernelState: (flags & supervisorFsResponseFlag(handle, "adoptKernelState")) !== 0,
@@ -1511,7 +1512,7 @@ async function resumeFsViaKernelWorkerInner(
     const statusAfterFs = findSupervisorExecveSpawnStatus(handle, [
       handle.kernel.thread_status?.(vmPtr),
       getThreadOwnerAsyncStatus(threadState),
-      threadState.lastStatus,
+      getThreadActivityState(threadState).lastStatus,
     ]);
     if (
       fsResponseDisposition.resolvedToExecveSpawn

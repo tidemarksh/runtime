@@ -3,6 +3,7 @@ import {
   setThreadOwnerAsyncStatus,
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -156,6 +157,7 @@ export function makeThreadState(overrides: Record<string, unknown> = {}) {
     statusCounts: {},
     ...rest,
   };
+  Object.assign(getThreadActivityState(thread as never), rest);
   if (typeof ownerAsyncStatus === "number") {
     setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
   }

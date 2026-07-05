@@ -10,6 +10,7 @@ vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
 
 import { createWorkerSchedulerQueueHelpers } from "../../../../src/worker/host-boundary/thread-worker-queue.js";
 import { getThreadWaitingInWorkerStatus } from "../../../../src/worker/thread-host-state.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import {
   makeHostBoundaryHandle,
   makeHostBoundaryKernel,
@@ -115,7 +116,7 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   const unselectedWorker = { postMessage: vi.fn() } as unknown as Worker;
   const selectedThread = makeHostBoundaryThread(0x1234);
   const unselectedThread = makeHostBoundaryThread(0x5678);
-  unselectedThread.lastStatus = 0;
+  getThreadActivityState(unselectedThread).lastStatus = 0;
   const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
   threadWorkerStates.set(selectedWorker, selectedThread);
   threadWorkerStates.set(unselectedWorker, unselectedThread);
