@@ -25,6 +25,7 @@ import {
   invalidateBlockedRpc,
   isBlockedRpcPending,
 } from "./host-blocked-state.js";
+import { getHandleForkSharedSync } from "./fork-shared-sync-state.js";
 
 interface WorkerExitDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -2061,7 +2062,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       if (parent === null && handle.stdioOwner === null) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-start:${handle.pid}:${formatVisibleOutputDebug(handle)}`);
         try {
-          await handle.forkSharedSyncPromise;
+          await getHandleForkSharedSync(handle);
         } catch {
           // The final visible-output drain below should still run so process
           // exit cannot hide bytes that were already written to stdout/stderr.
@@ -2094,7 +2095,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       notifyExit();
     } finally {
       try {
-        await handle.forkSharedSyncPromise;
+        await getHandleForkSharedSync(handle);
       } catch (error) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,

@@ -28,6 +28,7 @@ import {
 } from "../ownership/ofd-table.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { adoptKernelStateForHandle } from "../sync.js";
+import { getActiveForkSharedSync } from "../fork-shared-sync-state.js";
 import { createForkChildHandle } from "./common.js";
 import { detachInheritedHostStdioFromChild } from "./common.js";
 import {
@@ -133,7 +134,7 @@ export async function handlePlainFork(
     acquireWorkerMemoryFence(handle);
     appendPlainForkProcessThreadsDebug(deps, handle, childPid, "before-capture", parentThread.vmPtr);
     const parentProcessSnapshot = captureParentProcessSnapshot(handle, parentThread);
-    const pendingForkSharedSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
+    const pendingForkSharedSync = getActiveForkSharedSync(handle);
     if (pendingForkSharedSync !== null) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:await-fork-shared-sync:${handle.pid}`);
       await pendingForkSharedSync;

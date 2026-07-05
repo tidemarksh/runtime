@@ -1,6 +1,14 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerOwnedStateSyncHandler } from "../../../../src/worker/message-handler/status/owned-state-sync.js";
-import { getThreadOwnerAsyncStatus } from "../../../../src/worker/thread-host-state.js";
+import {
+  getHandleForkSharedSync,
+  getKernelShareForkSharedSync,
+  setKernelShareForkSharedSync,
+} from "../../../../src/worker/fork-shared-sync-state.js";
+import {
+  getThreadOwnerAsyncStatus,
+  setThreadHostIdentity,
+} from "../../../../src/worker/thread-host-state.js";
 
 function makeKernelState() {
   return {
@@ -180,6 +188,10 @@ const supervisorPipeControlKernelStubs = {
   supervisor_process_pipe_write_open_count: () => 0,
 };
 
+function seedThreadIdentity(thread: { ownerPid: number; generation: number }): void {
+  setThreadHostIdentity(thread as never, thread.ownerPid, thread.generation);
+}
+
 test("socket state sync runs before fork-shared OFD sync when both effects are present", async () => {
   const worker = {} as Worker;
   const thread = {
@@ -189,6 +201,7 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const order: string[] = [];
@@ -201,9 +214,7 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -290,6 +301,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -302,9 +314,7 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -376,8 +386,8 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
     expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalled();
   });
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
-  expect(handle.forkSharedSyncPromise).toBeNull();
-  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+  expect(getHandleForkSharedSync(handle as never)).toBeNull();
+  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBeNull();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     7,
     "fork-shared-sync-local:7:src=0x1234:targets=none",
@@ -405,6 +415,7 @@ test("kernel completed fork-shared effect syncs available parent targets", async
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -417,10 +428,8 @@ test("kernel completed fork-shared effect syncs available parent targets", async
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set([3]),
-      forkSharedSyncPromise: null,
     },
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -517,6 +526,7 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -529,10 +539,8 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set([8]),
-      forkSharedSyncPromise: null,
     },
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -618,6 +626,7 @@ test("kernel pipe data-plane effect does not request fork-shared sync", () => {
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -630,10 +639,8 @@ test("kernel pipe data-plane effect does not request fork-shared sync", () => {
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set([3]),
-      forkSharedSyncPromise: null,
     },
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 5, stderrPipe: 0 },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -702,6 +709,7 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -714,9 +722,7 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -802,6 +808,7 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -814,9 +821,7 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set([8]),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -914,6 +919,7 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   let resolveActiveSync!: () => void;
@@ -929,9 +935,7 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set([2]),
-      forkSharedSyncPromise: activeSync,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -953,6 +957,7 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
       kernel_attach_runtime_state: vi.fn(),
     },
   };
+  setKernelShareForkSharedSync(handle.kernelShare as never, activeSync);
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add({
     pid: 3,
@@ -995,10 +1000,10 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
 
   expect(handled).toBe(true);
   await vi.waitFor(() => {
-    expect(handle.forkSharedSyncPromise).not.toBeNull();
+    expect(getHandleForkSharedSync(handle as never)).not.toBeNull();
   });
-  expect(handle.forkSharedSyncPromise).toBe(handle.kernelShare.forkSharedSyncPromise);
-  expect(handle.forkSharedSyncPromise).not.toBe(activeSync);
+  expect(getHandleForkSharedSync(handle as never)).toBe(getKernelShareForkSharedSync(handle.kernelShare as never));
+  expect(getHandleForkSharedSync(handle as never)).not.toBe(activeSync);
 
   resolveActiveSync();
   await vi.waitFor(() => {
@@ -1006,8 +1011,8 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
   });
 
   expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
-  expect(handle.forkSharedSyncPromise).toBeNull();
-  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+  expect(getHandleForkSharedSync(handle as never)).toBeNull();
+  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBeNull();
 });
 
 test("queued no-target fork-shared OFD sync waits without replacing the active share promise", async () => {
@@ -1018,6 +1023,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   let resolveActiveSync!: () => void;
@@ -1034,9 +1040,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: activeSync,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -1058,6 +1062,7 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
       kernel_attach_runtime_state: vi.fn(),
     },
   };
+  setKernelShareForkSharedSync(handle.kernelShare as never, activeSync);
   handle.kernelShare.members.add(handle);
   handle.kernelShare.members.add({
     pid: 0,
@@ -1099,8 +1104,8 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
   });
 
   expect(handled).toBe(true);
-  expect(handle.forkSharedSyncPromise).toBeNull();
-  expect(handle.kernelShare.forkSharedSyncPromise).toBe(activeSync);
+  expect(getHandleForkSharedSync(handle as never)).toBeNull();
+  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBe(activeSync);
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   await vi.waitFor(() => {
     expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
@@ -1123,8 +1128,8 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
   await vi.waitFor(() => {
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
-  expect(handle.forkSharedSyncPromise).toBeNull();
-  expect(handle.kernelShare.forkSharedSyncPromise).toBe(activeSync);
+  expect(getHandleForkSharedSync(handle as never)).toBeNull();
+  expect(getKernelShareForkSharedSync(handle.kernelShare as never)).toBe(activeSync);
 });
 
 test("fork-shared-only pipe effects sync when the source holds tracked shared state", async () => {
@@ -1135,6 +1140,7 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -1146,9 +1152,7 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set([1]),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -1215,6 +1219,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const order: string[] = [];
@@ -1227,9 +1232,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: true,
     kernelState: makeKernelState(),
     kernel: {
@@ -1322,6 +1325,7 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const handle = {
@@ -1333,9 +1337,7 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
@@ -1401,6 +1403,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     generation: 1,
     waitingInWorkerStatus: null,
   };
+  seedThreadIdentity(thread);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const supervisorVforkChildOwnerMismatch = vi.fn(() => 1);
@@ -1413,9 +1416,7 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     vforkSnapshot: {
       vmPtr: 0x1234,

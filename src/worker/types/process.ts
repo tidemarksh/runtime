@@ -145,7 +145,6 @@ export interface ProcessHandle {
   lastSupervisorFsControlSeq?: bigint;
   lastSupervisorSignalControlSeq?: bigint;
   pendingPipeSlotSnapshots: KernelWorkerPipeSlotSnapshot[];
-  forkSharedSyncPromise: Promise<void> | null;
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
   processMemfsDeletedPaths?: Set<string>;
@@ -178,7 +177,6 @@ export interface KernelShareGroup {
   members: Set<ProcessHandle>;
   sharedOfdIds: Set<number>;
   ofdSlotSnapshots: Map<number, Uint8Array>;
-  forkSharedSyncPromise: Promise<void> | null;
 }
 
 export type KernelSyncHandle = Pick<

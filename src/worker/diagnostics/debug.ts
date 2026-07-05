@@ -29,6 +29,10 @@ import {
 } from "../ownership/ofd-metadata.js";
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import {
+  getHandleForkSharedSync,
+  getKernelShareForkSharedSync,
+} from "../fork-shared-sync-state.js";
+import {
   getThreadGeneration,
   getThreadOwnerAsyncStatus,
   getThreadOwnerPid,
@@ -1636,7 +1640,7 @@ export function debugRuntimeProcessHandles(
           `running=${handle.runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
           `pipe_sync=${runtimeStateSyncInFlight(handle, "pipe") ? 1 : 0}`,
-          `fork_sync=${handle.forkSharedSyncPromise === null ? 0 : 1}/${handle.kernelShare.forkSharedSyncPromise === null ? 0 : 1}`,
+          `fork_sync=${getHandleForkSharedSync(handle) === null ? 0 : 1}/${getKernelShareForkSharedSync(handle.kernelShare) === null ? 0 : 1}`,
           `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
           `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
           `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,

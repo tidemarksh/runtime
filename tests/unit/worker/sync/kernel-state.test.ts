@@ -1,6 +1,11 @@
 import { expect, test, vi } from "vite-plus/test";
 import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
 import {
+  getHandleForkSharedSync,
+  getKernelShareForkSharedSync,
+  setActiveForkSharedSync,
+} from "../../../../src/worker/fork-shared-sync-state.js";
+import {
   adoptKernelState,
   adoptKernelStateForHandle,
   syncBlockedForkSharedStateViaKernelWorker,
@@ -515,7 +520,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       members: new Set<ProcessHandle>(),
       sharedOfdIds: new Set<number>(),
       ofdSlotSnapshots: new Map<number, Uint8Array>(),
-      forkSharedSyncPromise: null,
     },
     stdinQueue: [],
     stdinFlushPromise: null,
@@ -555,7 +559,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     }]]),
     pendingChildSpawnRecords: 0,
     pendingPipeSlotSnapshots: [],
-    forkSharedSyncPromise: null,
     processMemfsDirty: false,
     regularFileOfdOffsets: new Map(),
     ofdSyncPromise: null,
@@ -846,8 +849,7 @@ test("blocked fork-shared sync clears a stale active sync before waiting", async
     targetPids: [],
   });
   handle.kernel.thread_process_ptr = vi.fn((vmPtr: number) => (vmPtr === 0xdead ? 0 : 0x1000));
-  handle.forkSharedSyncPromise = staleSync;
-  handle.kernelShare.forkSharedSyncPromise = staleSync;
+  setActiveForkSharedSync(handle, staleSync);
 
   const result = await Promise.race([
     syncBlockedForkSharedStateViaKernelWorker(
@@ -859,8 +861,8 @@ test("blocked fork-shared sync clears a stale active sync before waiting", async
   ]);
 
   expect(result).toBe("done");
-  expect(handle.forkSharedSyncPromise).toBeNull();
-  expect(handle.kernelShare.forkSharedSyncPromise).toBeNull();
+  expect(getHandleForkSharedSync(handle)).toBeNull();
+  expect(getKernelShareForkSharedSync(handle.kernelShare)).toBeNull();
 });
 
 test("blocked fork-shared sync registers its active gate for stale-source clearing", async () => {

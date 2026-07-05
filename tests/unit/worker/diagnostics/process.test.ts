@@ -153,11 +153,9 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     },
     kernelShare: {
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
     networkConnections: new Map(),
     networkClosedFds: new Set(),
-    forkSharedSyncPromise: null,
     vforkSnapshot: null,
     stdinPipe: 0,
     stdoutPipe: 1,

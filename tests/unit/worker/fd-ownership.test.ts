@@ -512,7 +512,6 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
       members: new Set(),
       sharedOfdIds: new Set<number>(),
       ofdSlotSnapshots: new Map(),
-      forkSharedSyncPromise: null,
     },
     stdinQueue: [],
     outputBacklog: [],

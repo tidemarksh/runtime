@@ -64,6 +64,11 @@ import {
   describeForkSharedSyncPromise,
   registerForkSharedSyncPromise,
 } from "../fork-shared-sync-debug.js";
+import {
+  clearForkSharedSyncIfCurrent,
+  getActiveForkSharedSync,
+  setActiveForkSharedSync,
+} from "../fork-shared-sync-state.js";
 import { isBlockedRpcPending } from "../host-blocked-state.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
@@ -113,7 +118,7 @@ export function requestOwnedForkSharedStateSync(
   deps: OwnedForkSharedStateSyncDeps,
 ): Promise<void> {
   const otherMembers = kernelShareOtherMembers(handle);
-  const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
+  const activeSync = getActiveForkSharedSync(handle);
   const syncForkSharedState = deps.syncForkSharedStateViaKernelWorker ?? syncForkSharedStateViaKernelWorker;
   const syncTargetIsUsable = (member: ProcessHandle): boolean => {
     if (!Number.isFinite(member.pid) || member.pid <= 0) {
@@ -180,12 +185,7 @@ export function requestOwnedForkSharedStateSync(
         handle.runtimeId,
         `fork-shared-sync-settled:${describeForkSharedSyncPromise(promise)}`,
       );
-      if (handle.forkSharedSyncPromise === promise) {
-        handle.forkSharedSyncPromise = null;
-      }
-      if (handle.kernelShare.forkSharedSyncPromise === promise) {
-        handle.kernelShare.forkSharedSyncPromise = null;
-      }
+      clearForkSharedSyncIfCurrent(handle, promise);
     });
     const syncId = registerForkSharedSyncPromise(promise, {
       ownerPid: handle.pid,
@@ -198,8 +198,7 @@ export function requestOwnedForkSharedStateSync(
       `fork-shared-sync-start:id=${syncId}:owner=${handle.pid}:src=0x${sourceVmPtr.toString(16)}`
         + `:targets=${targets.map((target) => target.pid).join(".") || "none"}`,
     );
-    handle.forkSharedSyncPromise = promise;
-    handle.kernelShare.forkSharedSyncPromise = promise;
+    setActiveForkSharedSync(handle, promise);
     return promise;
   };
 
@@ -222,12 +221,7 @@ export function requestOwnedForkSharedStateSync(
           handle.runtimeId,
           `fork-shared-sync-queue-settled:${describeForkSharedSyncPromise(queuedSync)}`,
         );
-        if (handle.forkSharedSyncPromise === queuedSync) {
-          handle.forkSharedSyncPromise = null;
-        }
-        if (handle.kernelShare.forkSharedSyncPromise === queuedSync) {
-          handle.kernelShare.forkSharedSyncPromise = null;
-        }
+        clearForkSharedSyncIfCurrent(handle, queuedSync);
       });
     registerForkSharedSyncPromise(queuedSync, {
       ownerPid: handle.pid,
@@ -235,8 +229,7 @@ export function requestOwnedForkSharedStateSync(
       reason: "queued-owned-ofd",
       targetPids: otherMembers.map((target) => target.pid),
     });
-    handle.forkSharedSyncPromise = queuedSync;
-    handle.kernelShare.forkSharedSyncPromise = queuedSync;
+    setActiveForkSharedSync(handle, queuedSync);
     return queuedSync;
   }
 
@@ -571,7 +564,7 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   cause: SyncCause,
 ): Promise<void> {
   void requireKernelWorkerOwnership(handle, "syncBlockedForkSharedStateViaKernelWorker");
-  const activeSync = handle.kernelShare.forkSharedSyncPromise ?? handle.forkSharedSyncPromise;
+  const activeSync = getActiveForkSharedSync(handle);
   if (activeSync !== null) {
     const staleGate = clearStaleForkSharedSyncGate(handle, activeSync);
     if (staleGate === null) {
@@ -597,12 +590,7 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
       sourceVmPtr,
     },
   ).finally(() => {
-    if (handle.forkSharedSyncPromise === syncPromise) {
-      handle.forkSharedSyncPromise = null;
-    }
-    if (handle.kernelShare.forkSharedSyncPromise === syncPromise) {
-      handle.kernelShare.forkSharedSyncPromise = null;
-    }
+    clearForkSharedSyncIfCurrent(handle, syncPromise);
   });
   registerForkSharedSyncPromise(syncPromise, {
     ownerPid: handle.pid,
@@ -610,7 +598,6 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
     reason: "blocked-rpc",
     targetPids: syncTargets.map((target) => target.pid),
   });
-  handle.forkSharedSyncPromise = syncPromise;
-  handle.kernelShare.forkSharedSyncPromise = syncPromise;
+  setActiveForkSharedSync(handle, syncPromise);
   await syncPromise;
 }

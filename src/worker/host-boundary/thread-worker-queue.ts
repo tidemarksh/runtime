@@ -6,6 +6,10 @@ import {
 import { publishRuntimeBridgeEpoch } from "../../bridge/runtime-state.js";
 import { createSupervisorResumeHostBoundary } from "./supervisor-resume.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
+import {
+  clearForkSharedSyncIfCurrent,
+  getKernelShareForkSharedSync,
+} from "../fork-shared-sync-state.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
@@ -139,12 +143,7 @@ export function createWorkerSchedulerQueueHelpers(
       if (observedForkSharedSyncGates.get(handle) === promise) {
         observedForkSharedSyncGates.delete(handle);
       }
-      if (handle.kernelShare.forkSharedSyncPromise === promise) {
-        handle.kernelShare.forkSharedSyncPromise = null;
-      }
-      if (handle.forkSharedSyncPromise === promise) {
-        handle.forkSharedSyncPromise = null;
-      }
+      clearForkSharedSyncIfCurrent(handle, promise);
       pumpProcess(handle);
     };
     promise.then(onSettled, onSettled);
@@ -435,7 +434,7 @@ export function createWorkerSchedulerQueueHelpers(
     if (handle.exitInProgress) {
       return;
     }
-    const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
+    const forkSharedSyncPromise = getKernelShareForkSharedSync(handle.kernelShare);
     if (forkSharedSyncPromise !== null) {
       const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
       if (staleGate !== null) {

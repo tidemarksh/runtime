@@ -124,7 +124,6 @@ function makeHandle(
     kernelShare: {
       members: new Set(),
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
     ...overrides,
   } as unknown as ProcessHandle;

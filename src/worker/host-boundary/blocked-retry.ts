@@ -60,6 +60,7 @@ import {
   setBlockedRpcPending,
   setLastPipeRetryLifecycleEvent,
 } from "../host-blocked-state.js";
+import { getKernelShareForkSharedSync } from "../fork-shared-sync-state.js";
 
 export interface BlockedRetryCoordinator {
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
@@ -474,7 +475,7 @@ export function createBlockedRetryCoordinator(
     worker: Worker,
     blocked: HostBlockedWorkerState,
   ): void {
-    const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
+    const forkSharedSyncPromise = getKernelShareForkSharedSync(handle.kernelShare);
     if (forkSharedSyncPromise !== null) {
       const staleGate = clearStaleForkSharedSyncGate(handle, forkSharedSyncPromise);
       if (staleGate !== null) {
@@ -654,7 +655,7 @@ export function createBlockedRetryCoordinator(
     if (hasPendingCloneChildInitResume(handle)) {
       flags.push("thread-init-pending");
     }
-    if (handle.kernelShare.forkSharedSyncPromise !== null) {
+    if (getKernelShareForkSharedSync(handle.kernelShare) !== null) {
       flags.push("fork-shared-sync-pending");
     }
     if (handle.runningWorker !== null) {
@@ -912,7 +913,7 @@ export function createBlockedRetryCoordinator(
         resumeWait4BlockedWorker(handle, worker, blocked);
         return "done";
       case "defer-fork-shared-sync": {
-        const forkSharedSyncPromise = handle.kernelShare.forkSharedSyncPromise;
+        const forkSharedSyncPromise = getKernelShareForkSharedSync(handle.kernelShare);
         if (forkSharedSyncPromise === null) {
           return "retry";
         }

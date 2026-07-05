@@ -25,7 +25,6 @@ export function createKernelShareGroup(): KernelShareGroup {
     members: new Set(),
     sharedOfdIds: new Set(),
     ofdSlotSnapshots: new Map(),
-    forkSharedSyncPromise: null,
   };
 }
 

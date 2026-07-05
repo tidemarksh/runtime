@@ -1123,7 +1123,6 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
     hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
-    forkSharedSyncPromise: null,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -1248,7 +1247,6 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
     hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
-    forkSharedSyncPromise: null,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -1365,7 +1363,6 @@ test("status handler skips explicit fork-shared effects when no peer exists", as
     hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
-    forkSharedSyncPromise: null,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),

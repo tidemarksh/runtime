@@ -11,6 +11,7 @@ import {
   beginBlockedRpc as beginHostBlockedRpc,
   finishBlockedRpc as finishHostBlockedRpc,
 } from "../host-blocked-state.js";
+import { clearForkSharedSyncIfCurrent } from "../fork-shared-sync-state.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -77,12 +78,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     }
     observedForkSharedSyncPromises.add(promise);
     const onSettled = (): void => {
-      if (handle.kernelShare.forkSharedSyncPromise === promise) {
-        handle.kernelShare.forkSharedSyncPromise = null;
-      }
-      if (handle.forkSharedSyncPromise === promise) {
-        handle.forkSharedSyncPromise = null;
-      }
+      clearForkSharedSyncIfCurrent(handle, promise);
       const blocked = handle.hostBlockedWorkers.get(worker);
       if (!blocked) {
         return;
