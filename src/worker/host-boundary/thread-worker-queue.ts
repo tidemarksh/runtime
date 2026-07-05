@@ -26,8 +26,11 @@ import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import {
+  clearThreadRunningGeneration,
   getThreadOwnerAsyncStatus,
+  getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  setThreadRunningGeneration,
 } from "../thread-host-state.js";
 import {
   getThreadActivityState,
@@ -150,13 +153,13 @@ export function createWorkerSchedulerQueueHelpers(
     if (
       handle.workers.has(runningWorker)
       && thread
-      && (thread.runningGeneration ?? thread.generation) === thread.generation
+      && (getThreadRunningGeneration(thread) ?? thread.generation) === thread.generation
     ) {
       return runningWorker;
     }
     handle.runningWorker = null;
     if (thread) {
-      thread.runningGeneration = null;
+      clearThreadRunningGeneration(thread);
     }
     deps.appendWorkerDebugLog(handle, "running-worker-cleared:stale");
     return null;
@@ -255,7 +258,6 @@ export function createWorkerSchedulerQueueHelpers(
       vmPtr,
       ownerPid: handle.pid,
       generation,
-      runningGeneration: null,
       reinitCount: reinitWithinHandle ? (existingThread?.reinitCount ?? 0) + 1 : 0,
       initialized: false,
     };
@@ -479,7 +481,7 @@ export function createWorkerSchedulerQueueHelpers(
       reconcileKernelSharePipeControl(handle);
       const activity = getThreadActivityState(thread);
       activity.stepCount += 1;
-      thread.runningGeneration = thread.generation;
+      setThreadRunningGeneration(thread, thread.generation);
       activity.totalStepBudget += stepBudget;
       activity.lastStepAtMs = Date.now();
       activity.lastStepProcessPtr = handle.kernel.thread_process_ptr(vmPtr);

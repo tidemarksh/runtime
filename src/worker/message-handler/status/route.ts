@@ -49,6 +49,8 @@ import {
 import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
 import { applyStatusFdEntries } from "./fd-entries.js";
 import {
+  clearThreadRunningGeneration,
+  getThreadRunningGeneration,
   clearThreadWaitingInWorkerStatus,
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
@@ -106,9 +108,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       return;
     }
     if (msg.generation !== undefined && msg.generation !== thread.generation) {
-      if (handle.runningWorker === worker && thread.runningGeneration === msg.generation) {
+      if (handle.runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
         handle.runningWorker = null;
-        thread.runningGeneration = null;
+        clearThreadRunningGeneration(thread);
       }
       deps.appendWorkerDebugLog(
         handle,
@@ -209,7 +211,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       futexBlockedAddr: msg.futexBlockedAddr ?? null,
       atMs: statusAtMs,
     });
-    if (thread.runningGeneration === msg.generation && activity.lastStepAtMs !== null) {
+    if (getThreadRunningGeneration(thread) === msg.generation && activity.lastStepAtMs !== null) {
       const stepWallMs = Math.max(0, statusAtMs - activity.lastStepAtMs);
       activity.lastStepDurationMs = stepWallMs;
       activity.totalStepWallMs += stepWallMs;
@@ -397,7 +399,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
     if (isRunningWorker) {
       handle.runningWorker = null;
-      thread.runningGeneration = null;
+      clearThreadRunningGeneration(thread);
       recordWorkerMessageDebugEvent(
         handle.workerMessageDebugStats,
         "statusClearedRunning",

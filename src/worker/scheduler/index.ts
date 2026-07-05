@@ -32,6 +32,7 @@ import type {
   HostBlockedWorkerState,
   ProcessHandle,
 } from "../types.js";
+import { clearThreadRunningGeneration } from "../thread-host-state.js";
 import type {
   WorkerScheduler,
   WorkerSchedulerDeps,
@@ -178,7 +179,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
     const thread = threadWorkerStates.get(worker);
     if (thread !== undefined && thread.vmPtr === vmPtr) {
-      thread.runningGeneration = null;
+      clearThreadRunningGeneration(thread);
     }
     appendWorkerDebugLog(
       handle,

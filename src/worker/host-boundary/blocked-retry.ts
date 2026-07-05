@@ -47,6 +47,7 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import {
+  clearThreadRunningGeneration,
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
   setThreadOwnerAsyncStatus,
@@ -594,7 +595,7 @@ export function createBlockedRetryCoordinator(
       }
       const thread = deps.threadWorkerStates.get(worker);
       if (thread !== undefined && thread.vmPtr === vmPtr) {
-        thread.runningGeneration = null;
+        clearThreadRunningGeneration(thread);
       }
       deps.appendWorkerDebugLog(
         handle,

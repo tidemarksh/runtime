@@ -1,6 +1,9 @@
 import { expect, test, vi } from "vite-plus/test";
 import { handleOwnerAsyncStatusReturn } from "../../../../src/worker/message-handler/status/owner-async.js";
-import { getThreadOwnerAsyncStatus } from "../../../../src/worker/thread-host-state.js";
+import {
+  getThreadOwnerAsyncStatus,
+  getThreadRunningGeneration,
+} from "../../../../src/worker/thread-host-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { makeHandle, makeKernel, makeStatusMessage, makeThreadState } from "./helpers.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
@@ -39,7 +42,7 @@ test("owner-async status return clears the running generation and records the st
 
   expect(handled).toBe(true);
   expect(handle.runningWorker).toBe(null);
-  expect(thread.runningGeneration).toBe(null);
+  expect(getThreadRunningGeneration(thread)).toBe(null);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -295,7 +298,7 @@ test("owner-async STATUS_FS from an unanswered running step routes to transition
 
   expect(handled).toBe(false);
   expect(handle.runningWorker).toBe(worker);
-  expect(thread.runningGeneration).toBe(1);
+  expect(getThreadRunningGeneration(thread)).toBe(1);
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -339,7 +342,7 @@ test("owner-async STATUS_FS from an unanswered non-running step routes to transi
 
   expect(handled).toBe(false);
   expect(handle.runningWorker).toBe(otherWorker);
-  expect(thread.runningGeneration).toBe(1);
+  expect(getThreadRunningGeneration(thread)).toBe(1);
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -381,7 +384,7 @@ test("owner-async generationless STATUS_FS from an unanswered step routes to tra
 
   expect(handled).toBe(false);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.runningGeneration).toBeNull();
+  expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -424,7 +427,7 @@ test("owner-async STATUS_OK from an unanswered step routes to transition", () =>
 
   expect(handled).toBe(false);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.runningGeneration).toBeNull();
+  expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -501,7 +504,7 @@ test("owner-async STATUS_OK return completes a supervisor-selected faulted proce
 
   expect(handled).toBe(true);
   expect(handle.runningWorker).toBeNull();
-  expect(thread.runningGeneration).toBeNull();
+  expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(completeProcessExit).toHaveBeenCalledWith(handle, 13, 0, 0x1234);
   expect(failProcess).not.toHaveBeenCalled();
@@ -548,6 +551,6 @@ test("owner-async status return does not consume a fault from resumed guest exec
 
   expect(handled).toBe(false);
   expect(handle.runningWorker).toBe(worker);
-  expect(thread.runningGeneration).toBe(1);
+  expect(getThreadRunningGeneration(thread)).toBe(1);
   expect(appendWorkerDebugLog).not.toHaveBeenCalled();
 });

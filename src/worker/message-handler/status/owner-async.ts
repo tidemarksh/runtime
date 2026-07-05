@@ -15,7 +15,9 @@ import {
   supervisorFaultExitKindProcessExit,
 } from "../../supervisor-shadow.js";
 import {
+  clearThreadRunningGeneration,
   clearThreadOwnerAsyncStatus,
+  getThreadRunningGeneration,
   getThreadOwnerAsyncStatus,
 } from "../../thread-host-state.js";
 import { getThreadActivityState } from "../../thread-activity-state.js";
@@ -66,7 +68,7 @@ function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
     handle.runningWorker = null;
   }
   clearThreadOwnerAsyncStatus(thread);
-  thread.runningGeneration = null;
+  clearThreadRunningGeneration(thread);
 
   const exitCode = supervisorExitDecision.exitCode;
   const termSignal = supervisorExitDecision.termSignal;
@@ -117,7 +119,7 @@ export function handleOwnerAsyncStatusReturn(args: {
   }
   const fsStatus = handle.kernel.abi_status_fs?.();
   const generationMatches = msg.generation === undefined
-    || thread.runningGeneration === msg.generation;
+    || getThreadRunningGeneration(thread) === msg.generation;
   const activity = getThreadActivityState(thread);
   if (
     fsStatus !== undefined
@@ -158,9 +160,9 @@ export function handleOwnerAsyncStatusReturn(args: {
     );
     return false;
   }
-  if (handle.runningWorker === worker && thread.runningGeneration === msg.generation) {
+  if (handle.runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
     handle.runningWorker = null;
-    thread.runningGeneration = null;
+    clearThreadRunningGeneration(thread);
   }
   const blocked = handle.hostBlockedWorkers.get(worker);
   if (

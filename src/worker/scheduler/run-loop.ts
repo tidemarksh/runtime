@@ -6,6 +6,7 @@ import type {
 import {
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
+import { clearThreadRunningGeneration } from "../thread-host-state.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -104,7 +105,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       handle.runningWorker = null;
       const detachedThread = deps.threadWorkerStates.get(runningWorker);
       if (detachedThread) {
-        detachedThread.runningGeneration = null;
+        clearThreadRunningGeneration(detachedThread);
       }
       return true;
     }

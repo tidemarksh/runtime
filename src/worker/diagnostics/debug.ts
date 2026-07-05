@@ -30,6 +30,7 @@ import {
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import {
   getThreadOwnerAsyncStatus,
+  getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
@@ -283,7 +284,7 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `owner=${ownerState}`,
     `ownerPid=${state.ownerPid}`,
     `gen=${state.generation}`,
-    `runGen=${state.runningGeneration ?? "null"}`,
+    `runGen=${getThreadRunningGeneration(state) ?? "null"}`,
     `init=${state.initialized ? 1 : 0}`,
     `wait=${waitingInWorkerStatus ?? "null"}`,
     `async=${ownerAsyncStatus ?? "null"}`,

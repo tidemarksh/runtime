@@ -26,6 +26,7 @@ import {
   supervisorBlockedWaitStatusMatchesSocketWait,
 } from "../../../supervisor-blocked-resume.js";
 import {
+  clearThreadRunningGeneration,
   clearThreadWaitingInWorkerStatus,
   setThreadWaitingInWorkerStatus,
 } from "../../thread-host-state.js";
@@ -81,7 +82,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       }
       if (isRunningWorker) {
         handle.runningWorker = null;
-        thread.runningGeneration = null;
+        clearThreadRunningGeneration(thread);
       }
       deps.parkSupervisorFutexWait(
         handle,
@@ -100,7 +101,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     setThreadWaitingInWorkerStatus(thread, msg.status);
     if (isRunningWorker) {
       handle.runningWorker = null;
-      thread.runningGeneration = null;
+      clearThreadRunningGeneration(thread);
     }
     if (
       handle.vforkSnapshot !== null

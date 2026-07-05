@@ -4,6 +4,7 @@ interface ThreadHostGateState {
   ownerAsyncStatus: number | null;
   waitingInWorkerStatus: number | null;
   resumeWorkersOnReady: Worker[];
+  runningGeneration: number | null;
 }
 
 const threadHostGateStates = new WeakMap<ThreadWorkerState, ThreadHostGateState>();
@@ -15,6 +16,7 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
       ownerAsyncStatus: null,
       waitingInWorkerStatus: null,
       resumeWorkersOnReady: [],
+      runningGeneration: null,
     };
     threadHostGateStates.set(thread, state);
   }
@@ -26,6 +28,7 @@ function clearIfIdle(thread: ThreadWorkerState, state: ThreadHostGateState): voi
     state.ownerAsyncStatus === null
     && state.waitingInWorkerStatus === null
     && state.resumeWorkersOnReady.length === 0
+    && state.runningGeneration === null
   ) {
     threadHostGateStates.delete(thread);
   }
@@ -124,6 +127,30 @@ export function snapshotThreadResumeWorkersOnReady(
   return thread === null || thread === undefined
     ? []
     : threadHostGateStates.get(thread)?.resumeWorkersOnReady.slice() ?? [];
+}
+
+export function getThreadRunningGeneration(
+  thread: ThreadWorkerState | null | undefined,
+): number | null {
+  return thread === null || thread === undefined
+    ? null
+    : threadHostGateStates.get(thread)?.runningGeneration ?? null;
+}
+
+export function setThreadRunningGeneration(
+  thread: ThreadWorkerState,
+  generation: number,
+): void {
+  hostGateState(thread).runningGeneration = generation;
+}
+
+export function clearThreadRunningGeneration(thread: ThreadWorkerState): void {
+  const state = threadHostGateStates.get(thread);
+  if (!state) {
+    return;
+  }
+  state.runningGeneration = null;
+  clearIfIdle(thread, state);
 }
 
 export function clearThreadHostGateState(thread: ThreadWorkerState): void {

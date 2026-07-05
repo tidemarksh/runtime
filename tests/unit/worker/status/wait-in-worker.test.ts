@@ -1,7 +1,11 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
-import { getThreadWaitingInWorkerStatus } from "../../../../src/worker/thread-host-state.js";
+import {
+  getThreadRunningGeneration,
+  getThreadWaitingInWorkerStatus,
+  setThreadRunningGeneration,
+} from "../../../../src/worker/thread-host-state.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 test("waitInWorker debug log keeps compact futex fields", () => {
@@ -298,8 +302,8 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     ownerPid: 17,
     initialized: true,
     waitingInWorkerStatus: null as number | null,
-    runningGeneration: 12 as number | null,
   };
+  setThreadRunningGeneration(thread as never, 12);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
   const blockWorker = vi.fn();
@@ -393,7 +397,7 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
   );
 
   expect(handle.runningWorker).toBeNull();
-  expect(thread.runningGeneration).toBeNull();
+  expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(blockWorker).toHaveBeenCalledWith(handle, worker, 20, 0x4321);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);

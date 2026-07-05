@@ -3,7 +3,9 @@ import { writePipe } from "../../../../src/bridge/pipe.js";
 import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
 import {
+  clearThreadRunningGeneration,
   setThreadOwnerAsyncStatus,
+  setThreadRunningGeneration,
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
@@ -103,6 +105,7 @@ function installSupervisorFaultExitDecision(
 function makeThreadState(overrides: Record<string, unknown> = {}) {
   const {
     ownerAsyncStatus,
+    runningGeneration = null,
     waitingInWorkerStatus,
     ...rest
   } = overrides;
@@ -134,6 +137,11 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     ...rest,
   };
   Object.assign(getThreadActivityState(thread as never), rest);
+  if (typeof runningGeneration === "number") {
+    setThreadRunningGeneration(thread as never, runningGeneration);
+  } else {
+    clearThreadRunningGeneration(thread as never);
+  }
   if (typeof ownerAsyncStatus === "number") {
     setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
   }
@@ -259,7 +267,7 @@ test("status handler logs futex resume with compact debug fields", () => {
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   const thread = makeThreadState({
     waitingInWorkerStatus: 20,
-    runningGeneration: undefined,
+    runningGeneration: 1,
     lastStepAtMs: 100,
   });
   threadWorkerStates.set(worker, thread);
@@ -337,6 +345,7 @@ test("status handler logs futex resume with compact debug fields", () => {
     worker,
     {
       type: "status",
+      generation: 1,
       status: 0,
       vmPtr: 0x1234,
       exitCode: 0,

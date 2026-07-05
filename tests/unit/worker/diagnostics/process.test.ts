@@ -3,6 +3,7 @@ import type { KernelExports } from "../../../../src/abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
+import { setThreadRunningGeneration } from "../../../../src/worker/thread-host-state.js";
 
 function makeDiagnosticsKernel(overrides: Partial<KernelExports> = {}): KernelExports {
   return new Proxy(overrides, {
@@ -131,6 +132,7 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStepPc: 0x1234n,
     lastStatusPc: 0x5678n,
   });
+  setThreadRunningGeneration(thread, 3);
   const handle = {
     pid: 1,
     runtimeId: 7,

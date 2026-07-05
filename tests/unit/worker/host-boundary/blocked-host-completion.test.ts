@@ -4,7 +4,10 @@ import {
 } from "../../../../src/thread-worker/blocking.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
 import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
-import { getThreadWaitingInWorkerStatus } from "../../../../src/worker/thread-host-state.js";
+import {
+  getThreadRunningGeneration,
+  getThreadWaitingInWorkerStatus,
+} from "../../../../src/worker/thread-host-state.js";
 import {
   armSupervisorHostTimer,
   drainSupervisorArmHostTimerHostOp,
@@ -267,7 +270,7 @@ test("host boundary arms supervisor timer for wait-in-worker futex waits", async
   );
 
   expect(handle.runningWorker).toBeNull();
-  expect(thread.runningGeneration).toBeNull();
+  expect(getThreadRunningGeneration(thread)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(parkSupervisorFutexWait).toHaveBeenCalledWith(
     handle,

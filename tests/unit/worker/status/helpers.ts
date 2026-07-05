@@ -1,6 +1,8 @@
 import type { KernelExports } from "../../../../src/abi.js";
 import {
+  clearThreadRunningGeneration,
   setThreadOwnerAsyncStatus,
+  setThreadRunningGeneration,
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
@@ -144,6 +146,7 @@ export function makeStatusMessage(overrides: Record<string, unknown> = {}) {
 export function makeThreadState(overrides: Record<string, unknown> = {}) {
   const {
     ownerAsyncStatus,
+    runningGeneration = 1,
     waitingInWorkerStatus,
     ...rest
   } = overrides;
@@ -151,13 +154,17 @@ export function makeThreadState(overrides: Record<string, unknown> = {}) {
     vmPtr: 0x1234,
     ownerPid: 7,
     generation: 1,
-    runningGeneration: 1,
     initialized: true,
     statusCount: 0,
     statusCounts: {},
     ...rest,
   };
   Object.assign(getThreadActivityState(thread as never), rest);
+  if (typeof runningGeneration === "number") {
+    setThreadRunningGeneration(thread as never, runningGeneration);
+  } else {
+    clearThreadRunningGeneration(thread as never);
+  }
   if (typeof ownerAsyncStatus === "number") {
     setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
   }
