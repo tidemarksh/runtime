@@ -21,6 +21,12 @@ import {
 } from "../thread-host-state.js";
 import { maybeThreadActivityState } from "../thread-activity-state.js";
 import { pendingGuestMemoryWritesForNextStepCount } from "../thread-step-payload.js";
+import {
+  getLastPipeRetryLifecycleEvent,
+  getLastWait4RetryLifecycleEvent,
+  setLastPipeRetryLifecycleEvent,
+  setLastWait4RetryLifecycleEvent,
+} from "../host-blocked-state.js";
 
 export interface BlockedWaitDiagnosticsDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -303,15 +309,15 @@ export function createBlockedWaitDiagnostics(
     }
     const event = parts.join(":");
     if (status === handle.kernel.abi_status_pipe_wait()) {
-      if (blocked.lastPipeRetryLifecycleEvent === event) {
+      if (getLastPipeRetryLifecycleEvent(blocked) === event) {
         return;
       }
-      blocked.lastPipeRetryLifecycleEvent = event;
+      setLastPipeRetryLifecycleEvent(blocked, event);
     } else {
-      if (blocked.lastWait4RetryLifecycleEvent === event) {
+      if (getLastWait4RetryLifecycleEvent(blocked) === event) {
         return;
       }
-      blocked.lastWait4RetryLifecycleEvent = event;
+      setLastWait4RetryLifecycleEvent(blocked, event);
     }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
   }

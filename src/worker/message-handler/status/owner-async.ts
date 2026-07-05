@@ -21,6 +21,7 @@ import {
   getThreadOwnerAsyncStatus,
 } from "../../thread-host-state.js";
 import { getThreadActivityState } from "../../thread-activity-state.js";
+import { isBlockedRpcPending } from "../../host-blocked-state.js";
 
 function completeFaultedProcessFromStaleOwnerAsyncOk(args: {
   handle: ProcessHandle;
@@ -169,7 +170,7 @@ export function handleOwnerAsyncStatusReturn(args: {
     statusBelongsToHandle
     && blocked
     && blocked.vmPtr === thread.vmPtr
-    && blocked.rpcPending
+    && isBlockedRpcPending(blocked)
     && blocked.status !== msg.status
   ) {
     deps.clearBlockedWorker(handle, worker);

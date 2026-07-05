@@ -30,6 +30,7 @@ import {
   getRuntimeStateSyncPromise,
   setRuntimeStateSyncPromise,
 } from "../state-sync-inflight.js";
+import { isBlockedRpcPending } from "../host-blocked-state.js";
 import { getThreadWaitingInWorkerStatus } from "../thread-host-state.js";
 import {
   syncEpollStateViaKernelWorker,
@@ -127,13 +128,13 @@ export function createWorkerSchedulerStateSyncHelpers(
       for (const [blockedWorker, blocked] of member.hostBlockedWorkers) {
         if (supervisorBlockedWaitStatusMatchesWakeSource(member.kernel, blocked.status, wakeSource)) {
           if (supervisorBlockedStatusIsPipeWait(member.kernel, blocked.status)) {
-            if (blocked.rpcPending) {
+            if (isBlockedRpcPending(blocked)) {
               continue;
             }
             supervisorBlockedPipeSyncBeforeRetryClear(member.kernel, blocked.vmPtr);
           }
           if (supervisorBlockedStatusIsEpollWait(member.kernel, blocked.status)) {
-            if (blocked.rpcPending) {
+            if (isBlockedRpcPending(blocked)) {
               continue;
             }
             const vmPtr = typeof blocked.vmPtr === "number"

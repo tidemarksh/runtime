@@ -60,6 +60,7 @@ import {
   setThreadWaitingInWorkerStatus,
 } from "../../thread-host-state.js";
 import { appendPendingPipeSlotsForNextStep } from "../../thread-step-payload.js";
+import { isBlockedRpcPending } from "../../host-blocked-state.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -135,7 +136,7 @@ function formatFaultThreadSummary(handle: ProcessHandle, label: string, vmPtr: n
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
   for (const blocked of handle.hostBlockedWorkers.values()) {
-    if (blocked.rpcPending) {
+    if (isBlockedRpcPending(blocked)) {
       return true;
     }
   }

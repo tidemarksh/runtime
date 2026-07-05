@@ -21,6 +21,10 @@ import {
   supervisorOfdStatusFlags,
 } from "./ownership/ofd-metadata.js";
 import { supervisorProcessPipeSlotForFd } from "./ownership/pipe-slot.js";
+import {
+  invalidateBlockedRpc,
+  isBlockedRpcPending,
+} from "./host-blocked-state.js";
 
 interface WorkerExitDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -1522,7 +1526,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
 
   function invalidateBlockedParentRpcsForChildExit(parent: ProcessHandle, childPid: number): void {
     for (const blocked of parent.hostBlockedWorkers.values()) {
-      if (!blocked.rpcPending) {
+      if (!isBlockedRpcPending(blocked)) {
         continue;
       }
       if (
@@ -1531,8 +1535,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       ) {
         continue;
       }
-      blocked.rpcPending = false;
-      blocked.rpcGeneration += 1;
+      invalidateBlockedRpc(blocked);
       if (supervisorBlockedStatusIsPipeWait(parent.kernel, blocked.status)) {
         supervisorBlockedPipeSyncBeforeRetryClear(parent.kernel, blocked.vmPtr);
       }

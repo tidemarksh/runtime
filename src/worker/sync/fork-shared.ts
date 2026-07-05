@@ -64,6 +64,7 @@ import {
   describeForkSharedSyncPromise,
   registerForkSharedSyncPromise,
 } from "../fork-shared-sync-debug.js";
+import { isBlockedRpcPending } from "../host-blocked-state.js";
 import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPidBytesSnapshot,
@@ -81,7 +82,7 @@ function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
-  return [...handle.hostBlockedWorkers.values()].some((blocked) => blocked.rpcPending);
+  return [...handle.hostBlockedWorkers.values()].some((blocked) => isBlockedRpcPending(blocked));
 }
 
 function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {

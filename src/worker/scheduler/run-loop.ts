@@ -7,6 +7,10 @@ import {
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
 import { clearThreadRunningGeneration } from "../thread-host-state.js";
+import {
+  beginBlockedRpc as beginHostBlockedRpc,
+  finishBlockedRpc as finishHostBlockedRpc,
+} from "../host-blocked-state.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -43,9 +47,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
   const observedForkSharedSyncPromises = new WeakSet<Promise<void>>();
 
   function beginBlockedRpc(blocked: HostBlockedWorkerState): number {
-    blocked.rpcPending = true;
-    blocked.rpcGeneration += 1;
-    return blocked.rpcGeneration;
+    return beginHostBlockedRpc(blocked);
   }
 
   function finishBlockedRpc(
@@ -58,11 +60,10 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     if (
       !latestBlocked
       || latestBlocked.vmPtr !== vmPtr
-      || latestBlocked.rpcGeneration !== rpcGeneration
+      || !finishHostBlockedRpc(latestBlocked, rpcGeneration)
     ) {
       return null;
     }
-    latestBlocked.rpcPending = false;
     return latestBlocked;
   }
 

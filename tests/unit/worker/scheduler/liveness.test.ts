@@ -40,6 +40,12 @@ import {
   setPendingKernelStateForNextStep,
 } from "../../../../src/worker/thread-step-payload.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
+import {
+  getBlockedRpcGeneration,
+  isBlockedRpcPending,
+  setBlockedRpcGeneration,
+  setBlockedRpcPending,
+} from "../../../../src/worker/host-blocked-state.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -452,7 +458,7 @@ function makeHostBoundaryWait4ResumeOutcome() {
     handle.kernel.supervisor_resume_blocked_syscall?.(vmPtr, 0);
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (blocked && blocked.vmPtr === vmPtr) {
-      blocked.rpcPending = false;
+      setBlockedRpcPending(blocked, false);
     }
     return {
       kind: "completed" as const,
@@ -1035,14 +1041,12 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const enqueueWorker = vi.fn();
   const notifyWorkerStatusProgress = vi.fn(() => {
     const blocked = handle.hostBlockedWorkers.get(blockedWorker);
     if (blocked) {
-      blocked.rpcPending = true;
+      setBlockedRpcPending(blocked, true);
     }
   });
   const handleStatusTransition = createWorkerStatusTransitionHandler(makeStatusTransitionDeps(
@@ -1082,7 +1086,7 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
 
   const blocked = handle.hostBlockedWorkers.get(blockedWorker);
   expect(blocked).toBeDefined();
-  blocked!.rpcPending = false;
+  setBlockedRpcPending(blocked!, false);
   await vi.advanceTimersByTimeAsync(1);
 
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1441,8 +1445,6 @@ test("blocked retry delegates vfork process gate retry reason to kernel", () => 
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -2144,8 +2146,8 @@ test("kernel-worker blocked syscall retry requires outcome helper", () => {
   expect((failProcess.mock.calls[0]?.[1] as Error).message).toBe(
     "kernel-worker blocked syscall resume requires executeHostBlockedSyscallResumeOutcome",
   );
-  expect(handle.hostBlockedWorkers.get(worker)?.rpcPending).toBe(false);
-  expect(handle.hostBlockedWorkers.get(worker)?.rpcGeneration).toBe(0);
+  expect(isBlockedRpcPending(handle.hostBlockedWorkers.get(worker))).toBe(false);
+  expect(getBlockedRpcGeneration(handle.hostBlockedWorkers.get(worker))).toBe(0);
 });
 
 test("kernel-worker unsupported blocked status fails before terminal local resume", () => {
@@ -2265,15 +2267,15 @@ test("reblocking the same pipe wait preserves in-flight blocked rpc ownership", 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
   const blocked = handle.hostBlockedWorkers.get(worker);
   expect(blocked).toBeDefined();
-  blocked!.rpcPending = true;
-  blocked!.rpcGeneration = 7;
+  setBlockedRpcPending(blocked!, true);
+  setBlockedRpcGeneration(blocked!, 7);
   requestPipeSyncBeforeRetry(kernel, 0x1234);
 
   scheduler.blockWorker(handle, worker, handle.kernel.abi_status_pipe_wait(), 0x1234);
 
   const reblocked = handle.hostBlockedWorkers.get(worker);
-  expect(reblocked?.rpcPending).toBe(true);
-  expect(reblocked?.rpcGeneration).toBe(7);
+  expect(isBlockedRpcPending(reblocked)).toBe(true);
+  expect(getBlockedRpcGeneration(reblocked)).toBe(7);
   expect(pipeSyncBeforeRetryRequested(kernel, 0x1234)).toBe(true);
 });
 
@@ -3629,8 +3631,6 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3676,8 +3676,6 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3722,8 +3720,6 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -3975,8 +3971,6 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -4214,8 +4208,6 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -4261,8 +4253,6 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -4306,8 +4296,6 @@ test("epoll retry keeps active unanswered ok running worker", () => {
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const scheduler = createRunLoopScheduler({
     threadWorkerStates,
@@ -5140,8 +5128,6 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5199,8 +5185,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
   handle.hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5239,8 +5223,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   requestPipeSyncBeforeRetry(kernel, thread.vmPtr);
   requestPipeSyncBeforeRetry(kernel, thread.vmPtr);
@@ -5292,8 +5274,6 @@ test("blocked completion parks futex result as supervisor-owned worker state", a
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({
@@ -5385,8 +5365,6 @@ test("blocked completion arms supervisor timer instead of scheduling runtime ret
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const runtimeEvents: string[] = [];
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
@@ -5475,8 +5453,6 @@ test("blocked wait retry arms supervisor timer before runtime poll retry", () =>
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const runtimeEvents: string[] = [];
 
@@ -5672,8 +5648,6 @@ test("supervisor timer completion resumes the supervisor-selected runnable worke
   handle.hostBlockedWorkers.set(worker, {
     vmPtr: thread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
 
   const scheduler = createWorkerScheduler({

@@ -32,6 +32,13 @@ import {
   supervisorOfdOffset,
   supervisorOfdStatusFlags,
 } from "../ownership/ofd-metadata.js";
+import {
+  beginBlockedRpc as beginHostBlockedRpc,
+  finishBlockedRpc as finishHostBlockedRpc,
+  getBlockedRpcGeneration,
+  isPipeCanonicalEofReady,
+  setPipeCanonicalEofReady,
+} from "../host-blocked-state.js";
 
 export interface WorkerKernelRpcBlockedRpcDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -142,14 +149,14 @@ async function executeHostBlockedSyscallResume(
   const finishBlockedRpc = (): void => {
     const blocked = handle.hostBlockedWorkers.get(worker);
     if (
-      blocked
-      && blocked.vmPtr === vmPtr
-      && (rpcGeneration === null || blocked.rpcGeneration === rpcGeneration)
+      !blocked
+      || blocked.vmPtr !== vmPtr
+      || !finishHostBlockedRpc(blocked, rpcGeneration)
     ) {
-      blocked.rpcPending = false;
-      if (!preserveCanonicalEofReadyOnFinish) {
-        blocked.pipeCanonicalEofReady = false;
-      }
+      return;
+    }
+    if (!preserveCanonicalEofReadyOnFinish) {
+      setPipeCanonicalEofReady(blocked, false);
     }
   };
   try {
@@ -158,19 +165,17 @@ async function executeHostBlockedSyscallResume(
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-start:${handle.pid}:${blockedStatus}`);
     const blockedAtStart = handle.hostBlockedWorkers.get(worker);
     if (blockedAtStart && blockedAtStart.vmPtr === vmPtr) {
-      blockedAtStart.rpcPending = true;
-      blockedAtStart.rpcGeneration = (blockedAtStart.rpcGeneration ?? 0) + 1;
-      rpcGeneration = blockedAtStart.rpcGeneration;
+      rpcGeneration = beginHostBlockedRpc(blockedAtStart);
     } else {
       return;
     }
-    canonicalEofReadyAtStart = blockedAtStart.pipeCanonicalEofReady === true;
+    canonicalEofReadyAtStart = isPipeCanonicalEofReady(blockedAtStart);
     const isCurrentBlockedRpc = (): boolean => {
       const blocked = handle.hostBlockedWorkers.get(worker);
       return blocked !== undefined
         && blocked.vmPtr === vmPtr
         && rpcGeneration !== null
-        && blocked.rpcGeneration === rpcGeneration;
+        && getBlockedRpcGeneration(blocked) === rpcGeneration;
     };
     const abortIfStaleBlockedRpc = (): boolean => {
       if (isCurrentBlockedRpc()) {

@@ -9,6 +9,10 @@ import type {
   ProcessHandle,
   ThreadWorkerState,
 } from "../types.js";
+import {
+  beginBlockedRpc,
+  finishBlockedRpc,
+} from "../host-blocked-state.js";
 
 interface BlockedStatusTransitionDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
@@ -32,9 +36,7 @@ function blockedRpcSyncCause(status: number): SyncCause {
 }
 
 function beginStatusTransitionRpc(blocked: HostBlockedWorkerState): number {
-  blocked.rpcPending = true;
-  blocked.rpcGeneration += 1;
-  return blocked.rpcGeneration;
+  return beginBlockedRpc(blocked);
 }
 
 function finishStatusTransitionRpc(
@@ -47,9 +49,7 @@ function finishStatusTransitionRpc(
   if (!latestBlocked || latestBlocked.vmPtr !== vmPtr) {
     return null;
   }
-  if (latestBlocked.rpcGeneration === rpcGeneration) {
-    latestBlocked.rpcPending = false;
-  }
+  finishBlockedRpc(latestBlocked, rpcGeneration);
   return latestBlocked;
 }
 

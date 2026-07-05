@@ -12,6 +12,7 @@ import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
+import { finishBlockedRpc } from "../host-blocked-state.js";
 
 export function createWorkerKernelRpcWait4Helpers(
   deps: WorkerKernelRpcLifecycleDeps,
@@ -28,7 +29,7 @@ export function createWorkerKernelRpcWait4Helpers(
       if (!supervisorBlockedStatusIsWait4(handle.kernel, localStatus)) {
         const blocked = handle.hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
-          blocked.rpcPending = false;
+          finishBlockedRpc(blocked, null);
         }
         deps.appendWorkerDebugLog(
           handle,
@@ -51,7 +52,7 @@ export function createWorkerKernelRpcWait4Helpers(
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return { kind: "stale" };
       }
-      blocked.rpcPending = false;
+      finishBlockedRpc(blocked, null);
 
       if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
         return { kind: "process-gone" };
@@ -78,7 +79,7 @@ export function createWorkerKernelRpcWait4Helpers(
     } catch (error) {
       const blocked = handle.hostBlockedWorkers.get(worker);
       if (blocked && blocked.vmPtr === vmPtr) {
-        blocked.rpcPending = false;
+        finishBlockedRpc(blocked, null);
       }
       if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));

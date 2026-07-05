@@ -17,6 +17,7 @@ import type {
   HostBlockedWorkerState,
   ProcessHandle,
 } from "../types.js";
+import { getBlockedRpcGeneration } from "../host-blocked-state.js";
 
 export interface BlockedWaitTimersDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -79,7 +80,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     const status = handle.kernel.thread_status?.(vmPtr) ?? blocked.status;
     const result = submitSupervisorShadowStatusEvent(handle, {
       eventKind: supervisorThreadEventKindTimerFired(handle),
-      sequence: blocked.rpcGeneration,
+      sequence: getBlockedRpcGeneration(blocked),
       vmPtr,
       pid: handle.pid,
       tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,

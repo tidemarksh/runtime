@@ -2,6 +2,10 @@ import { expect, test, vi } from "vite-plus/test";
 import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/host-boundary/blocked-rpc-resume.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import { POLLFD_BYTES } from "../../../../src/layout/poll.js";
+import {
+  isPipeCanonicalEofReady,
+  setPipeCanonicalEofReady,
+} from "../../../../src/worker/host-blocked-state.js";
 import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../../src/worker/thread-step-payload.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -113,7 +117,6 @@ function makeHandle(
     hostBlockedWorkers: new Map([[worker, {
       vmPtr: 0x1234,
       status: kernel.thread_status(0x1234),
-      rpcPending: false,
     }]]),
     networkClosedFds: new Set(),
     networkConnections: new Map(),
@@ -167,12 +170,12 @@ test("blocked-rpc follows supervisor pipe defer action", async () => {
     kernel.supervisor_blocked_pipe_resume_action_defer()
   );
   const handle = makeHandle(kernel, worker);
-  handle.hostBlockedWorkers.set(worker, {
+  const blocked = {
     vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    pipeCanonicalEofReady: true,
-  });
+  };
+  setPipeCanonicalEofReady(blocked, true);
+  handle.hostBlockedWorkers.set(worker, blocked);
   const { deps, helpers } = makeHelpers(handle, worker);
 
   await expect(
@@ -187,7 +190,7 @@ test("blocked-rpc follows supervisor pipe defer action", async () => {
     vmPtr,
     kernel.abi_status_pipe_wait(),
   );
-  expect(handle.hostBlockedWorkers.get(worker)?.pipeCanonicalEofReady).toBe(true);
+  expect(isPipeCanonicalEofReady(handle.hostBlockedWorkers.get(worker))).toBe(true);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     1,
     "blocked-rpc-defer-pipe-supervisor:1",
@@ -333,7 +336,6 @@ test("blocked-rpc generic resume returns a typed completed outcome", async () =>
     hostBlockedWorkers: new Map([[worker, {
       vmPtr,
       status: 21,
-      rpcPending: false,
     }]]),
   });
   const { deps, helpers } = makeHelpers(handle, worker);

@@ -48,11 +48,6 @@ export interface VforkSnapshot {
 export interface HostBlockedWorkerState {
   vmPtr: number;
   status: number;
-  rpcPending: boolean;
-  rpcGeneration: number;
-  pipeCanonicalEofReady?: boolean;
-  lastPipeRetryLifecycleEvent?: string;
-  lastWait4RetryLifecycleEvent?: string;
 }
 
 export interface RuntimeFsState {

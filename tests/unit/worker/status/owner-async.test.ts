@@ -4,6 +4,10 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
 } from "../../../../src/worker/thread-host-state.js";
+import {
+  setBlockedRpcGeneration,
+  setBlockedRpcPending,
+} from "../../../../src/worker/host-blocked-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { makeHandle, makeKernel, makeStatusMessage, makeThreadState } from "./helpers.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
@@ -173,12 +177,13 @@ test("owner-async STATUS_FS return clears stale blocked wait4 rpc for the same w
       abi_status_fs: () => 6,
     }),
   });
-  handle.hostBlockedWorkers.set(worker, {
+  const blocked = {
     vmPtr: 0x1234,
     status: 31,
-    rpcPending: true,
-    rpcGeneration: 3,
-  });
+  };
+  setBlockedRpcPending(blocked, true);
+  setBlockedRpcGeneration(blocked, 3);
+  handle.hostBlockedWorkers.set(worker, blocked);
   const thread = makeThreadState({
     ownerAsyncStatus: 6,
     runningGeneration: null,
@@ -228,9 +233,9 @@ test("owner-async STATUS_FS return preserves matching blocked FS rpc", () => {
   const blocked = {
     vmPtr: 0x1234,
     status: 6,
-    rpcPending: true,
-    rpcGeneration: 3,
   };
+  setBlockedRpcPending(blocked, true);
+  setBlockedRpcGeneration(blocked, 3);
   handle.hostBlockedWorkers.set(worker, blocked);
   const thread = makeThreadState({
     ownerAsyncStatus: 6,

@@ -146,8 +146,6 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
   handle.hostBlockedWorkers.set(selectedWorker, {
     vmPtr: selectedThread.vmPtr,
     status: kernel.abi_status_futex_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   });
   const debugEvents: string[] = [];
 

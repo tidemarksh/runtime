@@ -65,7 +65,6 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     hostBlockedWorkers: new Map([[extraWorker, {
       vmPtr: 0x2222,
       status: 6,
-      rpcPending: false,
     }]]),
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),

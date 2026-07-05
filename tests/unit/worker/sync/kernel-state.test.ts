@@ -552,8 +552,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     hostBlockedWorkers: new Map([[{} as Worker, {
       vmPtr: 0x1234,
       status: 0,
-      rpcPending: false,
-      rpcGeneration: 0,
     }]]),
     pendingChildSpawnRecords: 0,
     pendingPipeSlotSnapshots: [],

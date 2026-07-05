@@ -37,6 +37,10 @@ import type {
   WorkerScheduler,
   WorkerSchedulerDeps,
 } from "./types.js";
+import {
+  copyHostBlockedEffectState,
+  isBlockedRpcPending,
+} from "../host-blocked-state.js";
 
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
@@ -249,11 +253,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     const blocked: HostBlockedWorkerState = {
       vmPtr,
       status,
-      rpcPending: sameBlockedThread ? previousBlocked.rpcPending : false,
-      rpcGeneration: sameBlockedThread ? previousBlocked.rpcGeneration : 0,
-      lastPipeRetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastPipeRetryLifecycleEvent : undefined,
-      lastWait4RetryLifecycleEvent: sameBlockedThread ? previousBlocked.lastWait4RetryLifecycleEvent : undefined,
     };
+    if (sameBlockedThread && previousBlocked !== undefined) {
+      copyHostBlockedEffectState(blocked, previousBlocked);
+    }
     if (
       sameBlockedThread
       && previousBlocked !== undefined
@@ -266,7 +269,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (supervisorTimerArmed) {
       return;
     }
-    if (sameBlockedThread && blocked.rpcPending) {
+    if (sameBlockedThread && isBlockedRpcPending(blocked)) {
       return;
     }
     if (supervisorBlockedStatusIsEpollWait(handle.kernel, status)) {

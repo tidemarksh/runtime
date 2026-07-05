@@ -1,6 +1,10 @@
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/host-boundary/state-sync.js";
+import {
+  setBlockedRpcGeneration,
+  setBlockedRpcPending,
+} from "../../../../src/worker/host-blocked-state.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -257,8 +261,6 @@ test("waking sync drains supervisor resume before runtime host retry", async () 
   });
   handle.hostBlockedWorkers.set(pipeWorker, {
     status: handle.kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 0,
   } as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -296,11 +298,12 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
   });
   handle.kernelShare.members.add(handle);
   const epollWorker = {} as Worker;
-  handle.hostBlockedWorkers.set(epollWorker, {
+  const blockedEpoll = {
     status: handle.kernel.abi_status_epoll_wait(),
-    rpcPending: true,
-    rpcGeneration: 7,
-  } as never);
+  };
+  setBlockedRpcPending(blockedEpoll as never, true);
+  setBlockedRpcGeneration(blockedEpoll as never, 7);
+  handle.hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -324,12 +327,13 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   const clearPipeSyncBeforeRetry = vi.fn(() => 0);
   handle.kernel.supervisor_blocked_pipe_sync_before_retry_clear = clearPipeSyncBeforeRetry;
   const pipeWorker = {} as Worker;
-  handle.hostBlockedWorkers.set(pipeWorker, {
+  const blockedPipe = {
     vmPtr: 0x1234,
     status: handle.kernel.abi_status_pipe_wait(),
-    rpcPending: true,
-    rpcGeneration: 7,
-  } as never);
+  };
+  setBlockedRpcPending(blockedPipe as never, true);
+  setBlockedRpcGeneration(blockedPipe as never, 7);
+  handle.hostBlockedWorkers.set(pipeWorker, blockedPipe as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},

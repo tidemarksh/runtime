@@ -9,6 +9,7 @@ import {
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
+import { setBlockedRpcGeneration } from "../../../../src/worker/host-blocked-state.js";
 import {
   armSupervisorHostTimer,
   drainSupervisorArmHostTimerHostOp,
@@ -390,12 +391,12 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     supervisor_thread_event_kind_timer_fired: () => 6,
     supervisor_submit_thread_event: supervisorSubmitThreadEvent,
   });
-  handle.hostBlockedWorkers.set(blockedWorker, {
+  const blocked = {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_pipe_wait(),
-    rpcPending: false,
-    rpcGeneration: 3,
-  });
+  };
+  setBlockedRpcGeneration(blocked, 3);
+  handle.hostBlockedWorkers.set(blockedWorker, blocked);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},

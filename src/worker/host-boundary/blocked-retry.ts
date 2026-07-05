@@ -54,6 +54,12 @@ import {
   setThreadOwnerAsyncStatus,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
+import {
+  getLastPipeRetryLifecycleEvent,
+  isBlockedRpcPending,
+  setBlockedRpcPending,
+  setLastPipeRetryLifecycleEvent,
+} from "../host-blocked-state.js";
 
 export interface BlockedRetryCoordinator {
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
@@ -182,7 +188,7 @@ export function createBlockedRetryCoordinator(
       return true;
     }
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, lifecycleEvent);
-    blocked.rpcPending = true;
+    setBlockedRpcPending(blocked, true);
     void hostBlockedResume(
       handle,
       worker,
@@ -194,7 +200,7 @@ export function createBlockedRetryCoordinator(
     }).catch((error) => {
       const latestBlocked = handle.hostBlockedWorkers.get(worker);
       if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-        latestBlocked.rpcPending = false;
+        setBlockedRpcPending(latestBlocked, false);
       }
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     });
@@ -227,8 +233,8 @@ export function createBlockedRetryCoordinator(
     const event = supervisorBlockedStatusIsPipeWait(handle.kernel, blocked.status)
       ? `pipe-retry-skip:${handle.pid}:active-child:${childPid}:ready=${readyCount ?? "n/a"}:${deps.formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${deps.formatBlockedPollFdSet(handle, blocked.vmPtr)}`
       : `wait4-retry-skip:${handle.pid}:active-child:${childPid}`;
-    if (blocked.lastPipeRetryLifecycleEvent !== event) {
-      blocked.lastPipeRetryLifecycleEvent = event;
+    if (getLastPipeRetryLifecycleEvent(blocked) !== event) {
+      setLastPipeRetryLifecycleEvent(blocked, event);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
     }
     deps.scheduleSupervisorBlockedRetry(
@@ -639,7 +645,7 @@ export function createBlockedRetryCoordinator(
     if (deps.isSupervisorTimerArmed(blocked)) {
       flags.push("supervisor-timer-armed");
     }
-    if (blocked.rpcPending) {
+    if (isBlockedRpcPending(blocked)) {
       flags.push("rpc-pending");
     }
     if (getThreadOwnerAsyncStatus(thread) !== null) {
@@ -736,8 +742,8 @@ export function createBlockedRetryCoordinator(
         blocked.vmPtr,
       );
       const event = `pipe-retry:${handle.pid}:a7=${deps.blockedOrCurrentSyscallNr(handle, blocked.vmPtr)?.toString() ?? "n/a"}:a0=${handle.kernel.thread_a0(blocked.vmPtr).toString()}:timeout=${blockedPollTimeoutMs}:ready=${blockedPollReadyCount ?? "n/a"}:${deps.formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${deps.formatFirstSocketWaitDebug(handle, blocked.vmPtr)}:${deps.formatBlockedPollFdSet(handle, blocked.vmPtr)}:syncRequested=${pipeSyncBeforeRetryRequested ? 1 : 0}`;
-      if (blocked.lastPipeRetryLifecycleEvent !== event) {
-        blocked.lastPipeRetryLifecycleEvent = event;
+      if (getLastPipeRetryLifecycleEvent(blocked) !== event) {
+        setLastPipeRetryLifecycleEvent(blocked, event);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
       }
     }
@@ -1008,7 +1014,7 @@ export function createBlockedRetryCoordinator(
           return "needs-host-cleanup";
         }
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `wait4-retry-rpc:${handle.pid}`);
-        blocked.rpcPending = true;
+        setBlockedRpcPending(blocked, true);
         void deps.resumeWait4ViaKernelWorker(handle, worker, blocked.vmPtr)
           .then((outcome) => {
             consumeKernelRpcResumeOutcome(handle, worker, blocked.vmPtr, outcome);
@@ -1016,7 +1022,7 @@ export function createBlockedRetryCoordinator(
           .catch((error) => {
             const latestBlocked = handle.hostBlockedWorkers.get(worker);
             if (latestBlocked && latestBlocked.vmPtr === blocked.vmPtr) {
-              latestBlocked.rpcPending = false;
+              setBlockedRpcPending(latestBlocked, false);
             }
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
