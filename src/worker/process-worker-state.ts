@@ -1,30 +1,52 @@
 import type { ProcessHandle } from "./types.js";
 
 const processWorkerSets = new WeakMap<ProcessHandle, Set<Worker>>();
+const PROCESS_WORKER_SET = Symbol.for("tidemark.worker.processWorkers");
 
 type LegacyProcessWorkersSeed = {
   workers?: Set<Worker>;
 };
+
+type ProcessWorkerSetCarrier = ProcessHandle & {
+  [PROCESS_WORKER_SET]?: Set<Worker>;
+};
+
+function storeProcessWorkers(handle: ProcessHandle, workers: Set<Worker>): Set<Worker> {
+  processWorkerSets.set(handle, workers);
+  Object.defineProperty(handle, PROCESS_WORKER_SET, {
+    configurable: true,
+    enumerable: false,
+    value: workers,
+    writable: true,
+  });
+  return workers;
+}
 
 export function processWorkers(handle: ProcessHandle): Set<Worker> {
   const workers = processWorkerSets.get(handle);
   if (workers !== undefined) {
     return workers;
   }
+  const carrier = handle as ProcessWorkerSetCarrier;
+  if (Object.prototype.hasOwnProperty.call(carrier, PROCESS_WORKER_SET)) {
+    const sharedWorkers = carrier[PROCESS_WORKER_SET];
+    if (sharedWorkers !== undefined) {
+      processWorkerSets.set(handle, sharedWorkers);
+      return sharedWorkers;
+    }
+  }
   const legacyWorkers = (handle as LegacyProcessWorkersSeed).workers;
   if (legacyWorkers !== undefined) {
-    processWorkerSets.set(handle, legacyWorkers);
     delete (handle as LegacyProcessWorkersSeed).workers;
-    return legacyWorkers;
+    return storeProcessWorkers(handle, legacyWorkers);
   }
   const created = new Set<Worker>();
-  processWorkerSets.set(handle, created);
-  return created;
+  return storeProcessWorkers(handle, created);
 }
 
 export function setProcessWorkers(handle: ProcessHandle, workers: Iterable<Worker>): void {
   delete (handle as LegacyProcessWorkersSeed).workers;
-  processWorkerSets.set(handle, new Set(workers));
+  storeProcessWorkers(handle, new Set(workers));
 }
 
 export function addProcessWorker(handle: ProcessHandle, worker: Worker): void {

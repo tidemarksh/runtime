@@ -11,6 +11,7 @@ export interface ProcessStdioState {
 }
 
 const processStdioStates = new WeakMap<ProcessHandle, ProcessStdioState>();
+const PROCESS_STDIO_STATE = Symbol.for("tidemark.worker.processStdioState");
 
 type LegacyProcessStdioSeed = {
   stdinPipe?: number;
@@ -20,6 +21,10 @@ type LegacyProcessStdioSeed = {
   hostStdio?: SharedHostStdio;
   stdinClosed?: boolean;
   stdioOwner?: ProcessHandle | null;
+};
+
+type ProcessStdioStateCarrier = ProcessHandle & {
+  [PROCESS_STDIO_STATE]?: ProcessStdioState;
 };
 
 function consumeLegacyProcessStdioState(handle: ProcessHandle): ProcessStdioState | null {
@@ -65,9 +70,17 @@ export function processStdioState(handle: ProcessHandle): ProcessStdioState {
   if (state !== undefined) {
     return state;
   }
+  const carrier = handle as ProcessStdioStateCarrier;
+  if (Object.prototype.hasOwnProperty.call(carrier, PROCESS_STDIO_STATE)) {
+    const sharedState = carrier[PROCESS_STDIO_STATE];
+    if (sharedState !== undefined) {
+      processStdioStates.set(handle, sharedState);
+      return sharedState;
+    }
+  }
   const legacy = consumeLegacyProcessStdioState(handle);
   if (legacy !== null) {
-    processStdioStates.set(handle, legacy);
+    setProcessStdioState(handle, legacy);
     return legacy;
   }
   const created: ProcessStdioState = {
@@ -84,13 +97,19 @@ export function processStdioState(handle: ProcessHandle): ProcessStdioState {
     stdinClosed: false,
     stdioOwner: null,
   };
-  processStdioStates.set(handle, created);
+  setProcessStdioState(handle, created);
   return created;
 }
 
 export function setProcessStdioState(handle: ProcessHandle, state: ProcessStdioState): void {
   consumeLegacyProcessStdioState(handle);
   processStdioStates.set(handle, state);
+  Object.defineProperty(handle, PROCESS_STDIO_STATE, {
+    configurable: true,
+    enumerable: false,
+    value: state,
+    writable: true,
+  });
 }
 
 export function processStdinPipe(handle: ProcessHandle): number {

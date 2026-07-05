@@ -9,10 +9,33 @@ export interface HostExecutionState {
 }
 
 const hostExecutionStates = new WeakMap<ProcessHandle, HostExecutionState>();
+const HOST_EXECUTION_STATE = Symbol.for("tidemark.worker.hostExecutionState");
+
+type HostExecutionStateCarrier = ProcessHandle & {
+  [HOST_EXECUTION_STATE]?: HostExecutionState;
+};
+
+function storeHostExecutionState(handle: ProcessHandle, state: HostExecutionState): HostExecutionState {
+  hostExecutionStates.set(handle, state);
+  Object.defineProperty(handle, HOST_EXECUTION_STATE, {
+    configurable: true,
+    enumerable: false,
+    value: state,
+    writable: true,
+  });
+  return state;
+}
 
 export function hostExecutionState(handle: ProcessHandle): HostExecutionState {
   let state = hostExecutionStates.get(handle);
   if (!state) {
+    const carrier = handle as HostExecutionStateCarrier;
+    if (Object.prototype.hasOwnProperty.call(carrier, HOST_EXECUTION_STATE)) {
+      const sharedState = carrier[HOST_EXECUTION_STATE];
+      if (sharedState !== undefined) {
+        return storeHostExecutionState(handle, sharedState);
+      }
+    }
     const legacy = handle as unknown as Partial<HostExecutionState>;
     if (
       "vforkReadyWorkers" in legacy
@@ -36,7 +59,7 @@ export function hostExecutionState(handle: ProcessHandle): HostExecutionState {
         vforkWorker: null,
       };
     }
-    hostExecutionStates.set(handle, state);
+    storeHostExecutionState(handle, state);
   }
   return state;
 }
