@@ -4,6 +4,10 @@ import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
 import { processOnExit } from "./process-callback-state.js";
 import { processDebugCommand } from "./process-debug-state.js";
+import {
+  clearProcessWorkers,
+  processWorkerList,
+} from "./process-worker-state.js";
 import { setProcessExitInProgress } from "./process-lifecycle-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
@@ -35,12 +39,12 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     hostExecutionState(handle).runningWorker = null;
     deps.clearVforkSnapshot(handle);
 
-    const workers = new Set(handle.workers);
+    const workers = new Set(processWorkerList(handle));
     workers.add(handle.worker);
     for (const worker of workers) {
       terminateTrackedWorker(worker);
     }
-    handle.workers.clear();
+    clearProcessWorkers(handle);
 
     const hadLocalHostStdio = handle.stdinPipe !== 0 || handle.stdoutPipe !== 0 || handle.stderrPipe !== 0;
     void (async () => {

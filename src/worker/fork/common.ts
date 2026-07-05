@@ -9,6 +9,7 @@ import {
   setProcessLastDebugMessage,
 } from "../process-debug-state.js";
 import { setProcessOnError } from "../process-callback-state.js";
+import { setProcessWorkers } from "../process-worker-state.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
@@ -70,10 +71,10 @@ export function createForkChildHandle({
     sabPageCache: parent.sabPageCache,
     kernelWorkerRequest: parent.kernelWorkerRequest,
     networkBridge: parent.networkBridge,
-    workers: new Set<Worker>(),
   };
   setProcessDebugCommand(childHandle, debugCommand);
   setProcessLastDebugMessage(childHandle, undefined);
+  setProcessWorkers(childHandle, []);
   setProcessOnError(
     childHandle,
     createInheritedErrorSink(

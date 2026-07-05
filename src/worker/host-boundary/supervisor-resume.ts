@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processWorkers } from "../process-worker-state.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import type {
   ProcessHandle,
@@ -219,7 +220,7 @@ export function createSupervisorResumeHostBoundary(
   deps: SupervisorResumeHostBoundaryDeps,
 ): SupervisorResumeHostBoundary {
   function findWorkerByVmPtr(handle: ProcessHandle, vmPtr: number): Worker | undefined {
-    for (const worker of handle.workers) {
+    for (const worker of processWorkers(handle)) {
       const thread = deps.threadWorkerStates.get(worker);
       if (thread?.vmPtr === vmPtr) {
         return worker;

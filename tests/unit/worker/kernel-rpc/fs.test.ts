@@ -1,4 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
+import {
+  addProcessWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/kernel-rpc/fs.js";
 import {
   FS_OP_FSTAT,
@@ -279,7 +282,7 @@ test("kernel-rpc fs helper uses kernel-worker resume and returns a typed outcome
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const enqueueWorker = vi.fn();
@@ -343,7 +346,7 @@ test("kernel-rpc fs outcome reports blocked fs status", async () => {
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -401,7 +404,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadState = {} as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, threadState);
@@ -488,7 +491,7 @@ test("kernel-worker fs outcome follows supervisor publication decision", async (
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const markRuntimeFsDirty = vi.fn();
@@ -561,8 +564,8 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
   const siblingWorker = {} as Worker;
-  handle.workers.add(worker);
-  handle.workers.add(siblingWorker);
+  addProcessWorker(handle, worker);
+  addProcessWorker(handle, siblingWorker);
   const threadState = {} as ThreadWorkerState;
   const siblingThreadState = {} as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -642,7 +645,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const markRuntimeFsDirty = vi.fn();
@@ -731,7 +734,7 @@ test("kernel-worker fs outcome applies only request fd after regular file write"
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const syncSharedOfdStateAfterFs = vi.fn(async () => {});
@@ -830,7 +833,7 @@ test("kernel-worker fs outcome applies only request fd after regular file fstat"
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const syncSharedOfdStateAfterFs = vi.fn(async () => {});
@@ -924,7 +927,7 @@ test("kernel-worker fs outcome preserves unrelated live fd across openat snapsho
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const syncSharedOfdStateAfterFs = vi.fn(async () => {});
@@ -1002,7 +1005,7 @@ test("kernel-worker fs outcome preserves live fd from stale nonzero openat snaps
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -1076,7 +1079,7 @@ test("kernel-worker fs outcome permits close snapshot to clear live fd", async (
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -1171,7 +1174,7 @@ test("kernel-worker fs outcome keeps generated file fd closeable after unrelated
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -1272,7 +1275,7 @@ test("kernel-worker fs outcome rejects fd snapshot entries stale against request
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -1362,7 +1365,7 @@ test("kernel-worker fs outcome rejects fd snapshot ABA using generation", async 
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -1467,7 +1470,7 @@ test("kernel-worker fs outcome rejects ofd slot snapshots stale against request 
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const helpers = createWorkerKernelRpcFsHelpers({
@@ -1543,7 +1546,7 @@ test("kernel-worker fs outcome skips shared OFD sync after regular file mmap", a
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const syncSharedOfdStateAfterFs = vi.fn(async () => {});
@@ -1621,7 +1624,7 @@ test("kernel-worker fs outcome keeps shared OFD sync after pipe write", async ()
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const syncSharedOfdStateAfterFs = vi.fn(async () => {});
@@ -1701,7 +1704,7 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const rehydrateForkSharedStateViaKernelWorker = vi.fn(async () => {});
@@ -1787,7 +1790,7 @@ test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", a
     kernelWorkerRequest,
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
-  handle.workers.add(worker);
+  addProcessWorker(handle, worker);
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, {});
   const syncDirtyMemfsPeerViaKernelWorker = vi.fn(async () => {

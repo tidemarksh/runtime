@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -245,7 +246,7 @@ async function executeHostBlockedSyscallResume(
       const doneSuffix = options.includeStageInDoneEvent ? `:${options.stage}` : "";
       deps.appendWorkerDebugLog(handle, `blocked-rpc-done:${doneStatus}:0x${vmPtr.toString(16)}${doneSuffix}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-done:${handle.pid}:${doneStatus}${doneSuffix}`);
-      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+      if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
         return;
       }
       emitBlockedRpcRetryResult(doneStatus);
@@ -305,7 +306,7 @@ async function executeHostBlockedSyscallResume(
     });
   } catch (error) {
     finishBlockedRpc();
-    if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+    if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
       const fd = blockedPipeWaitFd(handle, vmPtr);
       const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
       const buf = handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 1) ?? handle.kernel.thread_a1(vmPtr);
@@ -352,7 +353,7 @@ ${debug}`));
         },
       },
     );
-    if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+    if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone" };
     }
     if (!hostExecutionState(handle).hostBlockedWorkers.has(worker)) {

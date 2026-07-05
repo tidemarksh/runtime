@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
@@ -208,7 +209,7 @@ export function executeKernelWorkerBlockedEpollRetry(
     })
     .catch((error) => {
       deps.finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
-      if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+      if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
     });

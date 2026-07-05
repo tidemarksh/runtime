@@ -1,4 +1,8 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  processWorkerList,
+  processWorkers,
+} from "../../../../src/worker/process-worker-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerDestroyHelpers } from "../../../../src/worker/destroy.js";
 import { setProcessOnExit } from "../../../../src/worker/process-callback-state.js";
@@ -88,13 +92,13 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
 test("destroyProcessHandle tears down workers, clears process maps, and releases host stdio once", async () => {
   const handle = makeHandle();
   const primaryWorker = handle.worker as unknown as FakeWorker;
-  const extraWorkers = [...handle.workers] as Array<Worker & FakeWorker>;
+  const extraWorkers = processWorkerList(handle) as Array<Worker & FakeWorker>;
   handle.kernelShare.members.add(handle);
   const processHandles = new Map<number, ProcessHandle>([[handle.pid, handle]]);
   const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>([[handle.runtimeId, new Set([handle])]]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(handle.worker, { vmPtr: handle.vmPtr, initialized: true, waitingInWorkerStatus: null });
-  for (const worker of handle.workers) {
+  for (const worker of processWorkers(handle)) {
     threadWorkerStates.set(worker, { vmPtr: 0x2222, initialized: true, waitingInWorkerStatus: null });
   }
   const appendRuntimeLifecycleEvent = vi.fn();

@@ -15,8 +15,21 @@ import {
 } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
+type ProcessHasWorkerFn =
+  typeof import("../../../../src/worker/process-worker-state.js").processHasWorker;
 
 let workerModule: WorkerModule | null = null;
+let processHasWorkerImpl: ProcessHasWorkerFn | null = null;
+
+function processHasWorker(
+  handle: Parameters<ProcessHasWorkerFn>[0],
+  worker: Parameters<ProcessHasWorkerFn>[1],
+): ReturnType<ProcessHasWorkerFn> {
+  if (processHasWorkerImpl === null) {
+    throw new Error("processHasWorker accessor not loaded");
+  }
+  return processHasWorkerImpl(handle, worker);
+}
 
 function clearRuntimeFsState(runtimeId: number): void {
   workerModule?.clearRuntimeFsState(runtimeId);
@@ -853,6 +866,9 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  processHasWorkerImpl = (
+    await import("../../../../src/worker/process-worker-state.js")
+  ).processHasWorker;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -881,6 +897,7 @@ afterEach(() => {
   workerModule?.destroyWorkerPool();
   clearModuleCache();
   workerModule = null;
+  processHasWorkerImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -1911,7 +1928,7 @@ test("clone-spawn fixture does not fabricate a sibling worker for EPOLL_WAIT ret
     "sync-process-lifecycle",
   ]);
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.workers.has(parentWorker as unknown as Worker)).toBe(true);
+  expect(processHasWorker(handle, parentWorker as unknown as Worker)).toBe(true);
 });
 
 test("waitInWorker EPOLL_WAIT timeout=0 completes through supervisor timer HostOp", async () => {

@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker, processWorkerList } from "../process-worker-state.js";
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
@@ -247,7 +248,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
             releaseCloneSpawnResumeWorkers();
             deps.enqueueWorker(handle, worker);
             for (const resumeWorker of resumeWorkersOnReady) {
-              if (handle.workers.has(resumeWorker)) {
+              if (processHasWorker(handle, resumeWorker)) {
                 deps.enqueueWorker(handle, resumeWorker);
               }
             }
@@ -260,7 +261,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       releaseCloneSpawnResumeWorkers();
       deps.enqueueWorker(handle, worker);
       for (const resumeWorker of resumeWorkersOnReady) {
-        if (handle.workers.has(resumeWorker)) {
+        if (processHasWorker(handle, resumeWorker)) {
           deps.enqueueWorker(handle, resumeWorker);
         }
       }
@@ -282,7 +283,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         liveThreads,
         threadSlots,
       } = safeThreadErrorDebug(handle, deps, msg.vmPtr);
-      const attachedWorkers = [...handle.workers]
+      const attachedWorkers = processWorkerList(handle)
         .map((candidate) => deps.threadWorkerStates.get(candidate)?.vmPtr ?? 0)
         .filter((candidateVmPtr) => candidateVmPtr !== 0)
         .map((candidateVmPtr) => `0x${candidateVmPtr.toString(16)}`);

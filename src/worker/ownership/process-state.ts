@@ -1,3 +1,4 @@
+import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -30,7 +31,7 @@ export function createWorkerOwnershipGuard(
     return current !== undefined
       && getThreadGeneration(current) === threadGeneration
       && getThreadOwnerPid(current) === handle.pid
-      && handle.workers.has(worker);
+      && processHasWorker(handle, worker);
   };
 }
 

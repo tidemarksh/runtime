@@ -1,4 +1,7 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  addProcessWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { expect, test, vi } from "vite-plus/test";
 
 vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
@@ -95,7 +98,7 @@ test("host boundary consumes only supervisor-selected futex resume records", () 
     return 48;
   });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
-  handle.workers.add(unselectedWorker);
+  addProcessWorker(handle, unselectedWorker);
   const debugEvents: string[] = [];
 
   makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
@@ -142,7 +145,7 @@ test("host boundary consumes process-scoped supervisor runnable resume decisions
     return 48;
   });
   const handle = makeHostBoundaryHandle(kernel, selectedWorker);
-  handle.workers.add(unselectedWorker);
+  addProcessWorker(handle, unselectedWorker);
   hostExecutionState(handle).vforkReadyWorkers = [unselectedWorker];
   hostExecutionState(handle).hostBlockedWorkers.set(selectedWorker, {
     vmPtr: selectedThread.vmPtr,

@@ -1,4 +1,5 @@
 import { collectLiveThreadVmPtrs } from "./live-threads.js";
+import { processWorkers } from "./process-worker-state.js";
 import { hasPendingChildSpawnRecords } from "./pending-child-spawn-state.js";
 import { processLastDebugMessage } from "./process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
@@ -155,7 +156,7 @@ export function assertHandleWorkerProcessIdentity(
   let anchorVmPtr: number | null = null;
   let workerIndex = 0;
 
-  for (const worker of handle.workers) {
+  for (const worker of processWorkers(handle)) {
     const threadState = threadWorkerStates.get(worker);
     if (!threadState || threadState.vmPtr === 0) {
       continue;

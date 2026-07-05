@@ -1,5 +1,10 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import {
+  deleteProcessWorker,
+  processHasWorker,
+  processWorkers,
+} from "../process-worker-state.js";
+import {
   wakeRuntimeBridge,
 } from "../../bridge/runtime-state.js";
 import {
@@ -425,7 +430,7 @@ export function createBlockedRetryCoordinator(
       blocked,
       `epoll-retry-resume-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
       () => {
-        if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+        if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
           appendEpollRetryResult(handle, blocked.vmPtr);
         }
       },
@@ -439,7 +444,7 @@ export function createBlockedRetryCoordinator(
       blocked,
       `epoll-retry-resume-host-boundary:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
       () => {
-        if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+        if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
           appendEpollRetryResult(handle, blocked.vmPtr);
         }
       },
@@ -495,7 +500,7 @@ export function createBlockedRetryCoordinator(
       blocked,
       `wait4-retry-host-boundary:${handle.pid}:0x${blocked.vmPtr.toString(16)}:records=supervisor`,
       () => {
-        if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+        if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
           appendWait4RetryResult(handle, blocked.vmPtr);
         }
       },
@@ -568,7 +573,7 @@ export function createBlockedRetryCoordinator(
           + `:${formatFaultThreadSummary(handle, "faultVm", vmPtr)}`
           + `:threads=[${formatProcessThreadSlots(handle, vmPtr)}]`,
       );
-      handle.workers.delete(worker);
+      deleteProcessWorker(handle, worker);
       deps.threadWorkerStates.delete(worker);
       releaseWorker(worker);
       const shouldExitProcess = supervisorExitDecision.kind === supervisorFaultExitKindProcessExit(handle.kernel);
@@ -676,7 +681,7 @@ export function createBlockedRetryCoordinator(
   }
 
   function hasPendingCloneChildInitResume(handle: ProcessHandle): boolean {
-    for (const worker of handle.workers) {
+    for (const worker of processWorkers(handle)) {
       const thread = deps.threadWorkerStates.get(worker);
       if (
         thread !== undefined

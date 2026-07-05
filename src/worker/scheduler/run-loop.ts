@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -99,7 +100,7 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     if (runningWorker === null || runningWorker === blockedWorker) {
       return false;
     }
-    if (!handle.workers.has(runningWorker)) {
+    if (!processHasWorker(handle, runningWorker)) {
       hostExecutionState(handle).runningWorker = null;
       const detachedThread = deps.threadWorkerStates.get(runningWorker);
       if (detachedThread) {

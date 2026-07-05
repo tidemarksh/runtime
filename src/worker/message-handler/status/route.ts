@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../../host-execution-state.js";
+import { processWorkers } from "../../process-worker-state.js";
 import {
   attachKernelRuntimeState,
 } from "../../../abi.js";
@@ -300,7 +301,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     const deferLocalPipeDrain = kernelWorkerOwnsPipeState(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
-    for (const candidate of handle.workers) {
+    for (const candidate of processWorkers(handle)) {
       const candidateThread = deps.threadWorkerStates.get(candidate);
       if (!candidateThread) {
         continue;

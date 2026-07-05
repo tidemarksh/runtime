@@ -1,4 +1,7 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  addProcessWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import {
   handleFutexWait,
@@ -316,7 +319,7 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
   kernel.memory = memory;
   const handle = makeHostBoundaryHandle(kernel, runningWorker);
   handle.memory = memory;
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   const submittedEvents: Array<{
     kind: number;

@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -78,7 +79,7 @@ export function createWorkerKernelRpcVforkHelpers(
       if (response.childPid <= 0) {
         throw new Error(`kernel-worker did not report an active vfork child for pid=${handle.pid}`);
       }
-      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+      if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
         return { kind: "process-gone" };
       }
 
@@ -98,7 +99,7 @@ export function createWorkerKernelRpcVforkHelpers(
       deps.enqueueWorker(handle, worker);
       return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     } catch (error) {
-      if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+      if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
       return { kind: "process-gone" };
@@ -122,7 +123,7 @@ export function createWorkerKernelRpcVforkHelpers(
         vmPtr,
         provisionalChildPid,
       );
-      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+      if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
         return { kind: "process-gone" };
       }
 
@@ -134,7 +135,7 @@ export function createWorkerKernelRpcVforkHelpers(
       deps.enqueueWorker(handle, worker);
       return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
     } catch (error) {
-      if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+      if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
       return { kind: "process-gone" };

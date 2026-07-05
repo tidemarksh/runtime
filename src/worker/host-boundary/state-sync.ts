@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processWorkerList } from "../process-worker-state.js";
 import {
   publishKernelRuntimeState,
 } from "../../bridge/runtime-state.js";
@@ -121,7 +122,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           pipeUsed: composeHandlePipeUsed(member, pipeUsed),
         };
       }
-      const shouldWake = [...member.workers].some((candidate) => {
+      const shouldWake = processWorkerList(member).some((candidate) => {
         const state = deps.threadWorkerStates.get(candidate);
         const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
         return state !== undefined

@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   supervisorBlockedEpollWaitRetryRequired,
   supervisorBlockedPipeSyncBeforeRetryClear,
@@ -164,7 +165,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   function isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean {
     const thread = threadWorkerStates.get(worker);
     return thread !== undefined
-      && handle.workers.has(worker)
+      && processHasWorker(handle, worker)
       && handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait();
   }
 

@@ -1,4 +1,7 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  processHasWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import type { KernelExports } from "../../../../src/abi.js";
@@ -968,7 +971,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
   );
 
   expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x1234);
-  expect(handle.workers.has(worker)).toBe(true);
+  expect(processHasWorker(handle, worker)).toBe(true);
   expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
   expect(processLastDebugMessage(handle)).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(handle, "status_debug:0x1234:pc=0x4 process_thread_count=0");

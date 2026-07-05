@@ -1,4 +1,9 @@
 import { hostExecutionState } from "../../host-execution-state.js";
+import {
+  deleteProcessWorker,
+  processHasWorker,
+  processWorkerCount,
+} from "../../process-worker-state.js";
 import { readKernelRuntimeState } from "../../../abi.js";
 import { publishKernelRuntimeState, wakeRuntimeBridge } from "../../../bridge/runtime-state.js";
 import {
@@ -407,7 +412,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         if (hostExecutionState(handle).runningWorker === worker) {
           hostExecutionState(handle).runningWorker = null;
         }
-        handle.workers.delete(worker);
+        deleteProcessWorker(handle, worker);
         deps.threadWorkerStates.delete(worker);
         releaseWorker(worker);
         if (wroteToPipe || drainedPipe || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0) {
@@ -714,7 +719,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           deps.appendRuntimeLifecycleEvent(
             handle.runtimeId,
             `clone-spawn-attached:${handle.pid}:parent=0x${thread.vmPtr.toString(16)}`
-              + `:child=0x${childVmPtr.toString(16)}:workers=${handle.workers.size}`
+              + `:child=0x${childVmPtr.toString(16)}:workers=${processWorkerCount(handle)}`
               + `:threads=[${formatProcessThreadSlots(handle, thread.vmPtr)}]`,
           );
         }
@@ -838,7 +843,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           },
         )
           .then(() => {
-            if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+            if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
               return;
             }
             const latestSnapshot = hostExecutionState(handle).vforkSnapshot;

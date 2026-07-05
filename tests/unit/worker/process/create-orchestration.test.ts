@@ -14,9 +14,15 @@ import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 type WorkerModule = typeof import("../../../../src/worker.js");
 type ProcessMemoryOwnershipFn =
   typeof import("../../../../src/worker/memory-ownership-state.js").processMemoryOwnership;
+type ProcessHasWorkerFn =
+  typeof import("../../../../src/worker/process-worker-state.js").processHasWorker;
+type ProcessWorkerCountFn =
+  typeof import("../../../../src/worker/process-worker-state.js").processWorkerCount;
 
 let workerModule: WorkerModule | null = null;
 let processMemoryOwnershipImpl: ProcessMemoryOwnershipFn | null = null;
+let processHasWorkerImpl: ProcessHasWorkerFn | null = null;
+let processWorkerCountImpl: ProcessWorkerCountFn | null = null;
 
 function processMemoryOwnership(
   handle: Parameters<ProcessMemoryOwnershipFn>[0],
@@ -25,6 +31,25 @@ function processMemoryOwnership(
     throw new Error("processMemoryOwnership accessor not loaded");
   }
   return processMemoryOwnershipImpl(handle);
+}
+
+function processHasWorker(
+  handle: Parameters<ProcessHasWorkerFn>[0],
+  worker: Parameters<ProcessHasWorkerFn>[1],
+): ReturnType<ProcessHasWorkerFn> {
+  if (processHasWorkerImpl === null) {
+    throw new Error("processHasWorker accessor not loaded");
+  }
+  return processHasWorkerImpl(handle, worker);
+}
+
+function processWorkerCount(
+  handle: Parameters<ProcessWorkerCountFn>[0],
+): ReturnType<ProcessWorkerCountFn> {
+  if (processWorkerCountImpl === null) {
+    throw new Error("processWorkerCount accessor not loaded");
+  }
+  return processWorkerCountImpl(handle);
 }
 
 function clearRuntimeFsState(runtimeId: number): void {
@@ -643,6 +668,9 @@ beforeEach(async () => {
   processMemoryOwnershipImpl = (
     await import("../../../../src/worker/memory-ownership-state.js")
   ).processMemoryOwnership;
+  const processWorkerState = await import("../../../../src/worker/process-worker-state.js");
+  processHasWorkerImpl = processWorkerState.processHasWorker;
+  processWorkerCountImpl = processWorkerState.processWorkerCount;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -672,6 +700,8 @@ afterEach(() => {
   clearModuleCache();
   workerModule = null;
   processMemoryOwnershipImpl = null;
+  processHasWorkerImpl = null;
+  processWorkerCountImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -1193,7 +1223,7 @@ test("running worker prunes stale blocked workers after the live thread table sh
 
   expect((handle as { hostBlockedWorkers: Map<Worker, unknown> }).hostBlockedWorkers.has(childWorker as unknown as Worker))
     .toBe(false);
-  expect((handle as { workers: Set<Worker> }).workers.has(childWorker as unknown as Worker)).toBe(true);
+  expect(processHasWorker(handle, childWorker as unknown as Worker)).toBe(true);
 });
 
 test("fault exits the process when the live thread table is empty despite a stale positive thread count", async () => {
@@ -1219,7 +1249,7 @@ test("fault exits the process when the live thread table is empty despite a stal
   await flushMicrotasks();
 
   expect(onExit).toHaveBeenCalledWith(139);
-  expect((handle as { workers: Set<Worker> }).workers.size).toBe(0);
+  expect(processWorkerCount(handle)).toBe(0);
   expect(worker.terminated).toBe(true);
 });
 

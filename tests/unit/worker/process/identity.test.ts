@@ -1,4 +1,7 @@
 import { expect, test } from "vite-plus/test";
+import {
+  addProcessWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { assertHandleWorkerProcessIdentity } from "../../../../src/worker/process-identity.js";
 import { setProcessLastDebugMessage } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
@@ -77,8 +80,8 @@ test("process identity ignores detached live-thread slots with no process pointe
     ]),
     liveVmPtrs: [anchorVmPtr, detachedVmPtr],
   });
-  handle.workers.add(anchorWorker);
-  handle.workers.add(detachedWorker);
+  addProcessWorker(handle, anchorWorker);
+  addProcessWorker(handle, detachedWorker);
 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>([
     [anchorWorker, makeWorkerState(anchorVmPtr)],
@@ -106,8 +109,8 @@ test("process identity still rejects an owned live thread with a different pid",
     ]),
     liveVmPtrs: [anchorVmPtr, driftVmPtr],
   });
-  handle.workers.add(anchorWorker);
-  handle.workers.add(driftWorker);
+  addProcessWorker(handle, anchorWorker);
+  addProcessWorker(handle, driftWorker);
 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>([
     [anchorWorker, makeWorkerState(anchorVmPtr)],

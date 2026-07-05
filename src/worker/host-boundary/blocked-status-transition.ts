@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   supervisorBlockedPipeWaitHasReadyEvents,
   supervisorBlockedStatusTransitionAction,
@@ -123,7 +124,7 @@ export async function executeHostBlockedStatusTransition(
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(status));
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);
         finish();
-        if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+        if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
           deps.clearBlockedWorker(handle, worker);
           return { kind: "process-gone" };
         }
@@ -141,7 +142,7 @@ export async function executeHostBlockedStatusTransition(
         await deps.syncBlockedForkSharedStateViaKernelWorker(handle, vmPtr, blockedRpcSyncCause(status));
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `blocked-rpc-sync-done:${handle.pid}:status=${status}`);
         finish();
-        if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+        if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
           deps.clearBlockedWorker(handle, worker);
           return { kind: "process-gone" };
         }

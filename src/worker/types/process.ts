@@ -99,7 +99,6 @@ export interface ProcessHandle {
   sabPageCache: SharedArrayBuffer | null;
   kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;
-  workers: Set<Worker>;
 }
 
 export interface AttachThreadWorkerRequest {

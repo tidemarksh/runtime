@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker, processWorkers } from "../process-worker-state.js";
 import { guestWriteWatchRegions } from "../guest-write-watch-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import {
@@ -553,7 +554,7 @@ function hasLiveWorkerState(
   ) {
     return true;
   }
-  for (const worker of handle.workers ?? []) {
+  for (const worker of processWorkers(handle)) {
     const thread = threadWorkerStates.get(worker);
     if (getThreadWaitingInWorkerStatus(thread) !== null) {
       return true;
@@ -1195,7 +1196,7 @@ function applyFsGuestMemoryWrites(
   if (!queueThreadWorkerWrites || pendingWrites.length === 0) {
     return;
   }
-  for (const worker of handle.workers) {
+  for (const worker of processWorkers(handle)) {
     const thread = threadWorkerStates.get(worker);
     if (!thread) {
       continue;
@@ -1302,7 +1303,7 @@ async function handleFsExecveSpawn(
   try {
     await deps.handleExecveSpawn(handle, worker, thread);
   } finally {
-    if (handle.workers.has(worker) && deps.threadWorkerStates.get(worker) === thread) {
+    if (processHasWorker(handle, worker) && deps.threadWorkerStates.get(worker) === thread) {
       clearThreadOwnerAsyncStatus(thread);
     }
   }
@@ -1511,7 +1512,7 @@ async function resumeFsViaKernelWorkerInner(
     if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
-    if (!handle.workers.has(worker) || !threadState) {
+    if (!processHasWorker(handle, worker) || !threadState) {
       return { kind: "process-gone" };
     }
     if (fsResponseDisposition.storePendingKernelState) {
@@ -1598,7 +1599,7 @@ async function resumeFsViaKernelWorkerInner(
     const errorDetail = formatFsErrorDetail(error);
     deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}${errorDetail}`);
     appendFsLifecycleEvent(handle, "err", vmPtr, `${formatFsRingDebug(handle, vmPtr)}${errorDetail}`);
-    if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+    if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone" };
     }
     deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));

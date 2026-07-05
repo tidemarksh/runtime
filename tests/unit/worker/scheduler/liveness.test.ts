@@ -1,4 +1,12 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  addProcessWorker,
+  clearProcessWorkers,
+  deleteProcessWorker,
+  processHasWorker,
+  processWorkerList,
+  setProcessWorkers,
+} from "../../../../src/worker/process-worker-state.js";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import {
   createRuntimeStateBridge,
@@ -601,7 +609,7 @@ function selectTestSupervisorRunnableThread(
 ): ThreadWorkerState | undefined {
   const candidates = [
     ...hostExecutionState(handle).vforkReadyWorkers,
-    ...[...handle.workers].filter((worker) => !hostExecutionState(handle).vforkReadyWorkers.includes(worker)),
+    ...processWorkerList(handle).filter((worker) => !hostExecutionState(handle).vforkReadyWorkers.includes(worker)),
   ];
   for (const candidate of candidates) {
     if (candidate === hostExecutionState(handle).runningWorker) {
@@ -1037,7 +1045,7 @@ test("ok status defers re-enqueue while a blocked epoll retry rpc is pending", a
   threadWorkerStates.set(blockedWorker, blockedThread);
   const { exports: kernel } = makeKernel();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
@@ -1426,7 +1434,7 @@ test("blocked retry delegates vfork process gate retry reason to kernel", () => 
   });
   kernel.supervisor_blocked_wait_retry_reason = retryReason;
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
-  handle.workers.add(vforkWorker);
+  addProcessWorker(handle, vforkWorker);
   hostExecutionState(handle).vforkWorker = vforkWorker;
   hostExecutionState(handle).vforkReadyWorkers = [vforkWorker];
   hostExecutionState(handle).vforkSnapshot = {
@@ -1588,7 +1596,7 @@ test("epoll retry wakes a running worker instead of resuming under it", async ()
   kernel.thread_resume_blocked_syscall = vi.fn();
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers = new Set([blockedWorker, runningWorker]);
+  setProcessWorkers(handle, [blockedWorker, runningWorker]);
   hostExecutionState(handle).runningWorker = runningWorker;
   handle.kernelWorkerRequest = vi.fn(async () => {
     throw new Error("epoll retry must not sync or resume while a worker is running");
@@ -1788,7 +1796,7 @@ test("epoll sync timeout zero survives a running-worker retry skip", async () =>
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers = new Set([blockedWorker, runningWorker]);
+  setProcessWorkers(handle, [blockedWorker, runningWorker]);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
     expect(message.type).toBe("sync-epoll-state");
     timeoutMs = 0n;
@@ -1860,8 +1868,8 @@ test("epoll retry defers while clone child init is expected to release parent", 
   kernel.abi_fd_type_epoll = () => 7;
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers.add(parentWorker);
-  handle.workers.add(childWorker);
+  addProcessWorker(handle, parentWorker);
+  addProcessWorker(handle, childWorker);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
     if (message.type === "sync-epoll-state") {
       return {
@@ -2994,7 +3002,7 @@ test("epoll timerfd wait advances guest time to deadline before retrying epoll",
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).vforkReadyWorkers.push(readyWorker);
 
   const scheduler = createWorkerScheduler({
@@ -3070,7 +3078,7 @@ test("epoll kernel-worker retry re-queries timerfd deadline after state sync", a
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).vforkReadyWorkers.push(readyWorker);
   handle.kernelWorkerRequest = vi.fn(async (message) => {
     if (message.type === "sync-ofd-state") {
@@ -3191,7 +3199,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   });
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).vforkReadyWorkers.push(readyWorker);
   handle.kernelState.epollTablePtr = 0x1000;
   const epollInstancePtr = 0x2000;
@@ -3429,7 +3437,7 @@ test("wait4 retry reaches supervisor even while another worker is marked running
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.workers.add(runningWorker);
+  addProcessWorker(handle, runningWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   const notify = new Int32Array(handle.runtimeBridge.notifySab);
   const notifyBefore = Atomics.load(notify, 0);
@@ -3483,7 +3491,7 @@ test("pumpProcess preserves an unanswered ok running worker that has not returne
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => 0;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
 
@@ -3528,7 +3536,7 @@ test("pumpProcess keeps an unanswered running worker after an active step clears
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => activeStepVmPtr;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
 
@@ -3574,7 +3582,7 @@ test("pumpProcess preserves a dispatched worker when a sibling remains queued", 
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => 0;
   const handle = makeHandle(kernel, firstWorker, threadWorkerStates);
-  handle.workers.add(secondWorker);
+  addProcessWorker(handle, secondWorker);
   hostExecutionState(handle).vforkReadyWorkers = [firstWorker, secondWorker];
 
   const scheduler = createWorkerScheduler({
@@ -3621,7 +3629,7 @@ test("pumpProcess runs ordinary OK ready workers under blocked I/O pressure", ()
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, readyWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
@@ -3666,7 +3674,7 @@ test("pumpProcess runs clone-spawn ready workers under blocked I/O pressure", ()
   getThreadActivityState(readyThread).statusCount = 59;
   kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, readyWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
@@ -3710,7 +3718,7 @@ test("pumpProcess runs ordinary OK ready workers while blocked I/O retry timer w
   const { exports: kernel } = makeKernel();
   kernel.thread_status = () => kernel.abi_status_ok();
   const handle = makeHandle(kernel, readyWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
@@ -3917,7 +3925,7 @@ test("pumpProcess preserves surplus unanswered running work before recovering id
   kernel.thread_status = () => kernel.abi_status_ok();
   delete kernel.debug_thread_step_vm_ptr;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(idleWorker);
+  addProcessWorker(handle, idleWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
 
   const scheduler = createWorkerScheduler({
@@ -3961,7 +3969,7 @@ test("pumpProcess runs an OK ready worker after an immediate epoll retry attempt
     ? kernel.abi_status_epoll_wait()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, readyWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
@@ -4012,7 +4020,7 @@ test("pumpProcess preserves an unanswered running worker when the step shares a 
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => 0;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
 
@@ -4057,7 +4065,7 @@ test("pumpProcess preserves an unanswered ok running worker when status covers t
   kernel.thread_status = () => kernel.abi_status_ok();
   delete kernel.debug_thread_step_vm_ptr;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
 
@@ -4102,7 +4110,7 @@ test("pumpProcess preserves an unanswered ok running worker when the step is sta
   kernel.thread_status = () => kernel.abi_status_ok();
   delete kernel.debug_thread_step_vm_ptr;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
 
@@ -4150,7 +4158,7 @@ test("pumpProcess completes exit when all canonical threads fault after workers 
     remainingThreads: 2,
     liveThreads: 2,
   });
-  handle.workers.clear();
+  clearProcessWorkers(handle);
   hostExecutionState(handle).vforkReadyWorkers = [];
   hostExecutionState(handle).runningWorker = null;
   hostExecutionState(handle).hostBlockedWorkers.clear();
@@ -4197,7 +4205,7 @@ test("epoll retry keeps unanswered futex running worker when last trace points e
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => 0;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [];
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
@@ -4242,7 +4250,7 @@ test("epoll retry keeps unanswered futex running worker with a blocked record", 
   kernel.thread_futex_wait_addr = () => 0n;
   kernel.thread_record_blocked_addr = () => 0n;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [];
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
@@ -4286,7 +4294,7 @@ test("epoll retry keeps active unanswered ok running worker", () => {
   kernel.thread_status = () => kernel.abi_status_ok();
   kernel.debug_thread_step_vm_ptr = () => runningThread.vmPtr;
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
@@ -4318,7 +4326,7 @@ test("pumpProcess waits for socket status publication before dispatching a ready
     ? kernel.abi_status_socket_recv()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, runningWorker, threadWorkerStates);
-  handle.workers.add(readyWorker);
+  addProcessWorker(handle, readyWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
   hostExecutionState(handle).vforkReadyWorkers = [readyWorker];
 
@@ -4360,7 +4368,7 @@ test("pruning a stale running worker clears the running slot", () => {
   };
   kernel.thread_process_ptr = (vmPtr: number) => vmPtr === 0x5678 ? 0x2000 : 0;
   const handle = makeHandle(kernel, staleWorker, threadWorkerStates);
-  handle.workers.add(anchorWorker);
+  addProcessWorker(handle, anchorWorker);
   hostExecutionState(handle).runningWorker = staleWorker;
   setPendingChildSpawnRecords(handle, 0);
 
@@ -4377,8 +4385,8 @@ test("pruning a stale running worker clears the running slot", () => {
   scheduler.pruneDetachedProcessWorkers(handle, 0x5678, null);
 
   expect(hostExecutionState(handle).runningWorker).toBeNull();
-  expect(handle.workers.has(staleWorker)).toBe(false);
-  expect(handle.workers.has(anchorWorker)).toBe(true);
+  expect(processHasWorker(handle, staleWorker)).toBe(false);
+  expect(processHasWorker(handle, anchorWorker)).toBe(true);
 });
 
 test("pruning preserves a worker whose thread state still belongs to the process", () => {
@@ -4404,7 +4412,7 @@ test("pruning preserves a worker whose thread state still belongs to the process
     vmPtr === 0x1234 || vmPtr === 0x5678 ? 0x2000 : 0
   );
   const handle = makeHandle(kernel, detachedWorker, threadWorkerStates);
-  handle.workers.add(anchorWorker);
+  addProcessWorker(handle, anchorWorker);
   hostExecutionState(handle).runningWorker = detachedWorker;
   setPendingChildSpawnRecords(handle, 0);
 
@@ -4421,8 +4429,8 @@ test("pruning preserves a worker whose thread state still belongs to the process
   scheduler.pruneDetachedProcessWorkers(handle, 0x5678, null);
 
   expect(hostExecutionState(handle).runningWorker).toBe(detachedWorker);
-  expect(handle.workers.has(detachedWorker)).toBe(true);
-  expect(handle.workers.has(anchorWorker)).toBe(true);
+  expect(processHasWorker(handle, detachedWorker)).toBe(true);
+  expect(processHasWorker(handle, anchorWorker)).toBe(true);
   expect(detachedWorker.terminate).not.toHaveBeenCalled();
 });
 
@@ -4447,7 +4455,7 @@ test("pruning preserves a detached worker in vfork wait", () => {
   };
   kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234 ? kernel.abi_status_vfork_wait() : kernel.abi_status_ok();
   const handle = makeHandle(kernel, vforkWorker, threadWorkerStates);
-  handle.workers.add(anchorWorker);
+  addProcessWorker(handle, anchorWorker);
   hostExecutionState(handle).runningWorker = vforkWorker;
 
   const scheduler = createWorkerScheduler({
@@ -4463,8 +4471,8 @@ test("pruning preserves a detached worker in vfork wait", () => {
   scheduler.pruneDetachedProcessWorkers(handle, 0x5678, null);
 
   expect(hostExecutionState(handle).runningWorker).toBe(vforkWorker);
-  expect(handle.workers.has(vforkWorker)).toBe(true);
-  expect(handle.workers.has(anchorWorker)).toBe(true);
+  expect(processHasWorker(handle, vforkWorker)).toBe(true);
+  expect(processHasWorker(handle, anchorWorker)).toBe(true);
 });
 
 test("pruning preserves a detached worker during execve spawn handoff", () => {
@@ -4488,7 +4496,7 @@ test("pruning preserves a detached worker during execve spawn handoff", () => {
   };
   kernel.thread_status = (vmPtr: number) => vmPtr === 0x1234 ? kernel.abi_status_execve_spawn() : kernel.abi_status_ok();
   const handle = makeHandle(kernel, execveWorker, threadWorkerStates);
-  handle.workers.add(anchorWorker);
+  addProcessWorker(handle, anchorWorker);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -4502,8 +4510,8 @@ test("pruning preserves a detached worker during execve spawn handoff", () => {
 
   scheduler.pruneDetachedProcessWorkers(handle, 0x5678, null);
 
-  expect(handle.workers.has(execveWorker)).toBe(true);
-  expect(handle.workers.has(anchorWorker)).toBe(true);
+  expect(processHasWorker(handle, execveWorker)).toBe(true);
+  expect(processHasWorker(handle, anchorWorker)).toBe(true);
 });
 
 test("pruning is deferred while child spawn records are still pending", () => {
@@ -4526,7 +4534,7 @@ test("pruning is deferred while child spawn records are still pending", () => {
     return 0;
   };
   const handle = makeHandle(kernel, staleWorker, threadWorkerStates);
-  handle.workers.add(anchorWorker);
+  addProcessWorker(handle, anchorWorker);
   setPendingChildSpawnRecords(handle, 1);
 
   const scheduler = createWorkerScheduler({
@@ -4541,8 +4549,8 @@ test("pruning is deferred while child spawn records are still pending", () => {
 
   scheduler.pruneDetachedProcessWorkers(handle, 0x5678, null);
 
-  expect(handle.workers.has(staleWorker)).toBe(true);
-  expect(handle.workers.has(anchorWorker)).toBe(true);
+  expect(processHasWorker(handle, staleWorker)).toBe(true);
+  expect(processHasWorker(handle, anchorWorker)).toBe(true);
 });
 
 test("enqueue clears a dangling running worker before stepping the next ready worker", () => {
@@ -4556,7 +4564,7 @@ test("enqueue clears a dangling running worker before stepping the next ready wo
   threadWorkerStates.set(readyWorker, makeThreadState(0x5678));
   const { exports: kernel } = makeKernel();
   const handle = makeHandle(kernel, readyWorker, threadWorkerStates);
-  handle.workers.add(staleWorker);
+  addProcessWorker(handle, staleWorker);
   hostExecutionState(handle).runningWorker = staleWorker;
 
   const scheduler = createWorkerScheduler({
@@ -4569,7 +4577,7 @@ test("enqueue clears a dangling running worker before stepping the next ready wo
     handleWorkerMessage: () => {},
   });
 
-  handle.workers.delete(staleWorker);
+  deleteProcessWorker(handle, staleWorker);
   scheduler.enqueueWorker(handle, readyWorker);
 
   expect(hostExecutionState(handle).runningWorker).toBe(readyWorker);
@@ -4650,7 +4658,7 @@ test("pumpProcess runs supervisor-selected ready worker while preserving a still
     ? kernel.abi_status_futex_wait()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, waitingWorker, threadWorkerStates);
-  handle.workers.add(runnableWorker);
+  addProcessWorker(handle, runnableWorker);
   hostExecutionState(handle).vforkReadyWorkers = [waitingWorker, runnableWorker];
 
   const scheduler = createWorkerScheduler({
@@ -4691,7 +4699,7 @@ test("pumpProcess skips a ready worker that is still in canonical futex wait", (
     ? kernel.abi_status_futex_wait()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, waitingWorker, threadWorkerStates);
-  handle.workers.add(runnableWorker);
+  addProcessWorker(handle, runnableWorker);
   hostExecutionState(handle).vforkReadyWorkers = [waitingWorker, runnableWorker];
 
   const scheduler = createWorkerScheduler({
@@ -4735,7 +4743,7 @@ test("pumpProcess skips a ready worker whose thread record is still futex-blocke
     ? 0xa46787cn
     : 0n;
   const handle = makeHandle(kernel, waitingWorker, threadWorkerStates);
-  handle.workers.add(runnableWorker);
+  addProcessWorker(handle, runnableWorker);
   hostExecutionState(handle).vforkReadyWorkers = [waitingWorker, runnableWorker];
 
   const scheduler = createWorkerScheduler({
@@ -4801,7 +4809,7 @@ test("pumpProcess drains only supervisor-selected futex resumes when supervisor 
   });
   const handle = makeHandle(kernel, selectedWorker, threadWorkerStates);
   kernel.memory = handle.memory;
-  handle.workers.add(unselectedWorker);
+  addProcessWorker(handle, unselectedWorker);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -4900,7 +4908,7 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
   kernel.supervisor_process_resume = vi.fn(() => 0);
   const handle = makeHandle(kernel, selectedWorker, threadWorkerStates);
   kernel.memory = handle.memory;
-  handle.workers.add(unselectedWorker);
+  addProcessWorker(handle, unselectedWorker);
   const debugEvents: string[] = [];
   const queue = createWorkerSchedulerQueueHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -4976,7 +4984,7 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
   });
   const handle = makeHandle(kernel, selectedWorker, threadWorkerStates);
   kernel.memory = handle.memory;
-  handle.workers.add(unselectedWorker);
+  addProcessWorker(handle, unselectedWorker);
   hostExecutionState(handle).vforkReadyWorkers = [selectedWorker, unselectedWorker];
   const debugEvents: string[] = [];
   const queue = createWorkerSchedulerQueueHelpers({
@@ -5044,7 +5052,7 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
   });
   const handle = makeHandle(kernel, ordinaryWorker, threadWorkerStates);
   kernel.memory = handle.memory;
-  handle.workers.add(continuationWorker);
+  addProcessWorker(handle, continuationWorker);
   hostExecutionState(handle).vforkReadyWorkers = [ordinaryWorker, continuationWorker];
   const debugEvents: string[] = [];
   const queue = createWorkerSchedulerQueueHelpers({
@@ -5119,7 +5127,7 @@ test("pumpProcess leaves a quiescent stack-local futex waiter parked with a bloc
     vmPtr === waitingThread.vmPtr ? stackLocalFutexAddr : 0n
   );
   const handle = makeHandle(kernel, waitingWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_epoll_wait(),
@@ -5176,7 +5184,7 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
     vmPtr === waitingThread.vmPtr ? 0x162c1d0n : 0n
   );
   const handle = makeHandle(kernel, waitingWorker, threadWorkerStates);
-  handle.workers.add(blockedWorker);
+  addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
     vmPtr: blockedThread.vmPtr,
     status: kernel.abi_status_pipe_wait(),

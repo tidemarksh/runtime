@@ -37,6 +37,7 @@ import {
   setProcessOnExit,
   setProcessOnStdout,
 } from "./process-callback-state.js";
+import { setProcessWorkers } from "./process-worker-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { createKernelShareGroup } from "./kernel-share.js";
 import {
@@ -673,13 +674,13 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       sabPageCache: options.sabPageCache ?? null,
       kernelWorkerRequest: options.kernelWorkerRequest,
       networkBridge: options.networkBridge,
-      workers: new Set(),
     };
     setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
     setProcessLastDebugMessage(handle, undefined);
     setProcessOnExit(handle, options.onExit);
     setProcessOnError(handle, options.onError);
     setProcessOnStdout(handle, options.onStdout);
+    setProcessWorkers(handle, []);
     setProcessMemoryOwnership(handle, memoryOwnership);
     return handle;
   }

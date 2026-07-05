@@ -1,5 +1,11 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import {
+  addProcessWorker,
+  deleteProcessWorker,
+  processHasWorker,
+  processWorkerCount,
+} from "../process-worker-state.js";
+import {
   setWorkerErrorHandler,
   setWorkerMessageErrorHandler,
   setWorkerMessageHandler,
@@ -159,7 +165,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
     const thread = deps.threadWorkerStates.get(runningWorker);
     if (
-      handle.workers.has(runningWorker)
+      processHasWorker(handle, runningWorker)
       && thread
       && (getThreadRunningGeneration(thread) ?? getThreadGeneration(thread)) === getThreadGeneration(thread)
     ) {
@@ -205,9 +211,9 @@ export function createWorkerSchedulerQueueHelpers(
       `attach-transfer-detach:${handle.pid}`
         + `:vm=0x${(thread?.vmPtr ?? 0).toString(16)}`
         + `:owner=${thread === undefined ? "none" : getThreadOwnerPid(thread)}`
-        + `:workers=${handle.workers.size}`,
+        + `:workers=${processWorkerCount(handle)}`,
     );
-    handle.workers.delete(worker);
+    deleteProcessWorker(handle, worker);
   }
 
   function attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void {
@@ -257,7 +263,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
 
     assertThreadOwnershipInvariant(handle, vmPtr, "attachThreadWorker");
-    handle.workers.add(worker);
+    addProcessWorker(handle, worker);
     deps.appendWorkerDebugLog(
       handle,
       `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
@@ -337,7 +343,7 @@ export function createWorkerSchedulerQueueHelpers(
       handle.runtimeId,
       `clone-child-init-post:${handle.pid}:vm=0x${vmPtr.toString(16)}`
         + `:generation=${generation}:force=${forcePrepare ? 1 : 0}`
-        + `:workers=${handle.workers.size}:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+        + `:workers=${processWorkerCount(handle)}:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
     );
     worker.postMessage(initMessage);
   }
@@ -349,7 +355,7 @@ export function createWorkerSchedulerQueueHelpers(
     const thread = deps.threadWorkerStates.get(worker);
     if (
       hostExecutionState(handle).runningWorker === worker
-      && handle.workers.has(worker)
+      && processHasWorker(handle, worker)
       && thread !== undefined
     ) {
       return;
@@ -395,7 +401,7 @@ export function createWorkerSchedulerQueueHelpers(
 
   function completeFaultedProcessWithoutWorkers(handle: ProcessHandle): boolean {
     if (
-      handle.workers.size !== 0
+      processWorkerCount(handle) !== 0
       || hostExecutionState(handle).vforkReadyWorkers.length !== 0
       || hostExecutionState(handle).runningWorker !== null
       || hostExecutionState(handle).hostBlockedWorkers.size !== 0

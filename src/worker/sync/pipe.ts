@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processWorkerCount } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -121,7 +122,7 @@ export async function syncPipeStateViaKernelWorker(
   let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
   const applyFdEntries = hostExecutionState(handle).runningWorker === null
     && hostExecutionState(handle).vforkReadyWorkers.length === 0
-    && handle.workers.size === 0
+    && processWorkerCount(handle) === 0
     && hostExecutionState(handle).hostBlockedWorkers.size === 0;
   appendSocketSyncDebug(
     handle,
@@ -132,7 +133,7 @@ export async function syncPipeStateViaKernelWorker(
       `applyFd=${applyFdEntries ? 1 : 0}`,
       `running=${hostExecutionState(handle).runningWorker === null ? 0 : 1}`,
       `ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
-      `workers=${handle.workers.size}`,
+      `workers=${processWorkerCount(handle)}`,
       `blocked=${hostExecutionState(handle).hostBlockedWorkers.size}`,
       `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
       formatFdSnapshotDebug("fds", fdEntries),

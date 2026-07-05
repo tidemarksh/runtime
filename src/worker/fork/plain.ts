@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processWorkerCount } from "../process-worker-state.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
 import {
   processDebugCommand,
@@ -86,7 +87,7 @@ async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Prom
   for (let turn = 0; turn < FORK_CHILD_FIRST_SCHEDULING_TURNS; turn += 1) {
     if (
       processExitInProgress(childHandle)
-      || childHandle.workers.size === 0
+      || processWorkerCount(childHandle) === 0
       || hostExecutionState(childHandle).hostBlockedWorkers.size > 0
       || hostExecutionState(childHandle).runningWorker !== null
       || hostExecutionState(childHandle).vforkReadyWorkers.length > 0

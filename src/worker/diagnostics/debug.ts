@@ -1,4 +1,9 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import {
+  processWorkerCount,
+  processWorkerList,
+  processWorkers,
+} from "../process-worker-state.js";
 import type {
   ProcessHandle,
   RuntimeMemoryOwnership,
@@ -776,7 +781,7 @@ export function summarizeProcessWorkerLogFocus(
   handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
 ): WorkerLogFocus[] {
-  const attachedStates = [...handle.workers]
+  const attachedStates = processWorkerList(handle)
     .map((worker) => {
       const state = threadWorkerStates.get(worker);
       if (!state || state.vmPtr === 0) {
@@ -964,7 +969,7 @@ export function debugRuntimeExecutionStats(
         memoryVmas: readMemoryVmas(handle),
         cpuDebugStats: readCpuDebugStats(handle),
         syscallDebugStats: readSyscallDebugStats(handle),
-        workers: [...handle.workers]
+        workers: processWorkerList(handle)
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
             if (!state || state.vmPtr === 0) {
@@ -1491,7 +1496,7 @@ export function debugRuntimeProcessHandles(
         const blocked = [...hostExecutionState(handle).hostBlockedWorkers.values()]
           .map((state) => `${state.status}@0x${state.vmPtr.toString(16)}`)
           .join(",");
-        const workerStates = [...handle.workers]
+        const workerStates = processWorkerList(handle)
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
             if (!state) {
@@ -1501,7 +1506,7 @@ export function debugRuntimeProcessHandles(
           })
           .filter(Boolean)
           .join(",");
-        const workerDetails = [...handle.workers]
+        const workerDetails = processWorkerList(handle)
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
             if (!state) {
@@ -1635,7 +1640,7 @@ export function debugRuntimeProcessHandles(
             const stage = readRuntimeBridgeDebugStage(handle.runtimeBridge);
             return `${stage.stage}:${stage.value}`;
           })()}`,
-          `workers=${handle.workers.size}`,
+          `workers=${processWorkerCount(handle)}`,
           `worker_states=[${workerStates}]`,
           `worker_details=[${workerDetails}]`,
           `worker_focus=[${workerFocusSummary}]`,
@@ -1721,7 +1726,7 @@ export function formatAllLiveThreadDebug(
     vmPtrs.add(handle.vmPtr);
   }
   vmPtrs.add(threadWorkerStates.get(handle.worker)?.vmPtr ?? 0);
-  for (const worker of handle.workers) {
+  for (const worker of processWorkers(handle)) {
     vmPtrs.add(threadWorkerStates.get(worker)?.vmPtr ?? 0);
   }
   return [...vmPtrs]

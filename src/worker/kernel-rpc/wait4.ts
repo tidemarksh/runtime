@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -55,7 +56,7 @@ export function createWorkerKernelRpcWait4Helpers(
       }
       finishBlockedRpc(blocked, null);
 
-      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+      if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
         return { kind: "process-gone" };
       }
 
@@ -82,7 +83,7 @@ export function createWorkerKernelRpcWait4Helpers(
       if (blocked && blocked.vmPtr === vmPtr) {
         finishBlockedRpc(blocked, null);
       }
-      if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+      if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
       return { kind: "process-gone" };

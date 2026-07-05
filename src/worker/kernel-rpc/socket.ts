@@ -1,3 +1,4 @@
+import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -41,7 +42,7 @@ export function createWorkerKernelRpcSocketHelpers(
       ofdSlots,
       kernelState: handle.kernelState,
     }), "connect-resumed", "resume-connect");
-    if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
+    if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone" };
     }
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);

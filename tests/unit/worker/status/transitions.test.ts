@@ -1,4 +1,8 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  addProcessWorker,
+  processHasWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
 import {
@@ -735,7 +739,7 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
-  handle.workers.add(faultWorker);
+  addProcessWorker(handle, faultWorker);
   handle.kernel.process_current_pid = () => 1;
   handle.kernel.process_thread_vm_ptr = () => 0;
   handle.kernel.thread_process_thread_count = () => 0;
@@ -877,7 +881,7 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
 
   expect(kernel.supervisor_fault_exit_decision).toHaveBeenCalledWith(0x1234, expect.any(Number), 88);
   expect(deps.completeProcessExit).not.toHaveBeenCalled();
-  expect(handle.workers.has(worker)).toBe(false);
+  expect(processHasWorker(handle, worker)).toBe(false);
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
@@ -1281,7 +1285,7 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
     };
     setThreadHostIdentity(childThread as never, handle.pid, 1);
     deps.threadWorkerStates.set(request.worker, childThread);
-    handle.workers.add(request.worker);
+    addProcessWorker(handle, request.worker);
   });
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
@@ -1390,7 +1394,7 @@ test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending t
     };
     setThreadHostIdentity(childThread as never, handle.pid, 1);
     deps.threadWorkerStates.set(request.worker, childThread);
-    handle.workers.add(request.worker);
+    addProcessWorker(handle, request.worker);
   });
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
@@ -1650,7 +1654,7 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async
     };
     setThreadHostIdentity(childThread as never, handle.pid, 1);
     deps.threadWorkerStates.set(request.worker, childThread);
-    handle.workers.add(request.worker);
+    addProcessWorker(handle, request.worker);
   });
   const transition = createWorkerStatusTransitionHandler(deps as never);
 

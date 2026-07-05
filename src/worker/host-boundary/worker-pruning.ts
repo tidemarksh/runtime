@@ -6,6 +6,11 @@ import {
   releaseWorker,
 } from "../pool.js";
 import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
+import {
+  deleteProcessWorker,
+  processWorkerCount,
+  processWorkerList,
+} from "../process-worker-state.js";
 import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "../supervisor-status.js";
 import type {
@@ -36,7 +41,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
     if (runningWorker !== null) {
       candidates.push(runningWorker);
     }
-    candidates.push(...hostExecutionState(handle).vforkReadyWorkers, ...handle.workers);
+    candidates.push(...hostExecutionState(handle).vforkReadyWorkers, ...processWorkerList(handle));
     const seen = new Set<Worker>();
     for (const candidate of candidates) {
       if (candidate === excludedWorker || seen.has(candidate)) {
@@ -89,7 +94,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
       return;
     }
 
-    for (const worker of [...handle.workers]) {
+    for (const worker of processWorkerList(handle)) {
       if (worker === currentWorker) {
         continue;
       }
@@ -126,7 +131,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
           + `:status=${handle.kernel.thread_status?.(thread.vmPtr) ?? "n/a"}`
           + `:live=[${formatLiveVmPtrs(liveVmPtrs)}]`,
       );
-      handle.workers.delete(worker);
+      deleteProcessWorker(handle, worker);
       deps.threadWorkerStates.delete(worker);
       releaseWorker(worker);
     }
@@ -137,7 +142,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
     anchorVmPtr: number,
     currentWorker: Worker | null,
   ): void {
-    if (anchorVmPtr === 0 || handle.workers.size <= 1) {
+    if (anchorVmPtr === 0 || processWorkerCount(handle) <= 1) {
       return;
     }
     const pendingChildSpawns = pendingChildSpawnRecordCount(handle);
