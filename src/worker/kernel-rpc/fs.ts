@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { processHasWorker, processWorkers } from "../process-worker-state.js";
 import { guestWriteWatchRegions } from "../guest-write-watch-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
@@ -1341,8 +1342,7 @@ async function resumeFsViaKernelWorkerInner(
         && hasLiveWorkerState(member, deps.threadWorkerStates)
         && hostExecutionState(member).runningWorker === null
         && !processExitInProgress(member)
-        && member.kernelWorkerRequest
-        && member.pid > 0
+        && processHasKernelWorkerOwnership(member)
       ));
     for (const peer of dirtyMemfsPeers) {
       const targets = [handle, ...deps.kernelShareOtherMembers(peer)]

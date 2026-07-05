@@ -1,3 +1,4 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import {
   processHostStdio,
@@ -124,7 +125,7 @@ test("fd pipe bridge follows supervisor visible-output settle plan", async () =>
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" } as never));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" } as never)));
   let syncCount = 0;
 
   await settleVisibleProcessOutput(handle, async () => {

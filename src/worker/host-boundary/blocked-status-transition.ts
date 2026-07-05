@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { processHasWorker } from "../process-worker-state.js";
 import {
   supervisorBlockedPipeWaitHasReadyEvents,
@@ -72,7 +73,7 @@ export async function executeHostBlockedStatusTransition(
     vmPtr,
     status,
     {
-      kernelWorkerAvailable: !!handle.kernelWorkerRequest && handle.pid > 0,
+      kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
       networkConnectionsAvailable: networkConnections(handle).size > 0,
     },
   );

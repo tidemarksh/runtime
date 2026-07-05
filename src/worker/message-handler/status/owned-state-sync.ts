@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { collectHeldEpollOfdIds } from "../../ownership/ofd-table.js";
 import {
   kernelShareOtherMembers,
@@ -74,8 +75,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const activeVforkChildOwnerMismatch = hostExecutionState(handle).vforkWorker === worker
       && supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
     const shouldSyncForkSharedState = workerOwnsAuthoritativeState
-      && handle.kernelWorkerRequest !== null
-      && handle.pid > 0
+      && processHasKernelWorkerOwnership(handle)
       && shouldRequestForkSharedForEffect
       && status === handle.kernel.abi_status_ok()
       && !activeVforkChildOwnerMismatch
@@ -94,8 +94,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const shouldPublishDirtyMemfs = status !== handle.kernel.abi_status_ok()
       || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
     const shouldSyncProcessMemfs = isRunningWorker
-      && handle.kernelWorkerRequest !== null
-      && handle.pid > 0
+      && processHasKernelWorkerOwnership(handle)
       && isProcessMemfsDirty(handle)
       && shouldPublishDirtyMemfs
       && !activeVforkChildOwnerMismatch

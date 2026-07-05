@@ -51,7 +51,7 @@ export async function syncEpollStateViaKernelWorker(
 
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState([handle]);
   appendSocketSyncDebug(handle, `epoll-sync-request:${handle.pid}:${formatSyncCause(cause)}`);
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
     response = await kernelWorkerRequest({
       type: "sync-epoll-state",
@@ -85,7 +85,7 @@ export async function syncOfdStateViaKernelWorker(
     handle,
     `ofd-sync-request:${handle.pid}:${formatSyncCause(cause)}:ofds=${ofdIds.join(",") || "none"}`,
   );
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
     response = await kernelWorkerRequest({
       type: "sync-ofd-state",

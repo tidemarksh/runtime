@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import {
   deleteProcessWorker,
   processHasWorker,
@@ -186,7 +187,7 @@ export function createBlockedRetryCoordinator(
     afterOutcome?: (outcome: KernelRpcResumeOutcome) => void,
     requireKernelWorker = true,
   ): boolean {
-    if (requireKernelWorker && (!handle.kernelWorkerRequest || handle.pid <= 0)) {
+    if (requireKernelWorker && !processHasKernelWorkerOwnership(handle)) {
       return false;
     }
     const hostBlockedResume = deps.executeHostBlockedSyscallResumeOutcome;
@@ -260,7 +261,7 @@ export function createBlockedRetryCoordinator(
     if (hostExecutionState(handle).runningWorker !== null) {
       flags.push("running-worker");
     }
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (processHasKernelWorkerOwnership(handle)) {
       flags.push("kernel-worker-available");
     }
     return flags;
@@ -364,8 +365,7 @@ export function createBlockedRetryCoordinator(
               return;
           }
           if (
-            handle.kernelWorkerRequest
-            && handle.pid > 0
+            processHasKernelWorkerOwnership(handle)
           ) {
             resumeBlockedSyscallViaResumeOutcome(
               handle,
@@ -668,7 +668,7 @@ export function createBlockedRetryCoordinator(
     if (hostExecutionState(handle).runningWorker !== null) {
       flags.push("running-worker");
     }
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (processHasKernelWorkerOwnership(handle)) {
       flags.push("kernel-worker-available");
     }
     if (kernelWorkerOwnsPipeState(handle)) {

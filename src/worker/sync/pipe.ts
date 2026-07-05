@@ -123,7 +123,7 @@ export async function syncPipeStateViaKernelWorker(
     `pipe-sync-request-slots:${handle.pid}:${formatPipeSnapshotDebug("slots", pipeSlots)}`,
   );
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(kernelShareMemberList(handle));
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   const applyFdEntries = hostExecutionState(handle).runningWorker === null
     && hostExecutionState(handle).vforkReadyWorkers.length === 0
     && processWorkerCount(handle) === 0

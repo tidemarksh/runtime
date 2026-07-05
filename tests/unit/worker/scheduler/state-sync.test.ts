@@ -1,3 +1,4 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
@@ -193,8 +194,8 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
   expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
-  expect(child.kernelWorkerRequest).toHaveBeenCalledTimes(1);
-  expect(parent.kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(processKernelWorkerRequest(child)).toHaveBeenCalledTimes(1);
+  expect(processKernelWorkerRequest(parent)).toHaveBeenCalledTimes(1);
   expect(retryHostBlockedWorker).not.toHaveBeenCalled();
 });
 
@@ -510,7 +511,7 @@ test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerf
   await helpers.requestEpollDependentOfdStateSync(handle);
 
   expect(syncedOfdIds).toEqual([[11, 12]]);
-  expect(handle.kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(processKernelWorkerRequest(handle)).toHaveBeenCalledTimes(1);
   expect(retryHostBlockedWorker).not.toHaveBeenCalled();
 });
 
@@ -568,7 +569,7 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
   handle.kernel.thread_socket_state = () => 3;
   handle.kernel.thread_socket_peer_idx = () => -1;
   handle.kernel.thread_socket_outbound_available = () => 0;
-  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg) => {
     expect(msg.type).toBe("sync-socket-state");
     const staleNetBufPool = new Uint8Array(handle.kernel.kernel_net_buf_pool_bytes());
     new DataView(staleNetBufPool.buffer).setUint32(4, 64, true);
@@ -587,7 +588,7 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
         netBufUsed: 1n,
       },
     };
-  });
+  }));
   addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -658,7 +659,7 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
   handle.kernel.thread_socket_state = () => 3;
   handle.kernel.thread_socket_peer_idx = () => -1;
   handle.kernel.thread_socket_outbound_available = () => 0;
-  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg) => {
     expect(msg.type).toBe("sync-socket-state");
     const newerNetBufPool = new Uint8Array(handle.kernel.kernel_net_buf_pool_bytes());
     const newerView = new DataView(newerNetBufPool.buffer);
@@ -680,7 +681,7 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
         netBufUsed: 1n,
       },
     };
-  });
+  }));
   addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -767,7 +768,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
   handle.kernel.thread_socket_state = () => 3;
   handle.kernel.thread_socket_peer_idx = () => -1;
   handle.kernel.thread_socket_outbound_available = () => 0;
-  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg) => {
     expect(msg.type).toBe("sync-socket-state");
     const staleNetBufPool = new Uint8Array(handle.kernel.kernel_net_buf_pool_bytes());
     const staleView = new DataView(staleNetBufPool.buffer);
@@ -790,7 +791,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
         netBufUsed: 1n,
       },
     };
-  });
+  }));
   addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -862,7 +863,7 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
   handle.kernel.thread_socket_state = () => socketState;
   handle.kernel.thread_socket_peer_idx = () => -1;
   handle.kernel.thread_socket_outbound_available = () => 0;
-  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg) => {
     expect(msg.type).toBe("sync-socket-state");
     recvAvailable = 0;
     socketState = 5;
@@ -891,7 +892,7 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
         netBufUsed: 1n,
       },
     };
-  });
+  }));
   addKernelShareMember(handle);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
@@ -926,8 +927,8 @@ test("requestPipeStateSync drains visible stdio owner during kernel-owned waking
 
   await helpers.requestPipeStateSync(child, true);
 
-  expect(child.kernelWorkerRequest).toHaveBeenCalledTimes(1);
-  expect(parent.kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(processKernelWorkerRequest(child)).toHaveBeenCalledTimes(1);
+  expect(processKernelWorkerRequest(parent)).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
   expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
@@ -949,7 +950,7 @@ test("requestPipeStateSync re-syncs the visible owner after self-drain advances 
 
   await helpers.requestPipeStateSync(handle, false);
 
-  expect(handle.kernelWorkerRequest).toHaveBeenCalledTimes(2);
+  expect(processKernelWorkerRequest(handle)).toHaveBeenCalledTimes(2);
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(handle);
   expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
@@ -1038,6 +1039,6 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
   await helpers.requestPipeStateSync(handle, true);
 
   expect(supervisorVforkChildOwnerMismatch).toHaveBeenCalledWith(0x1234, 1);
-  expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(processKernelWorkerRequest(handle)).not.toHaveBeenCalled();
   expect(drainProcessOutput).not.toHaveBeenCalled();
 });

@@ -1,4 +1,5 @@
 import { hostExecutionState } from "./host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
 import {
   processStderrPipe,
   processStdinPipe,
@@ -58,7 +59,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
           await deps.releaseSharedHostStdio(handle);
         }
       } finally {
-        if (handle.kernelWorkerRequest && handle.pid > 0) {
+        if (processHasKernelWorkerOwnership(handle)) {
           await deps.unregisterProcessWithKernelWorker(handle);
         }
       }

@@ -4,6 +4,8 @@ import {
   processStdioOwner,
 } from "./process-stdio-state.js";
 import { processExitInProgress } from "./process-lifecycle-state.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
+import { setProcessKernelWorkerRequest } from "./process-kernel-worker-request-state.js";
 import {
   processDebugCommand,
   processLastDebugMessage,
@@ -1781,7 +1783,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       return;
     }
     try {
-      if (handle.kernelWorkerRequest && handle.pid > 0) {
+      if (processHasKernelWorkerOwnership(handle)) {
         if (exitProcessThreadsAreGone(handle)) {
           deps.appendRuntimeLifecycleEvent(
             handle.runtimeId,
@@ -1868,11 +1870,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       deps.notifyProcessExitProgress(parent);
     }
     await publishProcessFsStateOnExit(handle, [parent]);
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (processHasKernelWorkerOwnership(handle)) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-unregister-before-parent-record:${handle.pid}`);
       await deps.unregisterProcessWithKernelWorker(handle);
       unregisteredKernelWorkerHandles.add(handle);
-      handle.kernelWorkerRequest = undefined;
+      setProcessKernelWorkerRequest(handle, undefined);
     }
 
     deps.appendWorkerDebugLog(
@@ -1908,7 +1910,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       child !== handle
       && processStdioOwner(child) === handle
       && child.pid > 0
-      && !!child.kernelWorkerRequest
+      && processHasKernelWorkerOwnership(child)
     ));
   }
 
@@ -2129,8 +2131,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       try {
         if (
           !unregisteredKernelWorkerHandles.has(handle)
-          && handle.kernelWorkerRequest
-          && handle.pid > 0
+          && processHasKernelWorkerOwnership(handle)
         ) {
           await deps.unregisterProcessWithKernelWorker(handle);
         }

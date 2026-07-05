@@ -1,3 +1,4 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
@@ -1001,7 +1002,7 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 5;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   const deps = makeDeps(worker);
   const order: string[] = [];
   deps.requestSocketStateSync = vi.fn(async () => {
@@ -1080,7 +1081,7 @@ test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supe
   const handle = makeHandle(worker);
   handle.pid = 1;
   hostExecutionState(handle).runningWorker = worker;
-  handle.kernelWorkerRequest = {} as never;
+  setProcessKernelWorkerRequest(handle, {} as never);
   const deps = makeDeps(worker);
   deps.syncEffectPipeState = 1;
   const thread = deps.threadWorkerStates.get(worker)!;
@@ -1690,7 +1691,7 @@ test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync c
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
   const deps = makeDeps(worker);
   deps.syncProcessLifecycleViaKernelWorker = vi.fn(() => new Promise<void>(() => {}));
@@ -1727,7 +1728,7 @@ test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => 
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
   const deps = makeDeps(worker);
   const syncResolutions: Array<() => void> = [];
@@ -1813,7 +1814,7 @@ test("STATUS_FS supervisor pipe-refresh NONE action skips shared pipe refresh", 
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 3;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   const kernel = handle.kernel as typeof handle.kernel & {
     supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
   };
@@ -1854,7 +1855,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 3;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   const kernel = handle.kernel as typeof handle.kernel & {
     supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
   };
@@ -1955,7 +1956,7 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 7;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
   const deps = makeDeps(worker);
   deps.syncEffectPipeState = 1;
   let resolvePipeSync: (() => void) | undefined;

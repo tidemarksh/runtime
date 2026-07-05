@@ -37,6 +37,7 @@ import {
   setProcessOnExit,
   setProcessOnStdout,
 } from "./process-callback-state.js";
+import { setProcessKernelWorkerRequest } from "./process-kernel-worker-request-state.js";
 import { setProcessStdioState } from "./process-stdio-state.js";
 import { setProcessWorkers } from "./process-worker-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
@@ -663,10 +664,10 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       kernelState,
       runtimeBridge,
       sabPageCache: options.sabPageCache ?? null,
-      kernelWorkerRequest: options.kernelWorkerRequest,
       networkBridge: options.networkBridge,
     };
     setProcessKernelShareGroup(handle, createKernelShareGroup());
+    setProcessKernelWorkerRequest(handle, options.kernelWorkerRequest);
     setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
     setProcessLastDebugMessage(handle, undefined);
     setProcessOnExit(handle, options.onExit);
@@ -848,7 +849,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
       ? bootstrapEntriesRequireMaterializedData ? "metadata" : "none"
       : "full";
-    const hasKernelWorkerOwnership = !!handle.kernelWorkerRequest && handle.pid > 0;
+    const hasKernelWorkerOwnership = options.kernelWorkerRequest !== undefined && handle.pid > 0;
     if (hasKernelWorkerOwnership) {
       await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
       appendMemoryStateDebug(handle, "register");

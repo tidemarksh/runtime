@@ -56,7 +56,10 @@ import {
   restoreProcessStates,
   snapshotProcessStates,
 } from "../ownership/process-state.js";
-import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import {
+  processHasKernelWorkerOwnership,
+  requireKernelWorkerOwnership,
+} from "../kernel-worker-ownership.js";
 import {
   composeHandlePipeUsed,
   expandPipePeerOfdIds,
@@ -445,7 +448,7 @@ export async function syncForkSharedStateViaKernelWorker(
       kernelState: target.kernelState,
     }));
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(kernelShareMemberList(handle));
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
     response = await kernelWorkerRequest({
       type: "sync-fork-shared-state",
@@ -523,7 +526,7 @@ export async function rehydrateForkSharedStateViaKernelWorker(
   if (targets.length === 0) {
     return;
   }
-  const owner = targets.find((target) => target.kernelWorkerRequest && target.pid > 0);
+  const owner = targets.find((target) => processHasKernelWorkerOwnership(target));
   if (!owner) {
     throw new Error("rehydrateForkSharedStateViaKernelWorker requires a kernel-worker-owned target");
   }
@@ -545,7 +548,7 @@ export async function rehydrateForkSharedStateViaKernelWorker(
     owner,
     `fork-shared-rehydrate:${owner.pid}:${formatSyncCause(options.cause)}:targets=${targetPids.join(",") || "none"}:ofds=${ofdIds.join(",") || "none"}`,
   );
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
     response = await kernelWorkerRequest({
       type: "rehydrate-fork-shared-state",

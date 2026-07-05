@@ -89,7 +89,6 @@ export interface ProcessHandle {
   kernelState: KernelRuntimeState;
   runtimeBridge: RuntimeStateBridge;
   sabPageCache: SharedArrayBuffer | null;
-  kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;
 }
 
@@ -110,10 +109,10 @@ export interface KernelShareGroup {
 
 export type KernelSyncHandle = Pick<
   ProcessHandle,
-  "memory" | "kernel" | "kernelState" | "pid" | "kernelWorkerRequest"
+  "memory" | "kernel" | "kernelState" | "pid"
 >;
 
-export type KernelOwnershipHandle = Pick<ProcessHandle, "pid" | "kernelWorkerRequest">;
+export type KernelOwnershipHandle = Pick<ProcessHandle, "pid">;
 
 export interface CreateProcessOptions {
   runtimeId?: number;

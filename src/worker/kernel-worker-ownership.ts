@@ -2,13 +2,19 @@ import type {
   KernelOwnershipHandle,
   KernelWorkerRequestFn,
 } from "./types.js";
+import { processKernelWorkerRequest } from "./process-kernel-worker-request-state.js";
 
 export function requireKernelWorkerOwnership(
   handle: KernelOwnershipHandle,
   operation: string,
 ): KernelWorkerRequestFn {
-  if (!handle.kernelWorkerRequest || handle.pid <= 0) {
+  const request = processKernelWorkerRequest(handle);
+  if (!request || handle.pid <= 0) {
     throw new Error(`${operation} requires kernel-worker ownership`);
   }
-  return handle.kernelWorkerRequest;
+  return request;
+}
+
+export function processHasKernelWorkerOwnership(handle: KernelOwnershipHandle): boolean {
+  return processKernelWorkerRequest(handle) !== undefined && handle.pid > 0;
 }

@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "../../ownership/pipe-control.js";
@@ -118,8 +119,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
 
     if (
       supervisorBlockedStatusIsWait4(handle.kernel, msg.status)
-      && handle.kernelWorkerRequest
-      && handle.pid > 0
+      && processHasKernelWorkerOwnership(handle)
     ) {
       clearThreadWaitingInWorkerStatus(thread);
       deps.blockWorker(handle, worker, msg.status, thread.vmPtr);

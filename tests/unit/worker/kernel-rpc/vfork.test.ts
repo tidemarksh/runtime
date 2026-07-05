@@ -1,3 +1,4 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import {
@@ -174,7 +175,7 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
     kind: "completed",
     status: 0,
   });
-  expect(handle.kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+  expect(processKernelWorkerRequest(handle)).toHaveBeenCalledWith(expect.objectContaining({
     type: "resume-vfork-parent",
     pid: 1,
     vmPtr: 0x1234,

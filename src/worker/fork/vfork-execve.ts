@@ -67,6 +67,7 @@ import {
   processLastDebugMessage,
   setProcessLastDebugMessage,
 } from "../process-debug-state.js";
+import { processKernelWorkerRequest } from "../process-kernel-worker-request-state.js";
 import { setProcessOnError } from "../process-callback-state.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
@@ -180,14 +181,15 @@ async function publishExecveBackingMissForHandoff(
   miss: ExecveBackingMiss,
 ): Promise<boolean> {
   const sab = handle.sabPageCache;
-  if (!sab || !handle.kernelWorkerRequest) {
+  const kernelWorkerRequest = processKernelWorkerRequest(handle);
+  if (!sab || !kernelWorkerRequest) {
     return false;
   }
   const span = supervisorBackingFillSpan(handle.kernel, miss);
   if (!span) {
     return false;
   }
-  const response = await handle.kernelWorkerRequest({
+  const response = await kernelWorkerRequest({
     type: "read-file-range-by-inode",
     ino: miss.ino,
     offset: span.offset,

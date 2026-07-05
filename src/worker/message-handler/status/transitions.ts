@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import {
   deleteProcessWorker,
   processHasWorker,
@@ -521,7 +522,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     if (status === handle.kernel.abi_status_fs()) {
       deps.appendWorkerDebugLog(handle, `fs:0x${thread.vmPtr.toString(16)}`);
       const pipeRefreshAction = supervisorFsPipeRefreshBeforeResumeAction(handle.kernel, thread.vmPtr, {
-        kernelWorkerAvailable: Boolean(handle.kernelWorkerRequest) && handle.pid > 0,
+        kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
       });
       if (pipeRefreshAction === "request-sync") {
         setThreadOwnerAsyncStatus(thread, status);

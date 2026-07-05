@@ -1,5 +1,6 @@
 import type { KernelOwnershipHandle } from "../types.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 
 export function kernelWorkerOwnsEpollState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
+  return processHasKernelWorkerOwnership(handle);
 }

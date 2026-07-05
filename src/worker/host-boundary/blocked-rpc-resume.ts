@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
@@ -212,8 +213,7 @@ async function executeHostBlockedSyscallResume(
       const transientProcessOwnerMismatch = supervisorProcessOwnerMismatch(handle.kernel, vmPtr, handle.pid);
       if (
         !transientProcessOwnerMismatch
-        && !!handle.kernelWorkerRequest
-        && handle.pid > 0
+        && processHasKernelWorkerOwnership(handle)
         && !supervisorBlockedStatusIsEpollWait(handle.kernel, blockedStatus)
       ) {
         deps.appendWorkerDebugLog(handle, `blocked-rpc-stage:${blockedStatus}:${options.syncAfterResumeStage}:pid=${handle.pid}:0x${vmPtr.toString(16)}`);

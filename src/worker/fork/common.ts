@@ -18,6 +18,10 @@ import {
 } from "../process-stdio-state.js";
 import { setProcessWorkers } from "../process-worker-state.js";
 import {
+  processKernelWorkerRequest,
+  setProcessKernelWorkerRequest,
+} from "../process-kernel-worker-request-state.js";
+import {
   processKernelShareGroup,
   setProcessKernelShareGroup,
 } from "../kernel-share.js";
@@ -72,12 +76,12 @@ export function createForkChildHandle({
     kernelState,
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: parent.sabPageCache,
-    kernelWorkerRequest: parent.kernelWorkerRequest,
     networkBridge: parent.networkBridge,
   };
   setProcessDebugCommand(childHandle, debugCommand);
   setProcessLastDebugMessage(childHandle, undefined);
   setProcessKernelShareGroup(childHandle, processKernelShareGroup(parent));
+  setProcessKernelWorkerRequest(childHandle, processKernelWorkerRequest(parent));
   setProcessStdioState(childHandle, {
     stdinPipe: kernel.process_stdin_pipe(vmPtr),
     stdoutPipe: kernel.process_stdout_pipe(vmPtr),

@@ -1,3 +1,4 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import { registerForkSharedSyncPromise } from "../../../../src/worker/fork-shared-sync-debug.js";
@@ -682,7 +683,7 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
     sourceVmPtr: child.vmPtr,
   });
 
-  expect(child.kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+  expect(processKernelWorkerRequest(child)).toHaveBeenCalledWith(expect.objectContaining({
     type: "sync-fork-shared-state",
     targetPids: [3],
   }));
@@ -701,7 +702,7 @@ test("fork-shared sync preserves epoll watched fd ownership and local epoll stat
   seedOfd(parent.memory, parent.kernelState, 12, FD_TYPE_PIPE, 6, 10);
   seedPipeSlot(child.memory, child.kernelState, 6, 1, 1);
   seedPipeSlot(parent.memory, parent.kernelState, 6, 1, 1);
-  child.kernelWorkerRequest = vi.fn(async (msg) => ({
+  setProcessKernelWorkerRequest(child, vi.fn(async (msg) => ({
     type: "fork-shared-state-synced",
     requestId: msg.requestId,
     kernelState: {
@@ -709,7 +710,7 @@ test("fork-shared sync preserves epoll watched fd ownership and local epoll stat
       epollTablePtr: 0x350000,
       pipeUsed: msg.kernelState.pipeUsed | 2n,
     },
-  }));
+  })));
 
   await syncForkSharedStateViaKernelWorker(child, [parent], {
     cause: { kind: "syscall", nr: -1n, name: "test-fork-shared-epoll-watched-fd" },
@@ -719,7 +720,7 @@ test("fork-shared sync preserves epoll watched fd ownership and local epoll stat
     sourceVmPtr: child.vmPtr,
   });
 
-  expect(child.kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+  expect(processKernelWorkerRequest(child)).toHaveBeenCalledWith(expect.objectContaining({
     type: "sync-fork-shared-state",
   }));
   expect(child.kernel.process_fd_ofd_id(child.vmPtr, 4)).toBe(10);
@@ -784,7 +785,7 @@ test("fork-shared delta skips regular file OFDs held only by a peer", async () =
     sourceVmPtr: child.vmPtr,
   });
 
-  expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(processKernelWorkerRequest(child)).not.toHaveBeenCalled();
 });
 
 test("fork-shared delta prunes stale shared OFDs when no sync is needed", async () => {
@@ -806,7 +807,7 @@ test("fork-shared delta prunes stale shared OFDs when no sync is needed", async 
   });
 
   expect(kernelShareHasSharedOfdId(child, 12)).toBe(false);
-  expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(processKernelWorkerRequest(child)).not.toHaveBeenCalled();
 });
 
 test("fork-shared tracking prunes regular file OFDs without a peer", async () => {
@@ -827,7 +828,7 @@ test("fork-shared tracking prunes regular file OFDs without a peer", async () =>
   });
 
   expect(kernelShareHasSharedOfdId(child, 12)).toBe(false);
-  expect(child.kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(processKernelWorkerRequest(child)).not.toHaveBeenCalled();
 });
 
 test("blocked fork-shared sync clears a stale active sync before waiting", async () => {
@@ -866,7 +867,7 @@ test("blocked fork-shared sync registers its active gate for stale-source cleari
   addKernelShareSharedOfdId(handle, 12);
   addKernelShareSharedOfdId(handle, 13);
   let syncRequests = 0;
-  handle.kernelWorkerRequest = vi.fn(async (msg) => {
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg) => {
     if (msg.type !== "sync-fork-shared-state") {
       return {
         type: "fork-shared-state-rehydrated",
@@ -882,7 +883,7 @@ test("blocked fork-shared sync registers its active gate for stale-source cleari
       requestId: msg.requestId,
       kernelState: msg.kernelState,
     };
-  });
+  }));
 
   void syncBlockedForkSharedStateViaKernelWorker(
     handle,

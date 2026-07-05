@@ -1,3 +1,4 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import {
@@ -626,7 +627,7 @@ test("settleVisibleProcessOutput keeps syncing until late stdout becomes visible
   handle.onStdout = (data) => {
     drainedChunks.push(new TextDecoder().decode(data));
   };
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" } as never));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" } as never)));
   let syncCount = 0;
 
   await settleVisibleProcessOutput(handle, async () => {
@@ -658,7 +659,7 @@ test("settleInheritedChildOutput keeps syncing until child stdout tail is visibl
     onStdout: undefined,
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
   });
-  owner.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" } as never));
+  setProcessKernelWorkerRequest(owner, vi.fn(async () => ({ type: "pipe-state-synced" } as never)));
 
   let syncCount = 0;
   await settleInheritedChildOutput(child, async () => {
@@ -697,7 +698,7 @@ test("settleInheritedChildOutput drains child local stdout when parent has not m
     onStdout: undefined,
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
   });
-  owner.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" } as never));
+  setProcessKernelWorkerRequest(owner, vi.fn(async () => ({ type: "pipe-state-synced" } as never)));
 
   let syncCount = 0;
   await settleInheritedChildOutput(child, async () => {
@@ -893,13 +894,13 @@ test("releaseSharedHostStdioViaKernelWorker releases the shared backend through 
     },
   });
   const requests: KernelWorkerRequest[] = [];
-  handle.kernelWorkerRequest = vi.fn(async (msg): Promise<KernelWorkerOutbound> => {
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg): Promise<KernelWorkerOutbound> => {
     requests.push(msg);
     if (msg.type !== "release-host-stdio") {
       throw new Error(`unexpected kernel-worker request: ${msg.type}`);
     }
     return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
-  });
+  }));
   const ports = {
     wakePipeAndEpollWaitersInKernelShare: vi.fn(),
   };

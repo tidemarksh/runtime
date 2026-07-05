@@ -6,9 +6,14 @@ import type {
 } from "../types.js";
 
 const kernelShareGroups = new WeakMap<ProcessHandle, KernelShareGroup>();
+const PROCESS_KERNEL_SHARE_GROUP = Symbol.for("tidemark.worker.kernelShareGroup");
 
 type LegacyKernelShareSeed = {
   kernelShare?: KernelShareGroup;
+};
+
+type KernelShareStateCarrier = ProcessHandle & {
+  [PROCESS_KERNEL_SHARE_GROUP]?: KernelShareGroup;
 };
 
 function consumeLegacyKernelShareGroup(handle: ProcessHandle): KernelShareGroup | null {
@@ -49,19 +54,33 @@ export function processKernelShareGroup(handle: ProcessHandle): KernelShareGroup
   if (group !== undefined) {
     return group;
   }
+  const carrier = handle as KernelShareStateCarrier;
+  if (Object.prototype.hasOwnProperty.call(carrier, PROCESS_KERNEL_SHARE_GROUP)) {
+    const sharedGroup = carrier[PROCESS_KERNEL_SHARE_GROUP];
+    if (sharedGroup !== undefined) {
+      kernelShareGroups.set(handle, sharedGroup);
+      return sharedGroup;
+    }
+  }
   const legacy = consumeLegacyKernelShareGroup(handle);
   if (legacy !== null) {
-    kernelShareGroups.set(handle, legacy);
+    setProcessKernelShareGroup(handle, legacy);
     return legacy;
   }
   const created = createKernelShareGroup();
-  kernelShareGroups.set(handle, created);
+  setProcessKernelShareGroup(handle, created);
   return created;
 }
 
 export function setProcessKernelShareGroup(handle: ProcessHandle, group: KernelShareGroup): void {
   consumeLegacyKernelShareGroup(handle);
   kernelShareGroups.set(handle, group);
+  Object.defineProperty(handle, PROCESS_KERNEL_SHARE_GROUP, {
+    configurable: true,
+    enumerable: false,
+    value: group,
+    writable: true,
+  });
 }
 
 export function addKernelShareMember(handle: ProcessHandle, member: ProcessHandle = handle): void {

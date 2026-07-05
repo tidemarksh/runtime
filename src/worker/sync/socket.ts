@@ -75,7 +75,7 @@ export async function syncSocketStateViaKernelWorker(
     handle,
     `socket-sync-start:${handle.pid}:${formatSyncCause(cause)}:${formatNetworkSocketDebug(handle)}`,
   );
-  let response: Awaited<ReturnType<NonNullable<ProcessHandle["kernelWorkerRequest"]>>>;
+  let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
     response = await kernelWorkerRequest({
       type: "sync-socket-state",

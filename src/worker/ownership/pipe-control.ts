@@ -15,6 +15,7 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { kernelShareMemberList } from "../kernel-share.js";
 import { appendPendingPipeSlotSnapshots } from "../pending-pipe-slot-state.js";
 import {
@@ -99,7 +100,7 @@ function applyPipeSlotSnapshot(
 }
 
 export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
+  return processHasKernelWorkerOwnership(handle);
 }
 
 function processPrivatePipeSlotMask(handle: ProcessHandle, vmPtr: number): bigint {
