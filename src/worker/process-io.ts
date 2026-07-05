@@ -25,6 +25,7 @@ import {
   networkSocketSlotWatermarks,
 } from "./network-socket-state.js";
 import { getRuntimeStateSyncPromise, runtimeStateSyncInFlight } from "./state-sync-inflight.js";
+import { setStdinFlushPromise, stdinFlushPromise } from "./stdin-flush-state.js";
 import { stdinQueue } from "./stdio-buffer-state.js";
 import type { ProcessHandle } from "./types.js";
 import { workerDebugLog } from "./worker-debug-log.js";
@@ -993,10 +994,10 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function scheduleQueuedStdinFlush(handle: ProcessHandle): void {
-    if (handle.stdinFlushPromise !== null) {
+    if (stdinFlushPromise(handle) !== null) {
       return;
     }
-    handle.stdinFlushPromise = (async () => {
+    const promise = (async () => {
       const pendingPipeSync = getRuntimeStateSyncPromise(handle, "pipe");
       if (pendingPipeSync !== null) {
         await pendingPipeSync;
@@ -1014,11 +1015,12 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
     }).finally(() => {
-      handle.stdinFlushPromise = null;
+      setStdinFlushPromise(handle, null);
       if (deps.isActiveHandle(handle) && stdinQueue(handle).length > 0) {
         scheduleQueuedStdinFlush(handle);
       }
     });
+    setStdinFlushPromise(handle, promise);
   }
 
   function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {

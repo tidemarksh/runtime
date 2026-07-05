@@ -61,7 +61,6 @@ export function createForkChildHandle({
     stdinClosed: parent.stdinClosed,
     stdioOwner: parent,
     kernelShare: parent.kernelShare,
-    stdinFlushPromise: null,
     debugCommand,
     lastDebugMessage: undefined,
     runtimeBridge: createRuntimeStateBridge(),

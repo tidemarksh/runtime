@@ -657,7 +657,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       stdinClosed: (options.stdin ?? "pipe") === "closed",
       stdioOwner: null,
       kernelShare: createKernelShareGroup(),
-      stdinFlushPromise: null,
       debugCommand: options.argv?.[0] ?? "<entry>",
       lastDebugMessage: undefined,
       runtimeBridge,
