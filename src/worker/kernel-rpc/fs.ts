@@ -34,6 +34,7 @@ import {
   setProcessMemfsDirty,
   setProcessMemfsPublishPending,
 } from "../process-memfs-state.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import {
   type ProcessHandle,
   type ThreadWorkerState,
@@ -1337,7 +1338,7 @@ async function resumeFsViaKernelWorkerInner(
         isProcessMemfsDirty(member)
         && hasLiveWorkerState(member, deps.threadWorkerStates)
         && hostExecutionState(member).runningWorker === null
-        && !member.exitInProgress
+        && !processExitInProgress(member)
         && member.kernelWorkerRequest
         && member.pid > 0
       ));
@@ -1345,7 +1346,7 @@ async function resumeFsViaKernelWorkerInner(
       const targets = [handle, ...deps.kernelShareOtherMembers(peer)]
         .filter((member, index, members) => (
           member !== peer
-          && !member.exitInProgress
+          && !processExitInProgress(member)
           && hostExecutionState(member).runningWorker === null
           && members.indexOf(member) === index
         ));

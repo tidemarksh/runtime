@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../../src/worker/lifecycle.js";
+import { processExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -376,7 +377,7 @@ test("completeProcessExit runs only once while a kernel-worker-owned exit is alr
   await Promise.resolve();
   await Promise.resolve();
   await lifecycle.completeProcessExit(handle, 0, 6);
-  expect(handle.exitInProgress).toBe(true);
+  expect(processExitInProgress(handle)).toBe(true);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalled();
   expect(drainProcessOutput).toHaveBeenCalledTimes(0);
   expect(requestPipeStateSync).toHaveBeenCalledTimes(1);

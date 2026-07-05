@@ -16,6 +16,7 @@ import {
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import { reapplyMemfsDeletedPaths } from "../memfs-tombstones.js";
 import {
   mergeKernelShareOfdStateInto,
@@ -84,7 +85,7 @@ function isQuiescentForkSharedSyncTarget(target: ProcessHandle): boolean {
     && hostExecutionState(target).vforkReadyWorkers.length === 0
     && hostExecutionState(target).hostBlockedWorkers.size > 0
     && !hasPendingBlockedRpc(target)
-    && !target.exitInProgress;
+    && !processExitInProgress(target);
 }
 
 function hasPendingBlockedRpc(handle: ProcessHandle): boolean {
@@ -128,8 +129,8 @@ export function requestOwnedForkSharedStateSync(
     const registered = deps.processHandles?.get(member.pid);
     if (
       hostExecutionState(member).runningWorker !== null
-      || member.exitInProgress
-      || registered?.exitInProgress
+      || processExitInProgress(member)
+      || (registered !== undefined && processExitInProgress(registered))
       || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
     ) {
       return false;
@@ -142,8 +143,8 @@ export function requestOwnedForkSharedStateSync(
     }
     const registered = deps.processHandles?.get(member.pid);
     if (
-      member.exitInProgress
-      || registered?.exitInProgress
+      processExitInProgress(member)
+      || (registered !== undefined && processExitInProgress(registered))
       || targetHasIncompatibleForkSharedOfd(handle, member, handle.kernelShare.sharedOfdIds)
     ) {
       return false;
@@ -577,7 +578,7 @@ export async function syncBlockedForkSharedStateViaKernelWorker(
   const syncTargets = kernelShareOtherMembers(handle)
     .filter((member) => (
       hostExecutionState(member).runningWorker === null
-      && !member.exitInProgress
+      && !processExitInProgress(member)
       && !hasPendingBlockedRpc(member)
     ));
   const syncPromise = syncForkSharedStateViaKernelWorker(

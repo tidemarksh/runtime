@@ -17,6 +17,7 @@ import {
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
 import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
 import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
+import { beginProcessExit } from "./process-lifecycle-state.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "./supervisor-status.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
@@ -98,10 +99,9 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
   }
 
   function beginProcessTeardown(handle: ProcessHandle): boolean {
-    if (handle.exitInProgress) {
+    if (!beginProcessExit(handle)) {
       return false;
     }
-    handle.exitInProgress = true;
     if (handle.stdioOwner === null && !kernelWorkerOwnsPipeState(handle)) {
       deps.drainProcessOutput(handle);
     }

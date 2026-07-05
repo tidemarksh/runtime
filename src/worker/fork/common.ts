@@ -69,7 +69,6 @@ export function createForkChildHandle({
     kernelWorkerRequest: parent.kernelWorkerRequest,
     networkBridge: parent.networkBridge,
     workers: new Set<Worker>(),
-    exitInProgress: false,
     onError: createInheritedErrorSink(
       parent,
       childPid,

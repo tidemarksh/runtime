@@ -7,6 +7,7 @@ import {
   supervisorBlockedPollWaitTimeoutMs,
   type SupervisorBlockedWaitRetryFlags,
 } from "../../supervisor-blocked-resume.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import {
   supervisorProcessPipeHostFdForFd,
   supervisorProcessPipeOfdForFd,
@@ -49,7 +50,7 @@ export function createPipePollScheduler(deps: PipePollSchedulerDeps): PipePollSc
     }
     const holders: string[] = [];
     for (const member of handle.kernelShare.members) {
-      if (member.vmPtr === 0 || member.exitInProgress) {
+      if (member.vmPtr === 0 || processExitInProgress(member)) {
         continue;
       }
       const maxFds = member.kernel.abi_max_fds();

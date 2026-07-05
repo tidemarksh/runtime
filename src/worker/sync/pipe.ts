@@ -23,6 +23,7 @@ import {
   reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import { snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
@@ -168,7 +169,7 @@ export async function syncPipeStateViaKernelWorker(
   if (response.pipeSlots && response.pipeSlots.length > 0) {
     mergePipeSlotSnapshotsIntoHandle(handle, response.pipeSlots);
     for (const member of kernelShareOtherMembers(handle)) {
-      if (hostExecutionState(member).runningWorker !== null || member.exitInProgress) {
+      if (hostExecutionState(member).runningWorker !== null || processExitInProgress(member)) {
         continue;
       }
       mergePipeSlotSnapshotsIntoHandle(member, response.pipeSlots);
@@ -179,7 +180,7 @@ export async function syncPipeStateViaKernelWorker(
   }
   if (pipeSlots.length > 0) {
     for (const member of kernelShareOtherMembers(handle)) {
-      if (hostExecutionState(member).runningWorker !== null || member.exitInProgress) {
+      if (hostExecutionState(member).runningWorker !== null || processExitInProgress(member)) {
         continue;
       }
       mergePipeSlotSnapshotsIntoHandle(member, pipeSlots);

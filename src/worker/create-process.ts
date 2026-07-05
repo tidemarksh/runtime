@@ -665,7 +665,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       kernelWorkerRequest: options.kernelWorkerRequest,
       networkBridge: options.networkBridge,
       workers: new Set(),
-      exitInProgress: false,
       onExit: options.onExit,
       onError: options.onError,
       onStdout: options.onStdout,

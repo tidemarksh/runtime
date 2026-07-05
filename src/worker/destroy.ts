@@ -2,6 +2,7 @@ import { hostExecutionState } from "./host-execution-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
+import { setProcessExitInProgress } from "./process-lifecycle-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 interface WorkerDestroyDeps {
@@ -24,7 +25,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
   }
 
   function destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit: boolean): void {
-    handle.exitInProgress = true;
+    setProcessExitInProgress(handle, true);
     for (const worker of [...hostExecutionState(handle).hostBlockedWorkers.keys()]) {
       deps.clearBlockedWorker(handle, worker);
     }

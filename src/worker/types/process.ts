@@ -103,7 +103,6 @@ export interface ProcessHandle {
   kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;
   workers: Set<Worker>;
-  exitInProgress?: boolean;
   onExit?: (code: number) => void;
   onError?: (error: Error) => void;
   onStdout?: (data: Uint8Array) => void;

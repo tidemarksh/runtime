@@ -1,4 +1,5 @@
 import { hostExecutionState } from "./host-execution-state.js";
+import { processExitInProgress } from "./process-lifecycle-state.js";
 import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { outputBacklog } from "./stdio-buffer-state.js";
@@ -1928,7 +1929,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     parts.push(`running=${hostExecutionState(child).runningWorker === null ? 0 : 1}`);
     parts.push(`ready=${hostExecutionState(child).vforkReadyWorkers.length}`);
     parts.push(`blocked=${hostExecutionState(child).hostBlockedWorkers.size}`);
-    parts.push(`exit=${child.exitInProgress ? 1 : 0}`);
+    parts.push(`exit=${processExitInProgress(child) ? 1 : 0}`);
     return parts.join("/");
   }
 
@@ -1961,7 +1962,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
           active = true;
           continue;
         }
-        active ||= deps.processHandles.get(child.pid) === child && !child.exitInProgress;
+        active ||= deps.processHandles.get(child.pid) === child && !processExitInProgress(child);
       }
       if (!active) {
         break;

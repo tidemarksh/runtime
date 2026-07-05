@@ -7,6 +7,7 @@ import {
 } from "./shared.js";
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import type {
   ProcessHandle,
   SyncCause,
@@ -66,7 +67,7 @@ export async function releaseSharedHostStdioViaKernelWorker(
   if (shared.refCount > 0) {
     return;
   }
-  if (handle.stdioOwner !== null && !handle.stdioOwner.exitInProgress) {
+  if (handle.stdioOwner !== null && !processExitInProgress(handle.stdioOwner)) {
     return;
   }
   const pipeUsed = await releaseHostStdioViaKernelWorker(handle, hostStdioReleaseCause());

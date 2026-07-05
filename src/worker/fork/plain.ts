@@ -1,4 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import {
   attachKernelRuntimeState,
@@ -79,7 +80,7 @@ function acquireWorkerMemoryFence(handle: ProcessHandle): void {
 async function waitForForkChildSchedulingPoint(childHandle: ProcessHandle): Promise<void> {
   for (let turn = 0; turn < FORK_CHILD_FIRST_SCHEDULING_TURNS; turn += 1) {
     if (
-      childHandle.exitInProgress
+      processExitInProgress(childHandle)
       || childHandle.workers.size === 0
       || hostExecutionState(childHandle).hostBlockedWorkers.size > 0
       || hostExecutionState(childHandle).runningWorker !== null

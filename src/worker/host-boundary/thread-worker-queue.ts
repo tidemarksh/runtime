@@ -12,6 +12,7 @@ import {
   clearForkSharedSyncIfCurrent,
   getKernelShareForkSharedSync,
 } from "../fork-shared-sync-state.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
 import type {
   AttachThreadWorkerRequest,
   ProcessHandle,
@@ -342,7 +343,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
-    if (handle.exitInProgress) {
+    if (processExitInProgress(handle)) {
       return;
     }
     const thread = deps.threadWorkerStates.get(worker);
@@ -433,7 +434,7 @@ export function createWorkerSchedulerQueueHelpers(
   }
 
   function pumpProcess(handle: ProcessHandle): void {
-    if (handle.exitInProgress) {
+    if (processExitInProgress(handle)) {
       return;
     }
     const forkSharedSyncPromise = getKernelShareForkSharedSync(handle.kernelShare);

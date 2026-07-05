@@ -13,6 +13,7 @@ import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import { workerMessageDebugStats } from "./worker-debug-stats.js";
+import { processExitInProgress } from "./process-lifecycle-state.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
 import {
   getThreadGeneration,
@@ -271,7 +272,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       );
       return;
     }
-    if (handle.exitInProgress) {
+    if (processExitInProgress(handle)) {
       recordWorkerMessageDebugEvent(
         workerMessageDebugStats(handle),
         "exitInProgressDrops",
