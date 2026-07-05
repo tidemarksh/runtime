@@ -157,6 +157,17 @@ export type SupervisorStateSyncKind =
   | "epoll"
   | "socket";
 
+export interface SupervisorOwnedStateSyncActions {
+  markProcessMemfsDirty: boolean;
+  syncForkSharedState: boolean;
+  syncEpollDependentOfds: boolean;
+  syncSocketState: boolean;
+  wakeSocketWaiters: boolean;
+  syncProcessMemfs: boolean;
+  syncEpollState: boolean;
+  retryEpollWaiters: boolean;
+}
+
 type SupervisorNumberConstExportName =
   | "supervisor_resume_flag_timeout_expired"
   | "supervisor_blocked_pipe_resume_action_defer"
@@ -175,6 +186,24 @@ type SupervisorNumberConstExportName =
   | "supervisor_state_sync_request_flag_wake_waiters"
   | "supervisor_state_sync_run_flag_run"
   | "supervisor_state_sync_run_flag_wake_waiters"
+  | "supervisor_owned_state_sync_action_none"
+  | "supervisor_owned_state_sync_action_mark_process_memfs_dirty"
+  | "supervisor_owned_state_sync_action_sync_fork_shared"
+  | "supervisor_owned_state_sync_action_sync_epoll_dependent_ofds"
+  | "supervisor_owned_state_sync_action_sync_socket"
+  | "supervisor_owned_state_sync_action_wake_socket_waiters"
+  | "supervisor_owned_state_sync_action_sync_process_memfs"
+  | "supervisor_owned_state_sync_action_sync_epoll"
+  | "supervisor_owned_state_sync_action_retry_epoll_waiters"
+  | "supervisor_owned_state_sync_flag_running_worker"
+  | "supervisor_owned_state_sync_flag_worker_owns_authoritative_state"
+  | "supervisor_owned_state_sync_flag_kernel_worker_available"
+  | "supervisor_owned_state_sync_flag_epoll_state_kernel_owns"
+  | "supervisor_owned_state_sync_flag_fork_shared_effect_requested"
+  | "supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch"
+  | "supervisor_owned_state_sync_flag_process_memfs_dirty"
+  | "supervisor_owned_state_sync_flag_held_epoll_ofd"
+  | "supervisor_owned_state_sync_flag_wrote_or_drained_pipe"
   | "supervisor_blocked_wait_retry_flag_host_progress"
   | "supervisor_blocked_wait_retry_flag_active_child"
   | "supervisor_blocked_wait_retry_flag_passive_wait"
@@ -800,6 +829,157 @@ export function supervisorStateSyncClear(
   if (result < 0) {
     throw new Error(`kernel supervisor state-sync clear failed: ${result}`);
   }
+}
+
+function supervisorOwnedStateSyncActionFlags(
+  kernel: KernelExports,
+  options: {
+    runningWorker: boolean;
+    workerOwnsAuthoritativeState: boolean;
+    kernelWorkerAvailable: boolean;
+    epollStateKernelOwns: boolean;
+    forkSharedEffectRequested: boolean;
+    activeVforkChildOwnerMismatch: boolean;
+    processMemfsDirty: boolean;
+    heldEpollOfd: boolean;
+    wroteOrDrainedPipe: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.runningWorker) {
+    flags |= readSupervisorNumberConst(kernel, "supervisor_owned_state_sync_flag_running_worker");
+  }
+  if (options.workerOwnsAuthoritativeState) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_worker_owns_authoritative_state",
+    );
+  }
+  if (options.kernelWorkerAvailable) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_kernel_worker_available",
+    );
+  }
+  if (options.epollStateKernelOwns) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_epoll_state_kernel_owns",
+    );
+  }
+  if (options.forkSharedEffectRequested) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_fork_shared_effect_requested",
+    );
+  }
+  if (options.activeVforkChildOwnerMismatch) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch",
+    );
+  }
+  if (options.processMemfsDirty) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_process_memfs_dirty",
+    );
+  }
+  if (options.heldEpollOfd) {
+    flags |= readSupervisorNumberConst(kernel, "supervisor_owned_state_sync_flag_held_epoll_ofd");
+  }
+  if (options.wroteOrDrainedPipe) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_owned_state_sync_flag_wrote_or_drained_pipe",
+    );
+  }
+  return flags;
+}
+
+export function supervisorOwnedStateSyncActions(
+  kernel: KernelExports,
+  status: number,
+  completedSyncEffects: number,
+  options: {
+    runningWorker: boolean;
+    workerOwnsAuthoritativeState: boolean;
+    kernelWorkerAvailable: boolean;
+    epollStateKernelOwns: boolean;
+    forkSharedEffectRequested: boolean;
+    activeVforkChildOwnerMismatch: boolean;
+    processMemfsDirty: boolean;
+    heldEpollOfd: boolean;
+    wroteOrDrainedPipe: boolean;
+  },
+): SupervisorOwnedStateSyncActions {
+  const readAction = kernel.supervisor_owned_state_sync_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_owned_state_sync_action");
+  }
+  const result = readAction.call(
+    kernel,
+    status,
+    completedSyncEffects,
+    supervisorOwnedStateSyncActionFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor owned-state sync action failed: ${result}`);
+  }
+  const markProcessMemfsDirty = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_mark_process_memfs_dirty",
+  );
+  const syncForkSharedState = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_sync_fork_shared",
+  );
+  const syncEpollDependentOfds = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_sync_epoll_dependent_ofds",
+  );
+  const syncSocketState = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_sync_socket",
+  );
+  const wakeSocketWaiters = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_wake_socket_waiters",
+  );
+  const syncProcessMemfs = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_sync_process_memfs",
+  );
+  const syncEpollState = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_sync_epoll",
+  );
+  const retryEpollWaiters = readSupervisorNumberConst(
+    kernel,
+    "supervisor_owned_state_sync_action_retry_epoll_waiters",
+  );
+  const known = readSupervisorNumberConst(kernel, "supervisor_owned_state_sync_action_none")
+    | markProcessMemfsDirty
+    | syncForkSharedState
+    | syncEpollDependentOfds
+    | syncSocketState
+    | wakeSocketWaiters
+    | syncProcessMemfs
+    | syncEpollState
+    | retryEpollWaiters;
+  if ((result & ~known) !== 0) {
+    throw new Error(`kernel supervisor owned-state sync action is unknown: ${result}`);
+  }
+  return {
+    markProcessMemfsDirty: (result & markProcessMemfsDirty) !== 0,
+    syncForkSharedState: (result & syncForkSharedState) !== 0,
+    syncEpollDependentOfds: (result & syncEpollDependentOfds) !== 0,
+    syncSocketState: (result & syncSocketState) !== 0,
+    wakeSocketWaiters: (result & wakeSocketWaiters) !== 0,
+    syncProcessMemfs: (result & syncProcessMemfs) !== 0,
+    syncEpollState: (result & syncEpollState) !== 0,
+    retryEpollWaiters: (result & retryEpollWaiters) !== 0,
+  };
 }
 
 function supervisorRetryFlags(

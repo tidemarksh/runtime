@@ -23,6 +23,9 @@ import {
   clearThreadOwnerAsyncStatus,
   setThreadOwnerAsyncStatus,
 } from "../../thread-host-state.js";
+import {
+  supervisorOwnedStateSyncActions,
+} from "../../../supervisor-blocked-resume.js";
 
 interface OwnedStateSyncArgs {
   handle: ProcessHandle;
@@ -56,54 +59,47 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       deps.threadWorkerStates,
     );
     const workerOwnsAuthoritativeState = isRunningWorker || workerStillOwnedByHandle();
-    const shouldWakeSocketWaiters = status === handle.kernel.abi_status_ok()
-      && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0;
     const hasForkSharedEffect = (completedSyncEffects & syncEffects.syncEffectForkSharedOfdState) !== 0;
     const forkSharedHasTrackedState = kernelShareSharedOfdIds(handle).size > 0
       || kernelShareOtherMembers(handle).length > 0;
-    const shouldRequestForkSharedForEffect = shouldRequestForkSharedStateForEffect(
+    const forkSharedEffectRequested = shouldRequestForkSharedStateForEffect(
       handle,
       thread.vmPtr,
       hasForkSharedEffect,
       forkSharedHasTrackedState,
     );
-    const hasProcessMemfsEffect = (completedSyncEffects & syncEffects.syncEffectProcessMemfs) !== 0;
-    if (isRunningWorker && hasProcessMemfsEffect) {
-      setProcessMemfsDirty(handle, true);
-    }
+    const kernelWorkerAvailable = processHasKernelWorkerOwnership(handle);
+    const epollStateKernelOwns = kernelWorkerOwnsEpollState(handle);
     const activeVforkChildOwnerMismatch = hostExecutionState(handle).vforkWorker === worker
       && supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
-    const shouldSyncForkSharedState = workerOwnsAuthoritativeState
-      && processHasKernelWorkerOwnership(handle)
-      && shouldRequestForkSharedForEffect
-      && status === handle.kernel.abi_status_ok()
-      && !activeVforkChildOwnerMismatch
-      && !deps.statusDefersOwnedStateSync(handle, status);
-    const shouldSyncEpollDependentOfds = isRunningWorker
-      && kernelWorkerOwnsEpollState(handle)
-      && (completedSyncEffects & syncEffects.syncEffectEpollDependentOfdState) !== 0
-      && !activeVforkChildOwnerMismatch
-      && !deps.statusDefersOwnedStateSync(handle, status);
-    const shouldSyncSocketState = shouldSyncForkSharedState
-      && isRunningWorker
-      && processHasKernelWorkerOwnership(handle)
-      && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0
-      && !activeVforkChildOwnerMismatch
-      && !deps.statusDefersOwnedStateSync(handle, status);
-    const shouldPublishDirtyMemfs = status !== handle.kernel.abi_status_ok()
-      || (completedSyncEffects & syncEffects.syncEffectPipeState) !== 0;
-    const shouldSyncProcessMemfs = isRunningWorker
-      && processHasKernelWorkerOwnership(handle)
-      && isProcessMemfsDirty(handle)
-      && shouldPublishDirtyMemfs
-      && !activeVforkChildOwnerMismatch
-      && !deps.statusDefersOwnedStateSync(handle, status);
-    const shouldSyncEpollState = isRunningWorker
-      && kernelWorkerOwnsEpollState(handle)
-      && (completedSyncEffects & syncEffects.syncEffectEpollState) !== 0
-      && collectHeldEpollOfdIds(handle).length > 0
-      && !activeVforkChildOwnerMismatch
-      && !deps.statusDefersOwnedStateSync(handle, status);
+    const epollHeldOfdFactNeeded = isRunningWorker
+      && epollStateKernelOwns
+      && (completedSyncEffects & syncEffects.syncEffectEpollState) !== 0;
+    const ownedStateSyncActions = supervisorOwnedStateSyncActions(
+      handle.kernel,
+      status,
+      completedSyncEffects,
+      {
+        runningWorker: isRunningWorker,
+        workerOwnsAuthoritativeState,
+        kernelWorkerAvailable,
+        epollStateKernelOwns,
+        forkSharedEffectRequested,
+        activeVforkChildOwnerMismatch,
+        processMemfsDirty: isProcessMemfsDirty(handle),
+        heldEpollOfd: epollHeldOfdFactNeeded && collectHeldEpollOfdIds(handle).length > 0,
+        wroteOrDrainedPipe: wroteToPipe || drainedPipe,
+      },
+    );
+    if (ownedStateSyncActions.markProcessMemfsDirty) {
+      setProcessMemfsDirty(handle, true);
+    }
+    const shouldSyncForkSharedState = ownedStateSyncActions.syncForkSharedState;
+    const shouldSyncEpollDependentOfds = ownedStateSyncActions.syncEpollDependentOfds;
+    const shouldSyncSocketState = ownedStateSyncActions.syncSocketState;
+    const shouldWakeSocketWaiters = ownedStateSyncActions.wakeSocketWaiters;
+    const shouldSyncProcessMemfs = ownedStateSyncActions.syncProcessMemfs;
+    const shouldSyncEpollState = ownedStateSyncActions.syncEpollState;
     if (
       !shouldSyncForkSharedState
       && !shouldSyncEpollDependentOfds
@@ -154,7 +150,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       .then(() => syncOfdState())
       .then(() => syncProcessMemfs())
       .then(() => (shouldSyncEpollState
-        ? deps.requestEpollStateSync(handle, !(wroteToPipe || drainedPipe))
+        ? deps.requestEpollStateSync(handle, ownedStateSyncActions.retryEpollWaiters)
         : Promise.resolve()))
       .then(() => {
         clearThreadOwnerAsyncStatus(thread);

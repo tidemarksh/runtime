@@ -250,6 +250,25 @@ export interface KernelExports {
   supervisor_state_sync_request_flag_wake_waiters?(): number;
   supervisor_state_sync_run_flag_run?(): number;
   supervisor_state_sync_run_flag_wake_waiters?(): number;
+  supervisor_owned_state_sync_action_none?(): number;
+  supervisor_owned_state_sync_action_mark_process_memfs_dirty?(): number;
+  supervisor_owned_state_sync_action_sync_fork_shared?(): number;
+  supervisor_owned_state_sync_action_sync_epoll_dependent_ofds?(): number;
+  supervisor_owned_state_sync_action_sync_socket?(): number;
+  supervisor_owned_state_sync_action_wake_socket_waiters?(): number;
+  supervisor_owned_state_sync_action_sync_process_memfs?(): number;
+  supervisor_owned_state_sync_action_sync_epoll?(): number;
+  supervisor_owned_state_sync_action_retry_epoll_waiters?(): number;
+  supervisor_owned_state_sync_flag_running_worker?(): number;
+  supervisor_owned_state_sync_flag_worker_owns_authoritative_state?(): number;
+  supervisor_owned_state_sync_flag_kernel_worker_available?(): number;
+  supervisor_owned_state_sync_flag_epoll_state_kernel_owns?(): number;
+  supervisor_owned_state_sync_flag_fork_shared_effect_requested?(): number;
+  supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch?(): number;
+  supervisor_owned_state_sync_flag_process_memfs_dirty?(): number;
+  supervisor_owned_state_sync_flag_held_epoll_ofd?(): number;
+  supervisor_owned_state_sync_flag_wrote_or_drained_pipe?(): number;
+  supervisor_owned_state_sync_action?(status: number, completedSyncEffects: number, flags: number): number;
   supervisor_fs_control_kind_page_cache_miss?(): number;
   supervisor_fs_control_kind_page_cache_fill?(): number;
   supervisor_fs_control_kind_dirty_page_published?(): number;
@@ -1869,6 +1888,25 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_state_sync_request_flag_wake_waiters",
   "supervisor_state_sync_run_flag_run",
   "supervisor_state_sync_run_flag_wake_waiters",
+  "supervisor_owned_state_sync_action_none",
+  "supervisor_owned_state_sync_action_mark_process_memfs_dirty",
+  "supervisor_owned_state_sync_action_sync_fork_shared",
+  "supervisor_owned_state_sync_action_sync_epoll_dependent_ofds",
+  "supervisor_owned_state_sync_action_sync_socket",
+  "supervisor_owned_state_sync_action_wake_socket_waiters",
+  "supervisor_owned_state_sync_action_sync_process_memfs",
+  "supervisor_owned_state_sync_action_sync_epoll",
+  "supervisor_owned_state_sync_action_retry_epoll_waiters",
+  "supervisor_owned_state_sync_flag_running_worker",
+  "supervisor_owned_state_sync_flag_worker_owns_authoritative_state",
+  "supervisor_owned_state_sync_flag_kernel_worker_available",
+  "supervisor_owned_state_sync_flag_epoll_state_kernel_owns",
+  "supervisor_owned_state_sync_flag_fork_shared_effect_requested",
+  "supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch",
+  "supervisor_owned_state_sync_flag_process_memfs_dirty",
+  "supervisor_owned_state_sync_flag_held_epoll_ofd",
+  "supervisor_owned_state_sync_flag_wrote_or_drained_pipe",
+  "supervisor_owned_state_sync_action",
   "supervisor_fs_control_kind_page_cache_miss",
   "supervisor_fs_control_kind_page_cache_fill",
   "supervisor_fs_control_kind_dirty_page_published",

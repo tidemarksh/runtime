@@ -87,6 +87,95 @@ const supervisorPipeControlKernelStubs = {
       ? 1
       : 0
   ),
+  supervisor_owned_state_sync_action_none: () => 0,
+  supervisor_owned_state_sync_action_mark_process_memfs_dirty: () => 1,
+  supervisor_owned_state_sync_action_sync_fork_shared: () => 2,
+  supervisor_owned_state_sync_action_sync_epoll_dependent_ofds: () => 4,
+  supervisor_owned_state_sync_action_sync_socket: () => 8,
+  supervisor_owned_state_sync_action_wake_socket_waiters: () => 16,
+  supervisor_owned_state_sync_action_sync_process_memfs: () => 32,
+  supervisor_owned_state_sync_action_sync_epoll: () => 64,
+  supervisor_owned_state_sync_action_retry_epoll_waiters: () => 128,
+  supervisor_owned_state_sync_flag_running_worker: () => 1,
+  supervisor_owned_state_sync_flag_worker_owns_authoritative_state: () => 2,
+  supervisor_owned_state_sync_flag_kernel_worker_available: () => 4,
+  supervisor_owned_state_sync_flag_epoll_state_kernel_owns: () => 8,
+  supervisor_owned_state_sync_flag_fork_shared_effect_requested: () => 16,
+  supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch: () => 32,
+  supervisor_owned_state_sync_flag_process_memfs_dirty: () => 64,
+  supervisor_owned_state_sync_flag_held_epoll_ofd: () => 128,
+  supervisor_owned_state_sync_flag_wrote_or_drained_pipe: () => 256,
+  supervisor_owned_state_sync_action(this: {
+    abi_status_ok?: () => number;
+    abi_status_vfork_wait?: () => number;
+    abi_status_execve_spawn?: () => number;
+    abi_status_clone_spawn?: () => number;
+  }, status: number, completedSyncEffects: number, flags: number) {
+    const syncEffectPipeState = 1 << 0;
+    const syncEffectSocketState = 1 << 1;
+    const syncEffectEpollState = 1 << 2;
+    const syncEffectEpollDependentOfdState = 1 << 3;
+    const syncEffectProcessMemfs = 1 << 7;
+    const runningWorker = (flags & 1) !== 0;
+    const workerOwnsAuthoritativeState = (flags & 2) !== 0;
+    const kernelWorkerAvailable = (flags & 4) !== 0;
+    const epollStateKernelOwns = (flags & 8) !== 0;
+    const forkSharedEffectRequested = (flags & 16) !== 0;
+    const activeVforkChildOwnerMismatch = (flags & 32) !== 0;
+    const processMemfsDirty = (flags & 64) !== 0;
+    const heldEpollOfd = (flags & 128) !== 0;
+    const wroteOrDrainedPipe = (flags & 256) !== 0;
+    const hasPipeEffect = (completedSyncEffects & syncEffectPipeState) !== 0;
+    const hasSocketEffect = (completedSyncEffects & syncEffectSocketState) !== 0;
+    const hasEpollEffect = (completedSyncEffects & syncEffectEpollState) !== 0;
+    const hasEpollDependentOfdEffect = (completedSyncEffects & syncEffectEpollDependentOfdState) !== 0;
+    const hasProcessMemfsEffect = (completedSyncEffects & syncEffectProcessMemfs) !== 0;
+    const okStatus = this.abi_status_ok?.() ?? 0;
+    let action = 0;
+    const markProcessMemfsDirty = runningWorker && hasProcessMemfsEffect;
+    if (markProcessMemfsDirty) {
+      action |= 1;
+    }
+    if (status === okStatus && hasSocketEffect) {
+      action |= 16;
+    }
+    if (
+      activeVforkChildOwnerMismatch
+      || status === this.abi_status_vfork_wait?.()
+      || status === this.abi_status_execve_spawn?.()
+      || status === this.abi_status_clone_spawn?.()
+    ) {
+      return action;
+    }
+    const shouldSyncForkShared = workerOwnsAuthoritativeState
+      && kernelWorkerAvailable
+      && forkSharedEffectRequested
+      && status === okStatus;
+    if (shouldSyncForkShared) {
+      action |= 2;
+    }
+    if (runningWorker && epollStateKernelOwns && hasEpollDependentOfdEffect) {
+      action |= 4;
+    }
+    if (shouldSyncForkShared && runningWorker && kernelWorkerAvailable && hasSocketEffect) {
+      action |= 8;
+    }
+    if (
+      runningWorker
+      && kernelWorkerAvailable
+      && (processMemfsDirty || markProcessMemfsDirty)
+      && (status !== okStatus || hasPipeEffect)
+    ) {
+      action |= 32;
+    }
+    if (runningWorker && epollStateKernelOwns && hasEpollEffect && heldEpollOfd) {
+      action |= 64;
+      if (!wroteOrDrainedPipe) {
+        action |= 128;
+      }
+    }
+    return action;
+  },
   supervisor_fork_shared_sync_target_action: (
     invalidPid: number,
     runningWorker: number,

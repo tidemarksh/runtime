@@ -165,6 +165,24 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_state_sync_request_flag_wake_waiters: 1,
   supervisor_state_sync_run_flag_run: 1,
   supervisor_state_sync_run_flag_wake_waiters: 2,
+  supervisor_owned_state_sync_action_none: 0,
+  supervisor_owned_state_sync_action_mark_process_memfs_dirty: 1,
+  supervisor_owned_state_sync_action_sync_fork_shared: 2,
+  supervisor_owned_state_sync_action_sync_epoll_dependent_ofds: 4,
+  supervisor_owned_state_sync_action_sync_socket: 8,
+  supervisor_owned_state_sync_action_wake_socket_waiters: 16,
+  supervisor_owned_state_sync_action_sync_process_memfs: 32,
+  supervisor_owned_state_sync_action_sync_epoll: 64,
+  supervisor_owned_state_sync_action_retry_epoll_waiters: 128,
+  supervisor_owned_state_sync_flag_running_worker: 1,
+  supervisor_owned_state_sync_flag_worker_owns_authoritative_state: 2,
+  supervisor_owned_state_sync_flag_kernel_worker_available: 4,
+  supervisor_owned_state_sync_flag_epoll_state_kernel_owns: 8,
+  supervisor_owned_state_sync_flag_fork_shared_effect_requested: 16,
+  supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch: 32,
+  supervisor_owned_state_sync_flag_process_memfs_dirty: 64,
+  supervisor_owned_state_sync_flag_held_epoll_ofd: 128,
+  supervisor_owned_state_sync_flag_wrote_or_drained_pipe: 256,
   supervisor_blocked_wait_retry_reason_default: 0,
   supervisor_blocked_wait_retry_reason_immediate: 1,
   supervisor_blocked_wait_retry_reason_standard_defer: 2,
@@ -678,6 +696,87 @@ export function makeSupervisorAbiStubs(
       actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_pipe;
     }
     return actions;
+  };
+  const supervisorOwnedStateSyncAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    completedSyncEffects: number,
+    flags: number,
+  ): number => {
+    const syncEffectPipeState = 1 << 0;
+    const syncEffectSocketState = 1 << 1;
+    const syncEffectEpollState = 1 << 2;
+    const syncEffectEpollDependentOfdState = 1 << 3;
+    const syncEffectProcessMemfs = 1 << 7;
+    const runningWorker =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_running_worker) !== 0;
+    const workerOwnsAuthoritativeState =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_worker_owns_authoritative_state) !== 0;
+    const kernelWorkerAvailable =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_kernel_worker_available) !== 0;
+    const epollStateKernelOwns =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_epoll_state_kernel_owns) !== 0;
+    const forkSharedEffectRequested =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_fork_shared_effect_requested) !== 0;
+    const activeVforkChildOwnerMismatch =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch) !== 0;
+    const processMemfsDirty =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_process_memfs_dirty) !== 0;
+    const heldEpollOfd =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_held_epoll_ofd) !== 0;
+    const wroteOrDrainedPipe =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_wrote_or_drained_pipe) !== 0;
+    const hasPipeEffect = (completedSyncEffects & syncEffectPipeState) !== 0;
+    const hasSocketEffect = (completedSyncEffects & syncEffectSocketState) !== 0;
+    const hasEpollEffect = (completedSyncEffects & syncEffectEpollState) !== 0;
+    const hasEpollDependentOfdEffect = (completedSyncEffects & syncEffectEpollDependentOfdState) !== 0;
+    const hasProcessMemfsEffect = (completedSyncEffects & syncEffectProcessMemfs) !== 0;
+
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_none;
+    const markProcessMemfsDirty = runningWorker && hasProcessMemfsEffect;
+    if (markProcessMemfsDirty) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_mark_process_memfs_dirty;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_ok") && hasSocketEffect) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_wake_socket_waiters;
+    }
+    if (
+      activeVforkChildOwnerMismatch
+      || supervisorProcessStatusIsLifecycleHandoff(receiver, status)
+    ) {
+      return action;
+    }
+
+    const shouldSyncForkShared = workerOwnsAuthoritativeState
+      && kernelWorkerAvailable
+      && forkSharedEffectRequested
+      && status === callOptionalNumber(receiver, "abi_status_ok");
+    if (shouldSyncForkShared) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_fork_shared;
+    }
+    if (runningWorker && epollStateKernelOwns && hasEpollDependentOfdEffect) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_epoll_dependent_ofds;
+    }
+    if (shouldSyncForkShared && runningWorker && kernelWorkerAvailable && hasSocketEffect) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_socket;
+    }
+    if (
+      runningWorker
+      && kernelWorkerAvailable
+      && (processMemfsDirty || markProcessMemfsDirty)
+      && (status !== callOptionalNumber(receiver, "abi_status_ok") || hasPipeEffect)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_process_memfs;
+    }
+    if (runningWorker && epollStateKernelOwns && hasEpollEffect && heldEpollOfd) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_epoll;
+      if (!wroteOrDrainedPipe) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_retry_epoll_waiters;
+      }
+    }
+    return action;
   };
   const supervisorWait4ChildExitBlockedParentAction = (
     receiver: Partial<KernelExports>,
@@ -2079,6 +2178,19 @@ export function makeSupervisorAbiStubs(
     supervisor_state_sync_clear(_vmPtr: number, kind: number) {
       stateSyncRequests.delete(`${_vmPtr}:${kind}`);
       return 0;
+    },
+    supervisor_owned_state_sync_action(
+      this: KernelExports | undefined,
+      status: number,
+      completedSyncEffects: number,
+      flags: number,
+    ) {
+      return supervisorOwnedStateSyncAction(
+        currentExports(this),
+        status,
+        completedSyncEffects,
+        flags,
+      );
     },
     supervisor_process_held_ofd_refcount(
       this: KernelExports | undefined,
