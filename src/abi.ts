@@ -419,6 +419,15 @@ export interface KernelExports {
   supervisor_process_status_is_vfork_wait?(status: number): number;
   supervisor_process_status_allows_pid_mismatch?(status: number): number;
   supervisor_process_status_defers_kernel_state_adoption?(status: number): number;
+  supervisor_process_status_route_action?(status: number, flags: number): number;
+  supervisor_process_status_route_action_none?(): number;
+  supervisor_process_status_route_action_apply_status_fd_state?(): number;
+  supervisor_process_status_route_action_adopt_thread_kernel_state?(): number;
+  supervisor_process_status_route_action_apply_fs_memory_writes?(): number;
+  supervisor_process_status_route_action_skip_fs_ring_writes?(): number;
+  supervisor_process_status_route_action_defer_local_pipe_drain?(): number;
+  supervisor_process_status_route_flag_status_state_belongs_to_handle?(): number;
+  supervisor_process_status_route_flag_kernel_worker_available?(): number;
   supervisor_vfork_child_owner_mismatch?(vmPtr: number, runtimePid: number): number;
   supervisor_process_owner_matches?(vmPtr: number, runtimePid: number): number;
   supervisor_process_owner_mismatch?(vmPtr: number, runtimePid: number): number;
@@ -2024,6 +2033,15 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_status_is_vfork_wait",
   "supervisor_process_status_allows_pid_mismatch",
   "supervisor_process_status_defers_kernel_state_adoption",
+  "supervisor_process_status_route_action",
+  "supervisor_process_status_route_action_none",
+  "supervisor_process_status_route_action_apply_status_fd_state",
+  "supervisor_process_status_route_action_adopt_thread_kernel_state",
+  "supervisor_process_status_route_action_apply_fs_memory_writes",
+  "supervisor_process_status_route_action_skip_fs_ring_writes",
+  "supervisor_process_status_route_action_defer_local_pipe_drain",
+  "supervisor_process_status_route_flag_status_state_belongs_to_handle",
+  "supervisor_process_status_route_flag_kernel_worker_available",
   "supervisor_vfork_child_owner_mismatch",
   "supervisor_process_owner_matches",
   "supervisor_process_owner_mismatch",

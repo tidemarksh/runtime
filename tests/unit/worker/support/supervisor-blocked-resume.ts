@@ -22,6 +22,14 @@ const SUPERVISOR_HOST_COMPLETION_OUTCOME_FAILURE = 2;
 const SUPERVISOR_PROCESS_HOST_OP_RECORD_BYTES = 96;
 const SUPERVISOR_PROCESS_HOST_OP_RECORD_MAGIC = 0x4850_5354;
 const SUPERVISOR_PROCESS_HOST_OP_KIND_SPAWN_PROCESS_WORKER = 1;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_NONE = 0;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_APPLY_STATUS_FD_STATE = 1;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_ADOPT_THREAD_KERNEL_STATE = 2;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_APPLY_FS_MEMORY_WRITES = 4;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_SKIP_FS_RING_WRITES = 8;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_DEFER_LOCAL_PIPE_DRAIN = 16;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_FLAG_STATUS_STATE_BELONGS_TO_HANDLE = 1;
+const SUPERVISOR_PROCESS_STATUS_ROUTE_FLAG_KERNEL_WORKER_AVAILABLE = 2;
 const SUPERVISOR_BLOCKED_RESUME_FLAG_KERNEL_WORKER_AVAILABLE = 1;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_DIRECT = 0;
 const SUPERVISOR_BLOCKED_RESUME_DELEGATION_KERNEL_WORKER = 1;
@@ -247,8 +255,19 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_blocked_status_uses_fork_shared_state_sync"
   | "supervisor_process_status_is_lifecycle_handoff"
   | "supervisor_process_status_is_execve_spawn"
+  | "supervisor_process_status_is_clone_spawn"
+  | "supervisor_process_status_is_vfork_wait"
   | "supervisor_process_status_allows_pid_mismatch"
   | "supervisor_process_status_defers_kernel_state_adoption"
+  | "supervisor_process_status_route_action"
+  | "supervisor_process_status_route_action_none"
+  | "supervisor_process_status_route_action_apply_status_fd_state"
+  | "supervisor_process_status_route_action_adopt_thread_kernel_state"
+  | "supervisor_process_status_route_action_apply_fs_memory_writes"
+  | "supervisor_process_status_route_action_skip_fs_ring_writes"
+  | "supervisor_process_status_route_action_defer_local_pipe_drain"
+  | "supervisor_process_status_route_flag_status_state_belongs_to_handle"
+  | "supervisor_process_status_route_flag_kernel_worker_available"
   | "supervisor_vfork_child_owner_mismatch"
   | "supervisor_process_owner_matches"
   | "supervisor_process_owner_mismatch"
@@ -502,6 +521,30 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   const toNumber = (value: bigint | number | undefined): number => (
     typeof value === "bigint" ? Number(value) : (value ?? 0)
   );
+  const processStatusDefersKernelStateAdoption = (status: number): boolean =>
+    kernel.abi_status_clone_spawn?.() === status;
+  const processStatusRouteAction = (status: number, flags: number): number => {
+    const statusStateBelongsToHandle =
+      (flags & SUPERVISOR_PROCESS_STATUS_ROUTE_FLAG_STATUS_STATE_BELONGS_TO_HANDLE) !== 0;
+    const kernelWorkerAvailable =
+      (flags & SUPERVISOR_PROCESS_STATUS_ROUTE_FLAG_KERNEL_WORKER_AVAILABLE) !== 0;
+    let action = SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_NONE;
+    if (statusStateBelongsToHandle) {
+      action |= SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_APPLY_STATUS_FD_STATE;
+    }
+    if (statusStateBelongsToHandle && !processStatusDefersKernelStateAdoption(status)) {
+      action |= SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_ADOPT_THREAD_KERNEL_STATE;
+    } else if (kernel.abi_status_fs?.() === status) {
+      action |= SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_APPLY_FS_MEMORY_WRITES;
+    }
+    if (kernel.abi_status_fs?.() === status) {
+      action |= SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_SKIP_FS_RING_WRITES;
+    }
+    if (kernelWorkerAvailable) {
+      action |= SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_DEFER_LOCAL_PIPE_DRAIN;
+    }
+    return action;
+  };
   const blockedWaitTimerRequired = (vmPtr: number): boolean => {
     const explicit = kernel.supervisor_blocked_wait_timer_required?.(vmPtr);
     if (explicit !== undefined) {
@@ -2404,7 +2447,25 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       kernel.abi_status_execve_spawn?.(),
     ].some((candidate) => candidate !== undefined && Number(candidate) === status) ? 1 : 0;
   nextKernel.supervisor_process_status_defers_kernel_state_adoption ??= (status: number) =>
-    kernel.abi_status_clone_spawn?.() === status ? 1 : 0;
+    processStatusDefersKernelStateAdoption(status) ? 1 : 0;
+  nextKernel.supervisor_process_status_route_action_none ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_NONE;
+  nextKernel.supervisor_process_status_route_action_apply_status_fd_state ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_APPLY_STATUS_FD_STATE;
+  nextKernel.supervisor_process_status_route_action_adopt_thread_kernel_state ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_ADOPT_THREAD_KERNEL_STATE;
+  nextKernel.supervisor_process_status_route_action_apply_fs_memory_writes ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_APPLY_FS_MEMORY_WRITES;
+  nextKernel.supervisor_process_status_route_action_skip_fs_ring_writes ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_SKIP_FS_RING_WRITES;
+  nextKernel.supervisor_process_status_route_action_defer_local_pipe_drain ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_ACTION_DEFER_LOCAL_PIPE_DRAIN;
+  nextKernel.supervisor_process_status_route_flag_status_state_belongs_to_handle ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_FLAG_STATUS_STATE_BELONGS_TO_HANDLE;
+  nextKernel.supervisor_process_status_route_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_PROCESS_STATUS_ROUTE_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_process_status_route_action ??= (status: number, flags: number) =>
+    processStatusRouteAction(status, flags);
   nextKernel.supervisor_vfork_child_owner_mismatch ??= () => 0;
   nextKernel.supervisor_process_owner_matches ??= (vmPtr: number, runtimePid: number) =>
     kernel.process_current_pid?.(vmPtr) === runtimePid ? 1 : 0;

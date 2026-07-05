@@ -49,6 +49,14 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_process_status_is_vfork_wait: 0,
   supervisor_process_status_allows_pid_mismatch: 0,
   supervisor_process_status_defers_kernel_state_adoption: 0,
+  supervisor_process_status_route_action_none: 0,
+  supervisor_process_status_route_action_apply_status_fd_state: 1,
+  supervisor_process_status_route_action_adopt_thread_kernel_state: 2,
+  supervisor_process_status_route_action_apply_fs_memory_writes: 4,
+  supervisor_process_status_route_action_skip_fs_ring_writes: 8,
+  supervisor_process_status_route_action_defer_local_pipe_drain: 16,
+  supervisor_process_status_route_flag_status_state_belongs_to_handle: 1,
+  supervisor_process_status_route_flag_kernel_worker_available: 2,
   supervisor_vfork_child_owner_mismatch: 0,
   supervisor_process_owner_matches: 0,
   supervisor_process_owner_mismatch: 0,
@@ -557,6 +565,36 @@ export function makeSupervisorAbiStubs(
     statusMatchesAny(receiver, status, [
       "abi_status_clone_spawn",
     ]);
+  const supervisorProcessStatusRouteAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    flags: number,
+  ): number => {
+    const statusStateBelongsToHandle = (
+      flags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_flag_status_state_belongs_to_handle
+    ) !== 0;
+    const kernelWorkerAvailable = (
+      flags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_flag_kernel_worker_available
+    ) !== 0;
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_none;
+    if (statusStateBelongsToHandle) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_apply_status_fd_state;
+    }
+    if (statusStateBelongsToHandle && !supervisorProcessStatusDefersKernelStateAdoption(receiver, status)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_adopt_thread_kernel_state;
+    } else if (status === callOptionalNumber(receiver, "abi_status_fs")) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_apply_fs_memory_writes;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_fs")) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_skip_fs_ring_writes;
+    }
+    if (kernelWorkerAvailable) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_defer_local_pipe_drain;
+    }
+    return action;
+  };
   const supervisorWaitWakeMaskForSync = (source: number): number => {
     switch (source) {
       case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_sync:
@@ -1900,6 +1938,9 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_process_status_defers_kernel_state_adoption(this: KernelExports | undefined, status: number) {
       return supervisorProcessStatusDefersKernelStateAdoption(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_route_action(this: KernelExports | undefined, status: number, flags: number) {
+      return supervisorProcessStatusRouteAction(currentExports(this), status, flags);
     },
     supervisor_vfork_child_owner_mismatch(vmPtr: number, runtimePid: number) {
       const result = overrides.supervisor_vfork_child_owner_mismatch?.(vmPtr, runtimePid) ?? 0;

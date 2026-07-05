@@ -72,9 +72,9 @@ import {
   supervisorFaultExitKindProcessExit,
 } from "../../supervisor-shadow.js";
 import {
-  supervisorProcessStatusDefersKernelStateAdoption,
   supervisorProcessStatusIsCloneSpawn,
   supervisorProcessStatusIsExecveSpawn,
+  supervisorProcessStatusRouteActions,
 } from "../../supervisor-status.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
@@ -179,7 +179,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           + `:child=${handle.kernel.thread_spawn_child_pid?.(msg.vmPtr) ?? -1}`,
       );
     }
-    if (statusStateBelongsToHandle) {
+    const routeActions = supervisorProcessStatusRouteActions(handle.kernel, status, {
+      statusStateBelongsToHandle,
+      kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+    });
+    if (routeActions.applyStatusFdState) {
       applyStatusOfdSlots(handle, msg);
       applyStatusFdEntries(handle, msg);
       pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
@@ -299,7 +303,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
     }
-    const deferLocalPipeDrain = processHasKernelWorkerOwnership(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
     for (const candidate of processWorkers(handle)) {
       const candidateThread = deps.threadWorkerStates.get(candidate);
@@ -313,18 +316,14 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         s11: handle.kernel.thread_s11?.(candidateThread.vmPtr) ?? 0n,
       });
     }
-    const shouldAdoptThreadKernelState = (
-      !supervisorProcessStatusDefersKernelStateAdoption(handle.kernel, status)
-      && statusStateBelongsToHandle
-    );
-    if (shouldAdoptThreadKernelState) {
+    if (routeActions.adoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       applyThreadKernelMemoryWrites(
         handle,
         msg,
         deps.appendRuntimeLifecycleEvent,
-        { skipFsRingWrites: status === handle.kernel.abi_status_fs() },
+        { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
       applyThreadPipeSlots(
@@ -353,12 +352,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           `status_adopt_break:src=0x${thread.vmPtr.toString(16)} target=0x${pre.vmPtr.toString(16)} pre_pc=0x${pre.pc.toString(16)} pre_sp=0x${pre.sp.toString(16)} pre_s11=0x${pre.s11.toString(16)} post_pc=0x${postPc.toString(16)} post_sp=0x${postSp.toString(16)} post_s11=0x${postS11.toString(16)} incoming_sig_slots=0x${msg.kernelState.sigSlotsPtr.toString(16)} incoming_process_pending=0x${msg.kernelState.processPendingPtr.toString(16)} incoming_process_runtime=0x${msg.kernelState.processRuntimeStatePtr.toString(16)}`,
         );
       }
-    } else if (status === handle.kernel.abi_status_fs()) {
+    } else if (routeActions.applyFsMemoryWrites) {
       applyThreadKernelMemoryWrites(
         handle,
         msg,
         deps.appendRuntimeLifecycleEvent,
-        { skipFsRingWrites: true },
+        { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
     }
@@ -403,7 +402,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     deps.clearBlockedWorker(handle, worker);
     const wroteToPipe = flushStdin(handle);
-    const drainedPipe = deferLocalPipeDrain
+    const drainedPipe = routeActions.deferLocalPipeDrain
       ? false
       : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
