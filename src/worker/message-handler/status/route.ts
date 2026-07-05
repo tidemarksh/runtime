@@ -10,8 +10,8 @@ import {
 } from "../../stdio.js";
 import {
   applyThreadPipeSlots,
-  kernelWorkerOwnsPipeState,
 } from "../../ownership/pipe-control.js";
+import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { adoptKernelStateForHandle } from "../../sync.js";
 import {
   pruneStatusNetworkConnectionsFromFdEntries,
@@ -299,7 +299,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
     }
-    const deferLocalPipeDrain = kernelWorkerOwnsPipeState(handle);
+    const deferLocalPipeDrain = processHasKernelWorkerOwnership(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
     for (const candidate of processWorkers(handle)) {
       const candidateThread = deps.threadWorkerStates.get(candidate);

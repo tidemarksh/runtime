@@ -18,13 +18,8 @@ import {
   networkSocketSlotWatermarks,
 } from "../network-socket-state.js";
 import { kernelShareMemberList } from "../kernel-share.js";
-import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
-import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
+import type { ProcessHandle } from "../types.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
-
-export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): boolean {
-  return processHasKernelWorkerOwnership(handle);
-}
 
 export function runtimeNetworkFds(handle: ProcessHandle): Set<number> {
   return new Set([

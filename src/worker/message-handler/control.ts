@@ -4,7 +4,7 @@ import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { collectHeldEpollOfdIds } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
-import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import {
   drainProcessOutput,
   flushStdin,
@@ -228,7 +228,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         deps.appendWorkerDebugLog(handle, `supervisor-ready-event:submit-error:${readyThreadEventResult}`);
       }
       const wroteToPipe = flushStdin(handle);
-      const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
+      const drainedPipe = processHasKernelWorkerOwnership(handle) ? false : drainProcessOutput(handle);
       const readySyncs: Promise<void>[] = [];
       if (wroteToPipe || drainedPipe) {
         readySyncs.push(deps.requestPipeStateSync(handle, true));

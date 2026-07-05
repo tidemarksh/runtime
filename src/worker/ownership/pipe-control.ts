@@ -14,8 +14,7 @@ import {
   PIPE_TAIL_OFFSET,
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
-import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
-import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import type { ProcessHandle } from "../types.js";
 import { kernelShareMemberList } from "../kernel-share.js";
 import { appendPendingPipeSlotSnapshots } from "../pending-pipe-slot-state.js";
 import {
@@ -97,10 +96,6 @@ function applyPipeSlotSnapshot(
 ): void {
   copyPipeSlotDataPlane(memory, sourceSlot, targetOffset, slotBytes);
   applySupervisorPipeControl(handle, pipeSlot, readOpen, writeOpen);
-}
-
-export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
-  return processHasKernelWorkerOwnership(handle);
 }
 
 function processPrivatePipeSlotMask(handle: ProcessHandle, vmPtr: number): bigint {

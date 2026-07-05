@@ -29,9 +29,6 @@ import {
   drainProcessOutput,
   flushStdin,
 } from "../stdio.js";
-import {
-  kernelWorkerOwnsPipeState,
-} from "../ownership/pipe-control.js";
 import { describeForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import { collectLiveThreadVmPtrs } from "../live-threads.js";
@@ -671,7 +668,7 @@ export function createBlockedRetryCoordinator(
     if (processHasKernelWorkerOwnership(handle)) {
       flags.push("kernel-worker-available");
     }
-    if (kernelWorkerOwnsPipeState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       flags.push("pipe-state-kernel-worker-owns");
     }
     if (networkConnections(handle).size > 0) {
@@ -732,7 +729,7 @@ export function createBlockedRetryCoordinator(
     }
 
     flushStdin(handle);
-    if (!kernelWorkerOwnsPipeState(handle)) {
+    if (!processHasKernelWorkerOwnership(handle)) {
       drainProcessOutput(handle);
     }
     return true;
@@ -770,7 +767,7 @@ export function createBlockedRetryCoordinator(
         if (!latestBlocked) {
           return;
         }
-        if (shouldDrainOutput || !kernelWorkerOwnsPipeState(handle)) {
+        if (shouldDrainOutput || !processHasKernelWorkerOwnership(handle)) {
           drainProcessOutput(handle);
         }
         deps.scheduleSupervisorBlockedRetry(

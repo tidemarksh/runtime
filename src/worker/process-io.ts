@@ -4,7 +4,7 @@ import { SOCKET_STATE_CONNECTED, SOCKET_STATE_SHUTDOWN } from "../layout/socket.
 import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../bridge/network.js";
 import { requireKernelSocketCount } from "../kernel-socket-layout.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
-import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
 import {
   kernelSocketOutboundAvailable,
   supervisorSocketDrainFds,
@@ -1031,7 +1031,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     }
     const changed = deps.flushStdin(handle);
     if (!changed) {
-      if (kernelWorkerOwnsPipeState(handle)) {
+      if (processHasKernelWorkerOwnership(handle)) {
         void deps.requestPipeStateSync(handle, true).catch((error) => {
           if (deps.isActiveHandle(handle)) {
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));

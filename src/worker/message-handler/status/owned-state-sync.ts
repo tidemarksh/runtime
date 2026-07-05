@@ -9,7 +9,6 @@ import {
 } from "../../kernel-share.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
 import { shouldRequestForkSharedStateForEffect } from "../../ownership/ofd-peer.js";
-import { kernelWorkerOwnsSocketState } from "../../ownership/socket-control.js";
 import { supervisorVforkChildOwnerMismatch } from "../../process-identity.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../types.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
@@ -87,7 +86,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       && !deps.statusDefersOwnedStateSync(handle, status);
     const shouldSyncSocketState = shouldSyncForkSharedState
       && isRunningWorker
-      && kernelWorkerOwnsSocketState(handle)
+      && processHasKernelWorkerOwnership(handle)
       && (completedSyncEffects & syncEffects.syncEffectSocketState) !== 0
       && !activeVforkChildOwnerMismatch
       && !deps.statusDefersOwnedStateSync(handle, status);

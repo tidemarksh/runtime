@@ -24,9 +24,9 @@ import {
   collectProcessSyncDependentOfdIds,
 } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
-import { composeHandlePipeUsed, kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import { composeHandlePipeUsed } from "../ownership/pipe-control.js";
 import { supervisorProcessPipeSlotForFd } from "../ownership/pipe-slot.js";
-import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
 import {
   assertHandleWorkerProcessIdentity,
   supervisorVforkChildOwnerMismatch,
@@ -361,7 +361,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
-    if (!kernelWorkerOwnsPipeState(handle)) {
+    if (!processHasKernelWorkerOwnership(handle)) {
       return Promise.resolve();
     }
 
@@ -423,7 +423,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           }
           if (
             drainedVisibleOutput
-            && kernelWorkerOwnsPipeState(visibleHandle)
+            && processHasKernelWorkerOwnership(visibleHandle)
           ) {
             deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-visible-drain:${visibleHandle.pid}`);
             transferDebugStats(handle).pipeSyncVisibleDrainCalls += 1;
@@ -477,7 +477,7 @@ export function createWorkerSchedulerStateSyncHelpers(
     if (hasActiveVforkChildOwnerMismatch(handle)) {
       return Promise.resolve();
     }
-    if (!kernelWorkerOwnsSocketState(handle)) {
+    if (!processHasKernelWorkerOwnership(handle)) {
       return Promise.resolve();
     }
 
@@ -518,7 +518,7 @@ export function createWorkerSchedulerStateSyncHelpers(
           if (shouldWake) {
             if (socketState) {
               for (const member of kernelShareMemberList(handle)) {
-                if (member !== handle && kernelWorkerOwnsSocketState(member)) {
+                if (member !== handle && processHasKernelWorkerOwnership(member)) {
                   applySocketStateFromKernelWorker(member, socketState);
                 }
               }

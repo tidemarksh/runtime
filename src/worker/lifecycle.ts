@@ -23,8 +23,7 @@ import {
   supervisorOfdIno,
 } from "./ownership/ofd-metadata.js";
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
-import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
-import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
 import { beginProcessExit } from "./process-lifecycle-state.js";
 import { processDebugCommand } from "./process-debug-state.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "./supervisor-status.js";
@@ -111,7 +110,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     if (!beginProcessExit(handle)) {
       return false;
     }
-    if (processStdioOwner(handle) === null && !kernelWorkerOwnsPipeState(handle)) {
+    if (processStdioOwner(handle) === null && !processHasKernelWorkerOwnership(handle)) {
       deps.drainProcessOutput(handle);
     }
     return true;
@@ -139,14 +138,14 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
       handle.runtimeId,
       `exit-owned-state-before-shared-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
     );
-    if (kernelWorkerOwnsPipeState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       await deps.requestPipeStateSync(handle, true);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `exit-owned-state-after-pipe-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
       );
     }
-    if (kernelWorkerOwnsSocketState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       await deps.requestSocketStateSync(handle, false);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -174,7 +173,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,
     );
     await syncOwnedStateBeforeExit(handle);
-    if (kernelWorkerOwnsPipeState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       reconcileKernelSharePipeControl(handle);
     }
     await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal, exitVmPtr);

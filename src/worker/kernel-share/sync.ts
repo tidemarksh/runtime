@@ -4,8 +4,7 @@ import {
   copyKernelRegion,
 } from "./common.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
-import { kernelWorkerOwnsPipeState } from "../ownership/pipe-control.js";
-import { kernelWorkerOwnsSocketState } from "../ownership/socket-control.js";
+import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { clearMemfsState, syncMemfsState } from "./memfs.js";
 import {
   OFD_HOST_FD_OFFSET,
@@ -224,10 +223,10 @@ export function copyLegacySharedKernelObjectsLocal(
     return;
   }
   const includeMemfs = options.includeMemfs ?? true;
-  const includePipe = !kernelWorkerOwnsPipeState(source) && !kernelWorkerOwnsPipeState(target);
+  const includePipe = !processHasKernelWorkerOwnership(source) && !processHasKernelWorkerOwnership(target);
   const includeEpoll = !kernelWorkerOwnsEpollState(source) && !kernelWorkerOwnsEpollState(target);
-  const includeSocket = !kernelWorkerOwnsSocketState(source)
-    && !kernelWorkerOwnsSocketState(target);
+  const includeSocket = !processHasKernelWorkerOwnership(source)
+    && !processHasKernelWorkerOwnership(target);
 
   copySelectedOfdState(source, target, sharedOfdIds);
   if (includeMemfs) {

@@ -2,8 +2,6 @@ import { hostExecutionState } from "../../host-execution-state.js";
 import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { publishKernelRuntimeState } from "../../../bridge/runtime-state.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
-import { kernelWorkerOwnsPipeState } from "../../ownership/pipe-control.js";
-import { kernelWorkerOwnsSocketState } from "../../ownership/socket-control.js";
 import { drainProcessOutput } from "../../stdio.js";
 import type {
   ProcessHandle,
@@ -62,7 +60,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       );
     }
     deps.clearBlockedWorker(handle, worker);
-    const drainedPipe = kernelWorkerOwnsPipeState(handle) ? false : drainProcessOutput(handle);
+    const drainedPipe = processHasKernelWorkerOwnership(handle) ? false : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
 
     if (epollWaitStatus && epollTimeoutMs === 0) {
@@ -151,7 +149,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
       deps.pumpProcess(handle);
     };
 
-    const socketWaitStatus = kernelWorkerOwnsSocketState(handle)
+    const socketWaitStatus = processHasKernelWorkerOwnership(handle)
       && supervisorBlockedWaitStatusMatchesSocketWait(handle.kernel, msg.status);
     const waitInWorkerNeedsEpollSync = supervisorBlockedWaitStatusMatchesEpollWait(handle.kernel, msg.status)
       || socketWaitStatus;
@@ -198,7 +196,7 @@ export function createWorkerWaitInWorkerStatusHandler(deps: WorkerMessageHandler
     }
     if (
       isRunningWorker
-      && kernelWorkerOwnsPipeState(handle)
+      && processHasKernelWorkerOwnership(handle)
       && supervisorBlockedWaitStatusMatchesPipeWait(handle.kernel, msg.status)
     ) {
       void deps.requestPipeStateSync(handle, true)
