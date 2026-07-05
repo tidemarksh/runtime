@@ -10,6 +10,7 @@ import {
 } from "../../layout/ofd.js";
 import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
+import { regularFileOfdOffsetSnapshotEntries } from "../regular-file-ofd-offset-state.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
 import {
   supervisorOfdFdType,
@@ -173,8 +174,8 @@ export function snapshotOfdSlotsForThread(
 }
 
 export function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
-  const offsets = handle.regularFileOfdOffsets;
-  if (!offsets || offsets.size === 0) {
+  const offsets = regularFileOfdOffsetSnapshotEntries(handle);
+  if (offsets.length === 0) {
     return;
   }
   const restoreAction = requireSupervisorRegularFileOffsetRestoreAction(handle);

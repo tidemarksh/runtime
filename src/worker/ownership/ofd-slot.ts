@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { recordRegularFileOfdOffsetSnapshot } from "../regular-file-ofd-offset-state.js";
 import {
   FD_ENTRY_BYTES,
   FD_ENTRY_OFD_ID_OFFSET,
@@ -327,13 +328,11 @@ function recordRegularFileOfdOffsets(
     if (view.getInt32(OFD_TYPE_OFFSET, true) !== fileType) {
       continue;
     }
-    const offsets = handle.regularFileOfdOffsets ?? new Map<number, { ino: number; hostFd: number; offset: bigint }>();
-    offsets.set(snapshot.ofdId, {
+    recordRegularFileOfdOffsetSnapshot(handle, snapshot.ofdId, {
       ino: view.getUint32(OFD_INO_OFFSET, true),
       hostFd: view.getInt32(OFD_HOST_FD_OFFSET, true),
       offset: view.getBigInt64(OFD_OFFSET_OFFSET, true),
     });
-    handle.regularFileOfdOffsets = offsets;
   }
 }
 

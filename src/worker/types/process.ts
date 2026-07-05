@@ -142,7 +142,6 @@ export interface ProcessHandle {
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
   processMemfsDeletedPaths?: Set<string>;
-  regularFileOfdOffsets?: Map<number, { ino: number; hostFd: number; offset: bigint }>;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
   exitInProgress?: boolean;

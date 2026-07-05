@@ -558,7 +558,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       status: 0,
     }]]),
     processMemfsDirty: false,
-    regularFileOfdOffsets: new Map(),
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,
