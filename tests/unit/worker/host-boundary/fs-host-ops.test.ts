@@ -2,7 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import {
   addProcessWorker,
 } from "../../../../src/worker/process-worker-state.js";
-import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/kernel-rpc/fs.js";
+import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/host-boundary/fs-host-ops.js";
 import {
   FS_OP_FSTAT,
   FS_OP_CLOSE,

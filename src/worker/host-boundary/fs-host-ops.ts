@@ -93,11 +93,11 @@ import {
 import {
   completedKernelRpcOutcome,
   type KernelRpcResumeOutcome,
-} from "./outcomes.js";
+} from "../kernel-rpc/outcomes.js";
 import { submitSupervisorShadowStatusEvent } from "../supervisor-shadow.js";
 import { supervisorProcessStatusIsExecveSpawn } from "../supervisor-status.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
-import { expectKernelWorkerResponse } from "./transport.js";
+import { expectKernelWorkerResponse } from "../kernel-rpc/transport.js";
 
 const FS_DEBUG_PATH_BUF_LEN = 4096;
 const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {

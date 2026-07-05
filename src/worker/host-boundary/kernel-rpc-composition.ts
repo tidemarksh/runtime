@@ -1,7 +1,7 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import { createWorkerKernelRpcLifecycleHelpers } from "../kernel-rpc/lifecycle.js";
 import { createWorkerKernelRpcBlockedRpcHelpers } from "./blocked-rpc-resume.js";
-import { createWorkerKernelRpcFsHelpers } from "../kernel-rpc/fs.js";
+import { createWorkerKernelRpcFsHelpers } from "./fs-host-ops.js";
 import { expectKernelWorkerResponse } from "../kernel-rpc/transport.js";
 import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
 import { kernelShareOtherMembers } from "../kernel-share.js";
