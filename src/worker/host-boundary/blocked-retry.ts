@@ -50,6 +50,7 @@ import {
   clearThreadRunningGeneration,
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
+  isThreadInitialized,
   setThreadOwnerAsyncStatus,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
@@ -670,7 +671,7 @@ export function createBlockedRetryCoordinator(
       const thread = deps.threadWorkerStates.get(worker);
       if (
         thread !== undefined
-        && !thread.initialized
+        && !isThreadInitialized(thread)
         && threadResumeWorkersOnReadyCount(thread) > 0
       ) {
         return true;

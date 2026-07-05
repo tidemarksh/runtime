@@ -10,6 +10,8 @@ import {
 import {
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
+  setThreadInitialized,
+  setThreadReinitCount,
 } from "../../../../src/worker/thread-host-state.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { vi } from "vite-plus/test";
@@ -142,7 +144,6 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     vmPtr,
     ownerPid: 1,
     generation: 0,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -162,8 +163,9 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
   };
+  setThreadInitialized(thread, true);
+  setThreadReinitCount(thread, 0);
   clearThreadWaitingInWorkerStatus(thread);
   clearThreadOwnerAsyncStatus(thread);
   return thread;

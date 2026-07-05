@@ -4,7 +4,9 @@ import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
 import {
   clearThreadRunningGeneration,
+  setThreadInitialized,
   setThreadOwnerAsyncStatus,
+  setThreadReinitCount,
   setThreadRunningGeneration,
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
@@ -104,14 +106,15 @@ function installSupervisorFaultExitDecision(
 
 function makeThreadState(overrides: Record<string, unknown> = {}) {
   const {
+    initialized = true,
     ownerAsyncStatus,
+    reinitCount = 0,
     runningGeneration = null,
     waitingInWorkerStatus,
     ...rest
   } = overrides;
   const thread = {
     vmPtr: 0x1234,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -131,12 +134,15 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
     ownerPid: 7,
     generation: 1,
     ...rest,
   };
   Object.assign(getThreadActivityState(thread as never), rest);
+  setThreadInitialized(thread as never, initialized === true);
+  if (typeof reinitCount === "number") {
+    setThreadReinitCount(thread as never, reinitCount);
+  }
   if (typeof runningGeneration === "number") {
     setThreadRunningGeneration(thread as never, runningGeneration);
   } else {

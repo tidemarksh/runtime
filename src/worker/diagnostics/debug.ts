@@ -32,6 +32,7 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  isThreadInitialized,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
 import { getThreadActivityState } from "../thread-activity-state.js";
@@ -232,7 +233,7 @@ function readWorkerOwnerState(
   if (ownerAsyncStatus !== null) {
     return `async:${ownerAsyncStatus}`;
   }
-  if (!state.initialized) {
+  if (!isThreadInitialized(state)) {
     return "init";
   }
   return "idle";
@@ -285,7 +286,7 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `ownerPid=${state.ownerPid}`,
     `gen=${state.generation}`,
     `runGen=${getThreadRunningGeneration(state) ?? "null"}`,
-    `init=${state.initialized ? 1 : 0}`,
+    `init=${isThreadInitialized(state) ? 1 : 0}`,
     `wait=${waitingInWorkerStatus ?? "null"}`,
     `async=${ownerAsyncStatus ?? "null"}`,
     `kernelStatus=${threadStatus ?? "n/a"}`,

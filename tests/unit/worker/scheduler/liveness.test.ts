@@ -25,7 +25,9 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  setThreadInitialized,
   setThreadOwnerAsyncStatus,
+  setThreadReinitCount,
   setThreadRunningGeneration,
   setThreadResumeWorkersOnReady,
 } from "../../../../src/worker/thread-host-state.js";
@@ -462,7 +464,6 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     vmPtr,
     ownerPid: 1,
     generation: 0,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -482,8 +483,9 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
   };
+  setThreadInitialized(thread, true);
+  setThreadReinitCount(thread, 0);
   clearThreadWaitingInWorkerStatus(thread);
   clearThreadOwnerAsyncStatus(thread);
   return thread;
@@ -1840,7 +1842,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
   const parentThread = makeThreadState(0x5678);
   const childThread = makeThreadState(0x9abc);
   setThreadOwnerAsyncStatus(parentThread as never, 10);
-  childThread.initialized = false;
+  setThreadInitialized(childThread, false);
   setThreadResumeWorkersOnReady(childThread, [parentWorker]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(blockedWorker, blockedThread);
@@ -1899,7 +1901,7 @@ test("epoll retry defers while clone child init is expected to release parent", 
   expect(handle.kernelWorkerRequest).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBeGreaterThan(0);
 
-  childThread.initialized = true;
+  setThreadInitialized(childThread, true);
   setThreadResumeWorkersOnReady(childThread, []);
   scheduler.clearHostBlockedRetryTimer(handle, blockedWorker);
   scheduler.notifySchedulerProgress(handle);

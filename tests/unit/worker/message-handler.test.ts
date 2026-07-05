@@ -5,7 +5,9 @@ import type { KernelExports } from "../../../src/abi.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
 import {
   getThreadOwnerAsyncStatus,
+  setThreadInitialized,
   setThreadOwnerAsyncStatus,
+  setThreadReinitCount,
   setThreadResumeWorkersOnReady,
   setThreadWaitingInWorkerStatus,
   snapshotThreadResumeWorkersOnReady,
@@ -16,11 +18,15 @@ import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi
 import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
 
 function makeThreadState(overrides: Partial<ThreadWorkerState> & {
+  initialized?: boolean;
   ownerAsyncStatus?: number | null;
+  reinitCount?: number;
   waitingInWorkerStatus?: number | null;
 } = {}): ThreadWorkerState {
   const {
+    initialized = true,
     ownerAsyncStatus,
+    reinitCount = 0,
     waitingInWorkerStatus,
     ...rest
   } = overrides;
@@ -28,7 +34,6 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> & {
     vmPtr: 0x1234,
     ownerPid: 3,
     generation: 2,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -48,9 +53,10 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> & {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
     ...rest,
   } as ThreadWorkerState;
+  setThreadInitialized(thread, initialized);
+  setThreadReinitCount(thread, reinitCount);
   if (typeof ownerAsyncStatus === "number") {
     setThreadOwnerAsyncStatus(thread, ownerAsyncStatus);
   }

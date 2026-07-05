@@ -27,9 +27,12 @@ import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import {
   clearThreadRunningGeneration,
+  getThreadReinitCount,
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  setThreadInitialized,
+  setThreadReinitCount,
   setThreadRunningGeneration,
 } from "../thread-host-state.js";
 import {
@@ -254,14 +257,15 @@ export function createWorkerSchedulerQueueHelpers(
       handle,
       `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
     );
+    const reinitCount = reinitWithinHandle ? getThreadReinitCount(existingThread) + 1 : 0;
     const thread: ThreadWorkerState = {
       vmPtr,
       ownerPid: handle.pid,
       generation,
-      reinitCount: reinitWithinHandle ? (existingThread?.reinitCount ?? 0) + 1 : 0,
-      initialized: false,
     };
     deps.threadWorkerStates.set(worker, thread);
+    setThreadReinitCount(thread, reinitCount);
+    setThreadInitialized(thread, false);
     resetThreadActivityState(thread);
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
       deps.handleWorkerMessage(handle, worker, event.data);

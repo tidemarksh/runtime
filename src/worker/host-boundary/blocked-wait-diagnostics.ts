@@ -17,6 +17,7 @@ import {
 import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
+  isThreadInitialized,
 } from "../thread-host-state.js";
 import { maybeThreadActivityState } from "../thread-activity-state.js";
 import { pendingGuestMemoryWritesForNextStepCount } from "../thread-step-payload.js";
@@ -144,7 +145,7 @@ export function formatRunningRetryBlocker(
     + `:pendingWrites=${runningThread === undefined ? "null" : pendingGuestMemoryWritesForNextStepCount(runningThread)}`
     + `:lastStepAge=${lastStepAge}:lastStatusAge=${lastStatusAge}`
     + `:proc=0x${processPtr.toString(16)}`
-    + `:initialized=${runningThread === undefined ? "null" : runningThread.initialized ? 1 : 0}`
+    + `:initialized=${runningThread === undefined ? "null" : isThreadInitialized(runningThread) ? 1 : 0}`
     + `:ownerAsync=${ownerAsyncStatus ?? "null"}`
     + `:ready=${handle.vforkReadyWorkers.length}`
     + `:active=0x${activeStepVmPtr.toString(16)}`;

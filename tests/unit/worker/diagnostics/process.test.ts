@@ -3,7 +3,11 @@ import type { KernelExports } from "../../../../src/abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
-import { setThreadRunningGeneration } from "../../../../src/worker/thread-host-state.js";
+import {
+  setThreadInitialized,
+  setThreadReinitCount,
+  setThreadRunningGeneration,
+} from "../../../../src/worker/thread-host-state.js";
 
 function makeDiagnosticsKernel(overrides: Partial<KernelExports> = {}): KernelExports {
   return new Proxy(overrides, {
@@ -98,8 +102,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     vmPtr: 0x2000,
     ownerPid: 1,
     generation: 3,
-    runningGeneration: 3,
-    reinitCount: 0,
     stepCount: 7,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -119,7 +121,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
   };
@@ -132,6 +133,8 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStepPc: 0x1234n,
     lastStatusPc: 0x5678n,
   });
+  setThreadInitialized(thread, true);
+  setThreadReinitCount(thread, 0);
   setThreadRunningGeneration(thread, 3);
   const handle = {
     pid: 1,

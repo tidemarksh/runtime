@@ -5,6 +5,8 @@ interface ThreadHostGateState {
   waitingInWorkerStatus: number | null;
   resumeWorkersOnReady: Worker[];
   runningGeneration: number | null;
+  initialized: boolean;
+  reinitCount: number;
 }
 
 const threadHostGateStates = new WeakMap<ThreadWorkerState, ThreadHostGateState>();
@@ -17,6 +19,8 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
       waitingInWorkerStatus: null,
       resumeWorkersOnReady: [],
       runningGeneration: null,
+      initialized: false,
+      reinitCount: 0,
     };
     threadHostGateStates.set(thread, state);
   }
@@ -29,6 +33,8 @@ function clearIfIdle(thread: ThreadWorkerState, state: ThreadHostGateState): voi
     && state.waitingInWorkerStatus === null
     && state.resumeWorkersOnReady.length === 0
     && state.runningGeneration === null
+    && !state.initialized
+    && state.reinitCount === 0
   ) {
     threadHostGateStates.delete(thread);
   }
@@ -150,6 +156,40 @@ export function clearThreadRunningGeneration(thread: ThreadWorkerState): void {
     return;
   }
   state.runningGeneration = null;
+  clearIfIdle(thread, state);
+}
+
+export function isThreadInitialized(
+  thread: ThreadWorkerState | null | undefined,
+): boolean {
+  return thread !== null
+    && thread !== undefined
+    && (threadHostGateStates.get(thread)?.initialized ?? false);
+}
+
+export function setThreadInitialized(
+  thread: ThreadWorkerState,
+  initialized: boolean,
+): void {
+  const state = hostGateState(thread);
+  state.initialized = initialized;
+  clearIfIdle(thread, state);
+}
+
+export function getThreadReinitCount(
+  thread: ThreadWorkerState | null | undefined,
+): number {
+  return thread === null || thread === undefined
+    ? 0
+    : threadHostGateStates.get(thread)?.reinitCount ?? 0;
+}
+
+export function setThreadReinitCount(
+  thread: ThreadWorkerState,
+  reinitCount: number,
+): void {
+  const state = hostGateState(thread);
+  state.reinitCount = reinitCount;
   clearIfIdle(thread, state);
 }
 

@@ -22,7 +22,9 @@ import { supervisorProcessStatusIsCloneSpawn } from "../supervisor-status.js";
 import {
   clearThreadOwnerAsyncStatus,
   clearThreadWaitingInWorkerStatus,
+  getThreadReinitCount,
   getThreadOwnerAsyncStatus,
+  setThreadInitialized,
   takeThreadResumeWorkersOnReady,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
@@ -125,9 +127,9 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
             `ready-pid-mismatch:0x${thread.vmPtr.toString(16)}`
               + `:expected_pid=${handle.pid}`
               + `:actual_pid=${readyProcessPidField}`
-              + `:reinit_count=${thread.reinitCount}`,
+              + `:reinit_count=${getThreadReinitCount(thread)}`,
           );
-          if (thread.reinitCount < 1) {
+          if (getThreadReinitCount(thread) < 1) {
             deps.attachThreadWorker(handle, {
               worker,
               vmPtr: thread.vmPtr,
@@ -203,7 +205,7 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
       handle.kernelState = adoptKernelStateForHandle(handle, readyKernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
-      thread.initialized = true;
+      setThreadInitialized(thread, true);
       clearThreadWaitingInWorkerStatus(thread);
       deps.clearBlockedWorker(handle, worker);
       const activity = getThreadActivityState(thread);
