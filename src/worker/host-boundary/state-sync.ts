@@ -30,6 +30,13 @@ import {
   getRuntimeStateSyncPromise,
   setRuntimeStateSyncPromise,
 } from "../state-sync-inflight.js";
+import {
+  enqueueOfdSyncIds,
+  getOfdSyncPromise,
+  queuedOfdSyncIdCount,
+  setOfdSyncPromise,
+  takeQueuedOfdSyncIds,
+} from "../ofd-sync-state.js";
 import { isBlockedRpcPending } from "../host-blocked-state.js";
 import { getThreadWaitingInWorkerStatus } from "../thread-host-state.js";
 import {
@@ -304,8 +311,9 @@ export function createWorkerSchedulerStateSyncHelpers(
         return Promise.resolve();
       }
       return (async () => {
-        if (handle.ofdSyncPromise !== null) {
-          await handle.ofdSyncPromise;
+        const activeOfdSync = getOfdSyncPromise(handle);
+        if (activeOfdSync !== null) {
+          await activeOfdSync;
         }
         await syncOfdStateViaKernelWorker(
           handle,
@@ -316,28 +324,27 @@ export function createWorkerSchedulerStateSyncHelpers(
         assertProcessIdentity(handle, "requestEpollDependentOfdStateSync");
       })();
     }
-    for (const ofdId of dependentOfdIds) {
-      handle.ofdSyncQueuedIds.add(ofdId);
-    }
-    if (handle.ofdSyncQueuedIds.size === 0) {
+    enqueueOfdSyncIds(handle, dependentOfdIds);
+    if (queuedOfdSyncIdCount(handle) === 0) {
       return Promise.resolve();
     }
-    if (handle.ofdSyncPromise !== null) {
-      return handle.ofdSyncPromise;
+    const activeOfdSync = getOfdSyncPromise(handle);
+    if (activeOfdSync !== null) {
+      return activeOfdSync;
     }
 
-    handle.ofdSyncPromise = (async () => {
-      while (handle.ofdSyncQueuedIds.size > 0) {
-        const ofdIds = [...handle.ofdSyncQueuedIds];
-        handle.ofdSyncQueuedIds.clear();
+    const ofdSyncPromise = (async () => {
+      while (queuedOfdSyncIdCount(handle) > 0) {
+        const ofdIds = takeQueuedOfdSyncIds(handle);
         await syncOfdStateViaKernelWorker(handle, ofdIds, syscallSyncCause("epoll-dependent-ofd-sync"));
         assertProcessIdentity(handle, "requestEpollDependentOfdStateSync");
       }
     })().finally(() => {
-      handle.ofdSyncPromise = null;
+      setOfdSyncPromise(handle, null);
     });
+    setOfdSyncPromise(handle, ofdSyncPromise);
 
-    return handle.ofdSyncPromise;
+    return ofdSyncPromise;
   }
 
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {

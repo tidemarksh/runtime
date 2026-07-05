@@ -680,8 +680,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       processMemfsDirty: false,
       processMemfsPublishPending: false,
       processMemfsDeletedPaths: new Set(),
-      ofdSyncPromise: null,
-      ofdSyncQueuedIds: new Set(),
       vforkSnapshot: null,
       vforkWorker: null,
       exitInProgress: false,

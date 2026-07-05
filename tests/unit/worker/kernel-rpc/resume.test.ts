@@ -307,8 +307,6 @@ function makeHandle(
     runningWorker: null,
     hostBlockedWorkers: new Map(),
     pendingChildSpawnRecords: 0,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
     networkConnections: new Map(),
     networkClosedFds: new Set(),
     vforkSnapshot: null,

@@ -79,8 +79,6 @@ function makeHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],

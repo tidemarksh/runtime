@@ -940,8 +940,6 @@ function makeHandle(
     pendingChildSpawnRecords: 1,
     pendingPipeSlotSnapshots: [],
     processMemfsDirty: false,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
     networkConnections: new Map(),
     networkPendingConnectFds: new Set(),
     networkClosedFds: new Set(),

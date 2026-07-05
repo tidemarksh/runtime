@@ -522,8 +522,6 @@ function makeHandle(kernel: FakeKernel, memory: WebAssembly.Memory): ProcessHand
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],

@@ -561,8 +561,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     pendingPipeSlotSnapshots: [],
     processMemfsDirty: false,
     regularFileOfdOffsets: new Map(),
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,

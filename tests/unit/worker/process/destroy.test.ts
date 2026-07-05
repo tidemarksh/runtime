@@ -66,8 +66,6 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
       vmPtr: 0x2222,
       status: 6,
     }]]),
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: 77,

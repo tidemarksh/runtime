@@ -149,8 +149,6 @@ export interface ProcessHandle {
   processMemfsPublishPending: boolean;
   processMemfsDeletedPaths?: Set<string>;
   regularFileOfdOffsets?: Map<number, { ino: number; hostFd: number; offset: bigint }>;
-  ofdSyncPromise: Promise<void> | null;
-  ofdSyncQueuedIds: Set<number>;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
   exitInProgress?: boolean;
