@@ -9,6 +9,7 @@ import {
   networkClosedFds,
   networkClosedSocketSlots,
   networkConnectionOfds as networkConnectionOfdsState,
+  networkConnections,
   networkOfdSlotWatermarks,
   networkRecvHeadWatermarks,
   networkPendingConnectFds,
@@ -25,7 +26,7 @@ export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): bool
 
 export function runtimeNetworkFds(handle: ProcessHandle): Set<number> {
   return new Set([
-    ...(handle.networkConnections?.keys() ?? []),
+    ...(networkConnections(handle)?.keys() ?? []),
     ...networkPendingConnectFds(handle),
     ...networkClosedFds(handle),
     ...networkClosedSocketSlots(handle).keys(),
@@ -291,7 +292,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     appendStatusSocketDebug?: SocketStatusDebug;
   },
 ): void {
-  if (!fdEntries || vmPtr === 0 || handle.networkConnections.size === 0) {
+  if (!fdEntries || vmPtr === 0 || networkConnections(handle).size === 0) {
     return;
   }
   const ofds = networkConnectionOfds(handle);
@@ -314,7 +315,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       supervisor: true,
     };
   };
-  for (const [fd, connection] of [...handle.networkConnections]) {
+  for (const [fd, connection] of [...networkConnections(handle)]) {
     const fdEntry = fdEntries.find((entry) => entry.fd === fd);
     const expectedOfd = ofds.get(fd);
     const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);
@@ -331,8 +332,8 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
         : null;
       if (replacementFd !== null) {
         if (replacementFd !== fd) {
-          handle.networkConnections.delete(fd);
-          handle.networkConnections.set(replacementFd, connection);
+          networkConnections(handle).delete(fd);
+          networkConnections(handle).set(replacementFd, connection);
           ofds.delete(fd);
           ofds.set(replacementFd, expectedOfd);
           moveNetworkRecvWatermarks(handle, fd, replacementFd, callbacks.appendStatusSocketDebug);
@@ -360,7 +361,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       callbacks.appendWorkerDebugLog(handle, `net-status-keep:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
       continue;
     }
-    handle.networkConnections.delete(fd);
+    networkConnections(handle).delete(fd);
     ofds.delete(fd);
     networkPendingConnectFds(handle).delete(fd);
     clearNetworkRecvWatermarks(handle, fd, callbacks.appendStatusSocketDebug);
@@ -416,7 +417,7 @@ export function restoreRuntimeNetworkSidecarForHandle(
 
   if (handle.networkBridge) {
     for (const member of relatedHandles) {
-      for (const [sourceFd, connection] of member.networkConnections) {
+      for (const [sourceFd, connection] of networkConnections(member)) {
         const sourceOfd = supervisorSocketOfdForFd(member, member.vmPtr, sourceFd);
         if (!isSocketOfd(member, sourceOfd)) {
           continue;
@@ -424,12 +425,12 @@ export function restoreRuntimeNetworkSidecarForHandle(
         const targetFd = findSocketFdForOfd(handle, vmPtr, sourceOfd, sourceFd);
         if (
           targetFd === null
-          || handle.networkConnections.has(targetFd)
+          || networkConnections(handle).has(targetFd)
           || networkClosedFds(handle).has(targetFd)
         ) {
           continue;
         }
-        handle.networkConnections.set(targetFd, connection);
+        networkConnections(handle).set(targetFd, connection);
         networkConnectionOfds(handle).set(targetFd, sourceOfd);
         networkPendingConnectFds(handle).delete(targetFd);
         networkClosedSocketSlots(handle).delete(targetFd);
@@ -443,7 +444,7 @@ export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorke
   if (
     handle.kernelState.socketUsed === 0
     && handle.kernelState.netBufUsed === 0n
-    && (handle.networkConnections?.size ?? 0) === 0
+    && (networkConnections(handle)?.size ?? 0) === 0
     && networkPendingConnectFds(handle).size === 0
     && networkClosedFds(handle).size === 0
     && networkClosedSocketSlots(handle).size === 0
@@ -514,7 +515,7 @@ export function hasKernelSocketFdState(handle: ProcessHandle): boolean {
 }
 
 export function hasRuntimeNetworkSocketState(handle: ProcessHandle): boolean {
-  return (handle.networkConnections?.size ?? 0) > 0
+  return (networkConnections(handle)?.size ?? 0) > 0
     || networkPendingConnectFds(handle).size > 0
     || networkClosedFds(handle).size > 0
     || networkClosedSocketSlots(handle).size > 0

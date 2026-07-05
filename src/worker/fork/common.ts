@@ -70,7 +70,6 @@ export function createForkChildHandle({
     sabPageCache: parent.sabPageCache,
     kernelWorkerRequest: parent.kernelWorkerRequest,
     networkBridge: parent.networkBridge,
-    networkConnections: new Map(parent.networkConnections),
     workers: new Set<Worker>(),
     exitInProgress: false,
     onError: createInheritedErrorSink(

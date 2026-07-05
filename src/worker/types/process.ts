@@ -3,7 +3,7 @@ import type {
   KernelRuntimeState,
 } from "../../abi.js";
 import type { RuntimeStateBridge } from "../../bridge/runtime-state.js";
-import type { RuntimeNetworkBridge, RuntimeNetworkConnection } from "../../bridge/network.js";
+import type { RuntimeNetworkBridge } from "../../bridge/network.js";
 import type { FsSnapshotEntry } from "../../fs/types.js";
 import type {
   GuestMemoryPolicyLimitInput,
@@ -108,7 +108,6 @@ export interface ProcessHandle {
   sabPageCache: SharedArrayBuffer | null;
   kernelWorkerRequest?: KernelWorkerRequestFn;
   networkBridge?: RuntimeNetworkBridge;
-  networkConnections: Map<number, RuntimeNetworkConnection>;
   workers: Set<Worker>;
   exitInProgress?: boolean;
   onExit?: (code: number) => void;

@@ -1,6 +1,7 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
   networkClosedFds,
+  networkConnections,
   networkPendingConnectFds,
   networkRecvHeadWatermarks,
   networkRecvTailWatermarks,
@@ -407,7 +408,7 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
     3,
     0n,
   );
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
   expect(networkPendingConnectFds(handle).has(3)).toBe(false);
   expect(networkClosedFds(handle).has(3)).toBe(false);
   expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
@@ -463,7 +464,7 @@ test("commitNetworkConnect drops bridge connection when supervisor rejects the c
     3,
     0n,
   );
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
   expect(networkPendingConnectFds(handle).has(3)).toBe(false);
   expect(connection.close).toHaveBeenCalledTimes(1);
 });
@@ -541,7 +542,7 @@ test("commitNetworkConnect adopts bridge connection when supervisor accepts the 
     3,
     0n,
   );
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
   expect(networkPendingConnectFds(handle).has(3)).toBe(false);
   expect(connection.close).not.toHaveBeenCalled();
 });
@@ -840,7 +841,7 @@ test("async inbound read adopts the current process handle before injecting", as
     expect(activeHandle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x3000, 7, 0x34100, 21);
   });
 
-  expect(activeHandle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(activeHandle).get(7)).toBe(connection);
   expect(networkClosedFds(activeHandle).has(7)).toBe(false);
   expect(networkRecvHeadWatermarks(activeHandle).has(7)).toBe(false);
   expect(networkRecvTailWatermarks(activeHandle).has(7)).toBe(false);
@@ -1021,7 +1022,7 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
   expect(networkClosedFds(handle).has(7)).toBe(false);
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
   expect(connection.close).not.toHaveBeenCalled();
 });
 
@@ -1072,7 +1073,7 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 });
 
 test("bridge EOF marks peer shutdown but preserves the guest socket until fd close", async () => {
@@ -1117,7 +1118,7 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
   expect(handle.kernel.supervisor_socket_close_external_peer).toHaveBeenCalledWith(0x3000, 7);
   expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).toHaveBeenCalledTimes(1);
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
   expect(networkRecvHeadWatermarks(handle).has(7)).toBe(false);
   expect(networkRecvTailWatermarks(handle).has(7)).toBe(false);
 });
@@ -1170,21 +1171,21 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenLastCalledWith(0x3000, 7, 0x34100, response.length);
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 
   recvAvailable = 0;
   injectLimit = response.length;
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 
   recvAvailable = 0;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await helpers.pumpNetworkConnections(handle, 0x3000);
   }
   expect(connection.close).toHaveBeenCalledTimes(1);
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 });
 
 test("stale network OFD rekeys when fork-shared sync renumbers the same socket fd", async () => {
@@ -1266,7 +1267,7 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
   networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
   expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
   expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 
@@ -1276,7 +1277,7 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
   expect(connection.close).not.toHaveBeenCalled();
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
   expect(networkClosedFds(handle).has(3)).toBe(false);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
 });
 
 test("stale network OFD rekeys to supervisor-selected active fd alias", async () => {
@@ -1368,7 +1369,7 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
 
   fd3Ofd = 20;
   fd5Ofd = 19;
@@ -1378,8 +1379,8 @@ test("stale network OFD rekeys to supervisor-selected active fd alias", async ()
 
   expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkConnections.get(5)).toBe(connection);
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(networkConnections(handle).get(5)).toBe(connection);
   expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
   expect(networkRecvHeadWatermarks(handle).get(5)).toBe(4096);
   expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
@@ -1464,13 +1465,13 @@ test("stale network OFD closes when supervisor reports no active fd", async () =
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
 
   currentOfd = 20;
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
   expect(connection.close).toHaveBeenCalledTimes(1);
 });
 
@@ -1559,7 +1560,7 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(oldConnection);
+  expect(networkConnections(handle).get(3)).toBe(oldConnection);
 
   currentOfd = 20;
   networkRecvHeadWatermarks(handle).set(3, 4096);
@@ -1570,7 +1571,7 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
   expect(oldConnection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
   expect(networkClosedFds(handle).has(3)).toBe(false);
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
   expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
   expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 });
@@ -1654,7 +1655,7 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
   networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
 
   currentOfd = 0;
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
@@ -1662,7 +1663,7 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
   expect(networkClosedFds(handle).has(3)).toBe(false);
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
   expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
   expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 });
@@ -1751,7 +1752,7 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(oldConnection);
+  expect(networkConnections(handle).get(3)).toBe(oldConnection);
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
@@ -1759,5 +1760,5 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
   expect(oldConnection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
   expect(networkClosedFds(handle).has(3)).toBe(false);
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
 });

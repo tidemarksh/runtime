@@ -5,6 +5,7 @@ import {
 } from "../../supervisor-blocked-resume.js";
 import type { SyncCause } from "../contracts/sync.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
+import { networkConnections } from "../network-socket-state.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -71,7 +72,7 @@ export async function executeHostBlockedStatusTransition(
     status,
     {
       kernelWorkerAvailable: !!handle.kernelWorkerRequest && handle.pid > 0,
-      networkConnectionsAvailable: handle.networkConnections.size > 0,
+      networkConnectionsAvailable: networkConnections(handle).size > 0,
     },
   );
 

@@ -14,6 +14,7 @@ import {
   networkClosedFds,
   networkClosedSocketSlots,
   networkConnectionOfds,
+  networkConnections,
   networkPendingConnectFds,
   networkRecvHeadWatermarks,
   networkRecvPayloadWatermarks,
@@ -30,6 +31,7 @@ type NetworkPayloadSeed = Omit<NetworkRecvPayloadWatermark, "recvBufIdx"> & {
 };
 
 export function seedNetworkSocketState(handle: unknown, seed: {
+  connections?: Iterable<readonly [number, unknown]>;
   connectionOfds?: Iterable<readonly [number, number]>;
   pendingConnectFds?: Iterable<number>;
   closedFds?: Iterable<number>;
@@ -40,6 +42,9 @@ export function seedNetworkSocketState(handle: unknown, seed: {
   recvPayloadWatermarks?: Iterable<readonly [number, NetworkPayloadSeed]>;
 }): void {
   const processHandle = handle as ProcessHandle;
+  for (const [fd, connection] of seed.connections ?? []) {
+    networkConnections(processHandle).set(fd, connection as never);
+  }
   for (const [fd, ofdId] of seed.connectionOfds ?? []) {
     networkConnectionOfds(processHandle).set(fd, ofdId);
   }
@@ -142,12 +147,17 @@ export function makeKernel(overrides: Record<string, unknown> = {}) {
 }
 
 export function makeHandle(overrides: Record<string, unknown> = {}) {
-  const { kernel: overrideKernel, memory: overrideMemory, ...rest } = overrides;
+  const {
+    kernel: overrideKernel,
+    memory: overrideMemory,
+    networkConnections: initialNetworkConnections,
+    ...rest
+  } = overrides;
   const memory = (overrideMemory as WebAssembly.Memory | undefined)
     ?? new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const kernel = (overrideKernel as Partial<KernelExports> | undefined) ?? makeKernel();
   kernel.memory ??= memory;
-  return {
+  const handle = {
     pid: 7,
     runtimeId: 1,
     vmPtr: 0x1234,
@@ -171,7 +181,6 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     vforkReadyWorkers: [],
     hostBlockedWorkers: new Map(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
-    networkConnections: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -182,6 +191,10 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     onStdout: null,
     ...rest,
   };
+  for (const [fd, connection] of initialNetworkConnections instanceof Map ? initialNetworkConnections : []) {
+    networkConnections(handle as ProcessHandle).set(fd, connection as never);
+  }
+  return handle;
 }
 
 export function makeStatusMessage(overrides: Record<string, unknown> = {}) {

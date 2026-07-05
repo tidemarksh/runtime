@@ -29,6 +29,7 @@ import {
 import { describeForkSharedSyncPromise } from "../fork-shared-sync-debug.js";
 import { clearStaleForkSharedSyncGate } from "../fork-shared-sync-gate.js";
 import { collectLiveThreadVmPtrs } from "../live-threads.js";
+import { networkConnections } from "../network-socket-state.js";
 import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
@@ -668,7 +669,7 @@ export function createBlockedRetryCoordinator(
     if (kernelWorkerOwnsPipeState(handle)) {
       flags.push("pipe-state-kernel-worker-owns");
     }
-    if (handle.networkConnections.size > 0) {
+    if (networkConnections(handle).size > 0) {
       flags.push("network-connections-available");
     }
     return flags;

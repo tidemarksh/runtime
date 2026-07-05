@@ -31,6 +31,7 @@ import {
   networkClosedFds,
   networkClosedSocketSlots,
   networkConnectionOfds,
+  networkConnections,
   networkOfdSlotWatermarks,
   networkPendingConnectFds,
   networkRecvPayloadWatermarks,
@@ -706,7 +707,7 @@ export function snapshotNonEmptyHostOutputPipeSlots(
 
 export function formatNetworkSocketDebug(handle: ProcessHandle): string {
   const fds = [...new Set([
-    ...(handle.networkConnections?.keys() ?? []),
+    ...(networkConnections(handle)?.keys() ?? []),
     ...(networkPendingConnectFds(handle) ?? []),
     ...(networkClosedFds(handle) ?? []),
     ...(networkClosedSocketSlots(handle)?.keys() ?? []),
@@ -864,7 +865,7 @@ export function applyKernelWorkerNetBuffers(
 
 export function networkBridgeOutboundAvailable(handle: ProcessHandle): boolean {
   const fds = [...new Set([
-    ...(handle.networkConnections?.keys() ?? []),
+    ...(networkConnections(handle)?.keys() ?? []),
     ...(networkPendingConnectFds(handle) ?? []),
   ])];
   return fds.some((fd) => kernelSocketOutboundAvailable(handle, handle.vmPtr, fd) > 0);
@@ -901,7 +902,7 @@ export function snapshotNetworkBridgeSocketState(
   const snapshots: NetworkBridgeSocketStateSnapshot[] = [];
   for (const handle of handles) {
     if (
-      (handle.networkConnections?.size ?? 0) === 0
+      (networkConnections(handle)?.size ?? 0) === 0
       && (networkPendingConnectFds(handle)?.size ?? 0) === 0
       && (networkClosedFds(handle)?.size ?? 0) === 0
       && (networkClosedSocketSlots(handle)?.size ?? 0) === 0
@@ -920,7 +921,7 @@ export function snapshotNetworkBridgeSocketState(
     const netBufferSlotBytes = netBufferSlotBytesForHandle(handle);
     const ofdSlotBytes = Math.floor(handle.kernel.kernel_ofd_table_bytes() / handle.kernel.abi_max_fds());
     const ofdSlots: NetworkBridgeSocketStateSnapshot["ofdSlots"] = [];
-    const connectionFds = [...(handle.networkConnections?.keys() ?? [])];
+    const connectionFds = [...(networkConnections(handle)?.keys() ?? [])];
     const pendingConnectFds = [...(networkPendingConnectFds(handle) ?? [])];
     const closedFds = [...(networkClosedFds(handle) ?? [])];
     const closedSlotFds = [...(networkClosedSocketSlots(handle)?.keys() ?? [])];
@@ -1045,7 +1046,7 @@ export function restoreNetworkBridgeSocketState(
 ): void {
   for (const snapshot of snapshots) {
     const { handle } = snapshot;
-    if (snapshot.connectionFds.some((fd) => !(handle.networkConnections?.has(fd) ?? false))) {
+    if (snapshot.connectionFds.some((fd) => !(networkConnections(handle)?.has(fd) ?? false))) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       continue;

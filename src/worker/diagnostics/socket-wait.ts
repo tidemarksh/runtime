@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { networkConnections } from "../network-socket-state.js";
 import { supervisorProcessOfdForFd } from "../ownership/fd-table.js";
 import { supervisorOfdFdType } from "../ownership/ofd-metadata.js";
 
@@ -29,7 +30,7 @@ export function createSocketWaitScheduler(_deps: SocketWaitSchedulerDeps): Socke
       const state = socketIdx >= 0 ? handle.kernel.thread_socket_state?.(socketIdx) : undefined;
       const available = socketIdx >= 0 ? handle.kernel.thread_socket_recv_available?.(socketIdx) : undefined;
       const peerIdx = socketIdx >= 0 ? handle.kernel.thread_socket_peer_idx?.(socketIdx) : undefined;
-      return `sock=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/idx${socketIdx}/st${state ?? "n/a"}/avail${available ?? "n/a"}/peer${peerIdx ?? "n/a"}/conn${handle.networkConnections.has(fd) ? 1 : 0}`;
+      return `sock=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/ofd${ofdId}/idx${socketIdx}/st${state ?? "n/a"}/avail${available ?? "n/a"}/peer${peerIdx ?? "n/a"}/conn${networkConnections(handle).has(fd) ? 1 : 0}`;
     } catch (error) {
       return `sock=fd${fd}/i0x${interest.toString(16)}/r0x${revents.toString(16)}/err=${JSON.stringify(error instanceof Error ? error.message : String(error))}`;
     }

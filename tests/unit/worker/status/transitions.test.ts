@@ -1,7 +1,10 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
-import { networkConnectionOfds } from "../../../../src/worker/network-socket-state.js";
+import {
+  networkConnectionOfds,
+  networkConnections,
+} from "../../../../src/worker/network-socket-state.js";
 import {
   clearThreadOwnerAsyncStatus,
   getThreadOwnerAsyncStatus,
@@ -887,7 +890,7 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
   handle.pid = 4;
   handle.runtimeId = 99;
   handle.kernel.process_current_pid = () => 4;
-  handle.networkConnections.set(3, {} as never);
+  networkConnections(handle).set(3, {} as never);
   const bridge = {
     connect: vi.fn(),
   };
@@ -950,7 +953,7 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
     runtimeId: 99,
     networkBridge: bridge,
   };
-  parent.networkConnections.set(3, connection);
+  networkConnections(parent).set(3, connection);
   parent.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 12 : 0);
   parent.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 12 ? 8 : 0);
   handle.kernelShare.members.add(parent as never);
@@ -982,7 +985,7 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
     expect(deps.pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
   });
   expect(handle.networkBridge).toBe(bridge);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
   expect(networkConnectionOfds(handle as never).get(3)).toBe(12);
   expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
 });
@@ -1898,7 +1901,7 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
 test("STATUS_OK network pump syncs socket state before requeueing", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
-  handle.networkConnections.set(7, {} as never);
+  networkConnections(handle).set(7, {} as never);
   const deps = makeDeps(worker);
   deps.pumpNetworkConnections = vi.fn(async () => true);
   let resolveSocketSync: (() => void) | undefined;

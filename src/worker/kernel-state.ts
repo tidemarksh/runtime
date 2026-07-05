@@ -2,6 +2,7 @@ import { attachKernelRuntimeState, readKernelRuntimeState, type KernelRuntimeSta
 import {
   networkClosedFds,
   networkClosedSocketSlots,
+  networkConnections,
   networkPendingConnectFds,
 } from "./network-socket-state.js";
 import { liveProcessPipeUsedBits } from "./ownership/pipe-control.js";
@@ -74,7 +75,7 @@ export function adoptKernelStateForHandle(
   const adopted = adoptKernelState(current, incoming);
   const pipeUsed = adopted.pipeUsed | liveProcessPipeUsedBits(handle);
   if (
-    (handle.networkConnections?.size ?? 0) === 0
+    (networkConnections(handle)?.size ?? 0) === 0
     && networkPendingConnectFds(handle).size === 0
     && networkClosedFds(handle).size === 0
     && networkClosedSocketSlots(handle).size === 0

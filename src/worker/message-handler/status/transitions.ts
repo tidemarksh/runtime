@@ -27,6 +27,7 @@ import {
   supervisorFsPipeRefreshBeforeResumeAction,
 } from "../../../fs/supervisor-pipe-refresh.js";
 import { restoreRuntimeNetworkSidecarForHandle } from "../../ownership/socket-control.js";
+import { networkConnections } from "../../network-socket-state.js";
 import { formatCompactDebugSuffix } from "../../diagnostics/format.js";
 import {
   pollSupervisorFdControlDiagnostic,
@@ -270,7 +271,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               assertHandleProcessIdentity("handleStatusTransition:after-prune-detached");
             }
             deps.appendWorkerDebugLog(handle, `ok-sync-done:0x${thread.vmPtr.toString(16)}`);
-            return handle.networkConnections.size > 0
+            return networkConnections(handle).size > 0
               ? deps.pumpNetworkConnections(handle, thread.vmPtr)
               : Promise.resolve(false);
           })
@@ -311,7 +312,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (shouldWakeSignalWaiters) {
         wakeRuntimeBridge(handle.runtimeBridge);
       }
-      if (handle.networkConnections.size > 0) {
+      if (networkConnections(handle).size > 0) {
         void deps.pumpNetworkConnections(handle, thread.vmPtr)
           .then((networkChanged) => syncSocketAfterNetworkPump(networkChanged))
           .then(() => {
@@ -439,7 +440,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     }
 
     if (
-      handle.networkConnections.size > 0
+      networkConnections(handle).size > 0
       && !supervisorBlockedStatusIsConnectWait(handle.kernel, status)
     ) {
       void deps.pumpNetworkConnections(handle, thread.vmPtr)

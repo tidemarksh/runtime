@@ -16,6 +16,7 @@ import {
   repairHandleVmPidAfterKernelStateAttach,
 } from "../kernel-state.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import { networkConnections } from "../network-socket-state.js";
 import type {
   KernelWorkerSocketStateSnapshot,
   ProcessHandle,
@@ -46,7 +47,7 @@ export async function syncSocketStatePreservingNetworkBridge(
   netBufUsed: bigint;
   socketState?: KernelWorkerSocketStateSnapshot;
 }> {
-  if (handle.networkConnections.size > 0) {
+  if (networkConnections(handle).size > 0) {
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     return {
       socketUsed: handle.kernelState.socketUsed,

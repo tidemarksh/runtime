@@ -5,6 +5,7 @@ import {
 } from "../../../../src/worker/message-handler/status/network-recv.js";
 import {
   networkConnectionOfds,
+  networkConnections,
   networkRecvHeadWatermarks,
   networkRecvTailWatermarks,
 } from "../../../../src/worker/network-socket-state.js";
@@ -72,7 +73,7 @@ test("status network recv closes stale runtime network bridges when supervisor r
   );
   await Promise.resolve();
 
-  expect((handle.networkConnections as Map<number, unknown>).has(4)).toBe(false);
+  expect((networkConnections(handle) as Map<number, unknown>).has(4)).toBe(false);
   expect(close).toHaveBeenCalled();
   expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 4, 11, 0);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
@@ -117,8 +118,8 @@ test("status network recv rekeys stale runtime network bridges from supervisor a
     },
   );
 
-  expect((handle.networkConnections as Map<number, unknown>).has(4)).toBe(false);
-  expect((handle.networkConnections as Map<number, unknown>).get(6)).toBe(connection);
+  expect((networkConnections(handle) as Map<number, unknown>).has(4)).toBe(false);
+  expect((networkConnections(handle) as Map<number, unknown>).get(6)).toBe(connection);
   expect(networkConnectionOfds(handle as never).has(4)).toBe(false);
   expect(networkConnectionOfds(handle as never).get(6)).toBe(11);
   expect(networkRecvHeadWatermarks(handle as never).has(4)).toBe(false);
@@ -161,7 +162,7 @@ test("status network recv keeps runtime network bridges from supervisor active f
     },
   );
 
-  expect((handle.networkConnections as Map<number, unknown>).get(4)).toBe(connection);
+  expect((networkConnections(handle) as Map<number, unknown>).get(4)).toBe(connection);
   expect(networkConnectionOfds(handle as never).get(4)).toBe(11);
   expect(connection.close).not.toHaveBeenCalled();
   expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 4, 11, 0);

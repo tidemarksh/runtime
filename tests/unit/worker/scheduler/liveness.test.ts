@@ -5,6 +5,7 @@ import {
   readPublishedRuntimeBridgeEpoch,
 } from "../../../../src/bridge/runtime-state.js";
 import { RUNTIME_BRIDGE_NOTIFY_INDEX } from "../../../../src/layout/runtime-state.js";
+import { networkConnections } from "../../../../src/worker/network-socket-state.js";
 
 vi.mock("../../../../src/worker/pool.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../../src/worker/pool.js")>();
@@ -2293,7 +2294,7 @@ test("socket poll is resumed immediately after network pump changes state", asyn
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.networkConnections.set(3, {} as never);
+  networkConnections(handle).set(3, {} as never);
   const pumpNetworkConnections = vi.fn(async () => true);
   const executeHostBlockedSyscallResumeOutcome = vi.fn(async () => {
     status = kernel.abi_status_ok();
@@ -2350,7 +2351,7 @@ test("socket poll pump resumes through kernel-worker RPC when available", async 
   });
   const handle = makeHandle(kernel, worker, threadWorkerStates);
   setPendingChildSpawnRecords(handle, 0);
-  handle.networkConnections.set(3, {} as never);
+  networkConnections(handle).set(3, {} as never);
   handle.kernelWorkerRequest = vi.fn(async (msg) => {
     switch (msg.type) {
       case "sync-socket-state":

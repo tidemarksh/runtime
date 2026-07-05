@@ -16,7 +16,10 @@ import {
   collectRuntimeNetworkSocketOfdIds,
   hasKernelSocketFdState,
 } from "../../../../src/worker/ownership/socket-control.js";
-import { networkConnectionOfds } from "../../../../src/worker/network-socket-state.js";
+import {
+  networkConnectionOfds,
+  networkConnections,
+} from "../../../../src/worker/network-socket-state.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -663,7 +666,7 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
   seedOfd(parent.memory, parent.kernelState, 19, FD_TYPE_SOCKET, 19, 99);
   seedPipeSlot(child.memory, child.kernelState, 6, 1, 1);
   seedPipeSlot(parent.memory, parent.kernelState, 6, 1, 1);
-  parent.networkConnections.set(9, {
+  networkConnections(parent).set(9, {
     close: vi.fn(async () => {}),
     read: vi.fn(),
     write: vi.fn(),
@@ -742,7 +745,7 @@ test("runtime network OFD collection excludes unrelated local socket OFDs", () =
   const handle = makeHandle(3, new Map([[3, 11], [16, 17]]));
   seedOfd(handle.memory, handle.kernelState, 11, FD_TYPE_SOCKET, 11, 30);
   seedOfd(handle.memory, handle.kernelState, 17, FD_TYPE_SOCKET, 17, 31);
-  handle.networkConnections.set(3, {
+  networkConnections(handle).set(3, {
     close: vi.fn(async () => {}),
     read: vi.fn(),
     write: vi.fn(),

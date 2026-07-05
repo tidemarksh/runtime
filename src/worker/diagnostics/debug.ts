@@ -29,6 +29,7 @@ import {
   supervisorOfdStatusFlags,
 } from "../ownership/ofd-metadata.js";
 import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
+import { networkConnections } from "../network-socket-state.js";
 import {
   getHandleForkSharedSync,
   getKernelShareForkSharedSync,
@@ -1556,7 +1557,7 @@ export function debugRuntimeProcessHandles(
             .slice(-80)
             .join("|")}`,
         ].join("/");
-        const networkFdSummary = [...handle.networkConnections.keys()]
+        const networkFdSummary = [...networkConnections(handle).keys()]
           .map((fd) => {
             const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(handle.vmPtr, fd) ?? -1;
             const peerIdx = socketIdx >= 0

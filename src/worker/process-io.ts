@@ -16,6 +16,7 @@ import {
   networkClosedFds,
   networkClosedSocketSlots,
   networkConnectionOfds as networkConnectionOfdsState,
+  networkConnections,
   networkOfdSlotWatermarks,
   networkPendingConnectFds,
   networkRecvHeadWatermarks,
@@ -324,7 +325,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
 
   function ensureNetworkBookkeeping(handle: ProcessHandle): void {
     handle.transferDebugStats ??= createTransferDebugStats();
-    handle.networkConnections ??= new Map();
+    networkConnections(handle);
   }
 
   function rememberNetworkOfdSlot(handle: ProcessHandle, ofdId: number): void {
@@ -745,7 +746,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
 
   function hasBufferedNetworkRecv(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
     const payload = networkRecvPayloadWatermarks(handle).get(fd);
-    if (payload && handle.networkConnections.has(fd)) {
+    if (payload && networkConnections(handle).has(fd)) {
       const socketIdx = socketIdxForFd(handle, vmPtr, fd);
       const safeReadBytes = socketIdx >= 0 ? socketReadBytesSnapshot(handle, socketIdx) : undefined;
       if (
@@ -978,8 +979,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     networkPendingConnectFds(activeHandle).delete(fd);
     clearNetworkRecvWatermarks(activeHandle, fd);
     copyNetworkRecvWatermarks(handle, activeHandle, fd);
-    if (activeHandle.networkConnections.get(fd) !== connection) {
-      activeHandle.networkConnections.set(fd, connection);
+    if (networkConnections(activeHandle).get(fd) !== connection) {
+      networkConnections(activeHandle).set(fd, connection);
     }
     const ofdId = supervisorSocketOfdForFd(activeHandle, vmPtr, fd);
     networkConnectionOfds(activeHandle).set(fd, ofdId);
@@ -1268,7 +1269,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const status = handle.kernel.thread_status(vmPtr);
     const shouldCommit = supervisorCommitResult === 1;
     if (shouldCommit) {
-      const existing = handle.networkConnections.get(connect.fd);
+      const existing = networkConnections(handle).get(connect.fd);
       if (existing && existing !== connect.connection) {
         await existing.close?.();
         pendingNetworkInbound.delete(existing);
@@ -1278,7 +1279,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       networkClosedSocketSlots(handle).delete(connect.fd);
       clearCurrentNetworkRecvBuffer(handle, vmPtr, connect.fd);
       clearNetworkRecvWatermarks(handle, connect.fd);
-      handle.networkConnections.set(connect.fd, connect.connection);
+      networkConnections(handle).set(connect.fd, connect.connection);
       const ofdId = supervisorSocketOfdForFd(handle, vmPtr, connect.fd);
       networkConnectionOfds(handle).set(connect.fd, ofdId);
       rememberNetworkOfdSlot(handle, ofdId);
@@ -1297,8 +1298,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return;
     }
     logNetworkDebug(`connect-drop pid=${handle.pid} fd=${connect.fd} result=${result.toString()} status=${status} mark=${markExternalPeerResult ?? "n/a"}`);
-    if (handle.networkConnections.get(connect.fd) === connect.connection) {
-      handle.networkConnections.delete(connect.fd);
+    if (networkConnections(handle).get(connect.fd) === connect.connection) {
+      networkConnections(handle).delete(connect.fd);
     }
     await connect.connection.close?.();
   }
@@ -1319,7 +1320,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       handle.transferDebugStats.networkPumpElapsedMs += Date.now() - pumpStartedAtMs;
       return changed;
     };
-    if (!drainOutbound || !injectInbound || handle.networkConnections.size === 0) {
+    if (!drainOutbound || !injectInbound || networkConnections(handle).size === 0) {
       return finishPump();
     }
     const scratch = kernelScratchBase(handle.kernel) + 0x24000;
@@ -1354,7 +1355,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       networkDrainMisses.delete(connection);
       networkEofDeferrals.delete(connection);
       networkConnectionOfds(handle).delete(fd);
-      handle.networkConnections.delete(fd);
+      networkConnections(handle).delete(fd);
       if (!hasPendingConnectForFd(fd)) {
         networkPendingConnectFds(handle).delete(fd);
       }
@@ -1436,8 +1437,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         changed = true;
         return;
       }
-      handle.networkConnections.delete(fromFd);
-      handle.networkConnections.set(toFd, connection);
+      networkConnections(handle).delete(fromFd);
+      networkConnections(handle).set(toFd, connection);
       ofds?.delete(fromFd);
       ofds?.set(toFd, ofdId);
       moveNetworkRecvWatermarks(handle, fromFd, toFd);
@@ -1661,7 +1662,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     };
 
-    for (const [fd, connection] of [...handle.networkConnections]) {
+    for (const [fd, connection] of [...networkConnections(handle)]) {
       let activeFd = fd;
       const expectedOfd = networkConnectionOfds(handle).get(fd);
       const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);

@@ -6,7 +6,10 @@ import {
   setBlockedRpcGeneration,
   setBlockedRpcPending,
 } from "../../../../src/worker/host-blocked-state.js";
-import { networkRecvPayloadWatermarks } from "../../../../src/worker/network-socket-state.js";
+import {
+  networkConnections,
+  networkRecvPayloadWatermarks,
+} from "../../../../src/worker/network-socket-state.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
@@ -548,7 +551,7 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
   view.setUint32(netBufBase + 4, 64, true);
   memory[netBufBase + 16] = 0xab;
   memory[netBufBase + 17] = 0xcd;
-  handle.networkConnections.set(3, { read: () => undefined, write: () => {} } as never);
+  networkConnections(handle).set(3, { read: () => undefined, write: () => {} } as never);
   handle.kernel.abi_fd_type_socket = () => 8;
   handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 4 : 0);
   handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 4 ? 8 : 0);
@@ -638,7 +641,7 @@ test("requestSocketStateSync keeps newer incoming network recv payload when tail
   view.setUint32(netBufBase + 4, 64, true);
   memory[netBufBase + 16] = 0xab;
   memory[netBufBase + 17] = 0xcd;
-  handle.networkConnections.set(3, { read: () => undefined, write: () => {} } as never);
+  networkConnections(handle).set(3, { read: () => undefined, write: () => {} } as never);
   handle.kernel.abi_fd_type_socket = () => 8;
   handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 4 : 0);
   handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 4 ? 8 : 0);
@@ -737,7 +740,7 @@ test("requestSocketStateSync preserves host recv payload when producer tail wrap
   view.setUint32(netBufBase + 4, wrappedTail, true);
   memory[netBufBase + 16] = 0xab;
   memory[netBufBase + 17] = 0xcd;
-  handle.networkConnections.set(3, { read: () => undefined, write: () => {} } as never);
+  networkConnections(handle).set(3, { read: () => undefined, write: () => {} } as never);
   networkRecvPayloadWatermarks(handle as never).set(3, {
     recvBufIdx: 0,
     head: staleTail,
@@ -839,7 +842,7 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
   view.setUint32(netBufBase, 65_536, true);
   view.setUint32(netBufBase + 4, 141_117, true);
   memory[netBufBase + 16] = 0xab;
-  handle.networkConnections.set(3, { read: () => undefined, write: () => {} } as never);
+  networkConnections(handle).set(3, { read: () => undefined, write: () => {} } as never);
   handle.kernel.abi_fd_type_socket = () => 8;
   handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 4 : 0);
   handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 4 ? 8 : 0);

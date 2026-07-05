@@ -665,7 +665,6 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       sabPageCache: options.sabPageCache ?? null,
       kernelWorkerRequest: options.kernelWorkerRequest,
       networkBridge: options.networkBridge,
-      networkConnections: new Map(),
       workers: new Set(),
       exitInProgress: false,
       onExit: options.onExit,

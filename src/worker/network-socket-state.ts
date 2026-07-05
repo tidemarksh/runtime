@@ -1,3 +1,4 @@
+import type { RuntimeNetworkConnection } from "../bridge/network.js";
 import type { ProcessHandle } from "./types.js";
 
 export interface NetworkSocketSlotSnapshot {
@@ -17,6 +18,7 @@ export interface NetworkRecvPayloadWatermark {
 }
 
 interface NetworkSocketState {
+  connections: Map<number, RuntimeNetworkConnection>;
   connectionOfds: Map<number, number>;
   ofdSlotWatermarks: Map<number, Uint8Array>;
   pendingConnectFds: Set<number>;
@@ -30,10 +32,16 @@ interface NetworkSocketState {
 
 const networkSocketStates = new WeakMap<ProcessHandle, NetworkSocketState>();
 
+type LegacyNetworkConnectionSeed = {
+  networkConnections?: Map<number, RuntimeNetworkConnection>;
+};
+
 function networkSocketState(handle: ProcessHandle): NetworkSocketState {
   let state = networkSocketStates.get(handle);
   if (!state) {
+    const legacyConnections = (handle as LegacyNetworkConnectionSeed).networkConnections;
     state = {
+      connections: legacyConnections instanceof Map ? new Map(legacyConnections) : new Map(),
       connectionOfds: new Map(),
       ofdSlotWatermarks: new Map(),
       pendingConnectFds: new Set(),
@@ -45,12 +53,19 @@ function networkSocketState(handle: ProcessHandle): NetworkSocketState {
       recvPayloadWatermarks: new Map(),
     };
     networkSocketStates.set(handle, state);
+    if (legacyConnections !== undefined) {
+      delete (handle as LegacyNetworkConnectionSeed).networkConnections;
+    }
   }
   return state;
 }
 
 export function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
   return networkSocketState(handle).connectionOfds;
+}
+
+export function networkConnections(handle: ProcessHandle): Map<number, RuntimeNetworkConnection> {
+  return networkSocketState(handle).connections;
 }
 
 export function networkOfdSlotWatermarks(handle: ProcessHandle): Map<number, Uint8Array> {
@@ -94,6 +109,7 @@ export function networkRecvPayloadWatermarks(
 export function copyNetworkSocketState(target: ProcessHandle, source: ProcessHandle): void {
   const targetState = networkSocketState(target);
   const sourceState = networkSocketState(source);
+  targetState.connections = new Map(sourceState.connections);
   targetState.connectionOfds = new Map(sourceState.connectionOfds);
   targetState.ofdSlotWatermarks = new Map(
     [...sourceState.ofdSlotWatermarks].map(([ofdId, slot]) => [ofdId, slot.slice()]),

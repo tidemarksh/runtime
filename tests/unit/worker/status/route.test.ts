@@ -20,6 +20,7 @@ import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending
 import { setProcessMemfsDirty } from "../../../../src/worker/process-memfs-state.js";
 import {
   networkConnectionOfds,
+  networkConnections,
   networkRecvHeadWatermarks,
   networkRecvTailWatermarks,
 } from "../../../../src/worker/network-socket-state.js";
@@ -34,7 +35,7 @@ const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
 const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
-  handle.networkConnections ??= new Map();
+  networkConnections(handle);
   handle.workerDebugLog ??= [];
   handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
   hostExecutionState(handle).vforkSnapshot ??= null;
@@ -3386,7 +3387,7 @@ test("status handler closes stale network bridge when supervisor reports no acti
     },
   );
 
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
   expect(networkConnectionOfds(handle).has(3)).toBe(false);
   expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
   expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
