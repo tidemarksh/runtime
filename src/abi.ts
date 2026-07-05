@@ -250,6 +250,14 @@ export interface KernelExports {
   supervisor_state_sync_request_flag_wake_waiters?(): number;
   supervisor_state_sync_run_flag_run?(): number;
   supervisor_state_sync_run_flag_wake_waiters?(): number;
+  supervisor_state_sync_start_action_skip?(): number;
+  supervisor_state_sync_start_action_request_sync?(): number;
+  supervisor_state_sync_start_action_retry_waiters?(): number;
+  supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch?(): number;
+  supervisor_state_sync_start_flag_kernel_worker_available?(): number;
+  supervisor_state_sync_start_flag_epoll_state_kernel_owns?(): number;
+  supervisor_state_sync_start_flag_held_epoll_ofd?(): number;
+  supervisor_state_sync_start_flag_wake_waiters?(): number;
   supervisor_owned_state_sync_action_none?(): number;
   supervisor_owned_state_sync_action_mark_process_memfs_dirty?(): number;
   supervisor_owned_state_sync_action_sync_fork_shared?(): number;
@@ -538,6 +546,7 @@ export interface KernelExports {
   supervisor_state_sync_next_run_flags?(vmPtr: number, kind: number): number;
   supervisor_state_sync_complete?(vmPtr: number, kind: number): number;
   supervisor_state_sync_clear?(vmPtr: number, kind: number): number;
+  supervisor_state_sync_start_action?(kind: number, flags: number): number;
   supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
   supervisor_process_epoll_dependent_ofd?(vmPtr: number, index: number): number;
   supervisor_process_sync_dependent_ofd?(vmPtr: number, index: number): number;
@@ -1888,6 +1897,14 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_state_sync_request_flag_wake_waiters",
   "supervisor_state_sync_run_flag_run",
   "supervisor_state_sync_run_flag_wake_waiters",
+  "supervisor_state_sync_start_action_skip",
+  "supervisor_state_sync_start_action_request_sync",
+  "supervisor_state_sync_start_action_retry_waiters",
+  "supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch",
+  "supervisor_state_sync_start_flag_kernel_worker_available",
+  "supervisor_state_sync_start_flag_epoll_state_kernel_owns",
+  "supervisor_state_sync_start_flag_held_epoll_ofd",
+  "supervisor_state_sync_start_flag_wake_waiters",
   "supervisor_owned_state_sync_action_none",
   "supervisor_owned_state_sync_action_mark_process_memfs_dirty",
   "supervisor_owned_state_sync_action_sync_fork_shared",
@@ -2073,6 +2090,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_state_sync_next_run_flags",
   "supervisor_state_sync_complete",
   "supervisor_state_sync_clear",
+  "supervisor_state_sync_start_action",
   "supervisor_process_epoll_held_ofd",
   "supervisor_process_epoll_dependent_ofd",
   "supervisor_process_sync_dependent_ofd",

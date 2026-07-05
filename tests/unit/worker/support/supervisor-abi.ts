@@ -165,6 +165,14 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_state_sync_request_flag_wake_waiters: 1,
   supervisor_state_sync_run_flag_run: 1,
   supervisor_state_sync_run_flag_wake_waiters: 2,
+  supervisor_state_sync_start_action_skip: 0,
+  supervisor_state_sync_start_action_request_sync: 1,
+  supervisor_state_sync_start_action_retry_waiters: 2,
+  supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch: 1,
+  supervisor_state_sync_start_flag_kernel_worker_available: 2,
+  supervisor_state_sync_start_flag_epoll_state_kernel_owns: 4,
+  supervisor_state_sync_start_flag_held_epoll_ofd: 8,
+  supervisor_state_sync_start_flag_wake_waiters: 16,
   supervisor_owned_state_sync_action_none: 0,
   supervisor_owned_state_sync_action_mark_process_memfs_dirty: 1,
   supervisor_owned_state_sync_action_sync_fork_shared: 2,
@@ -696,6 +704,40 @@ export function makeSupervisorAbiStubs(
       actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_pipe;
     }
     return actions;
+  };
+  const supervisorStateSyncStartAction = (kind: number, flags: number): number => {
+    if (
+      ![
+        DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_pipe,
+        DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_epoll,
+        DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_socket,
+      ].includes(kind)
+    ) {
+      return -22;
+    }
+    if (
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch) !== 0
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+    }
+    if (
+      kind === DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_pipe
+      || kind === DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_socket
+    ) {
+      return (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_kernel_worker_available) !== 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_request_sync
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+    }
+    if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_epoll_state_kernel_owns) === 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+    }
+    if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_held_epoll_ofd) !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_request_sync;
+    }
+    return (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_wake_waiters) !== 0
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_retry_waiters
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
   };
   const supervisorOwnedStateSyncAction = (
     receiver: Partial<KernelExports>,
@@ -2140,6 +2182,9 @@ export function makeSupervisorAbiStubs(
       }
       networkPumpBackoffs.delete(vmPtr);
       return 0;
+    },
+    supervisor_state_sync_start_action(kind: number, flags: number) {
+      return supervisorStateSyncStartAction(kind, flags);
     },
     supervisor_state_sync_request(_vmPtr: number, kind: number, flags: number) {
       const key = `${_vmPtr}:${kind}`;

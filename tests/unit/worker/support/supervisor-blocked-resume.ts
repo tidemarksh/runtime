@@ -133,6 +133,14 @@ const SUPERVISOR_STATE_SYNC_KIND_SOCKET = 3;
 const SUPERVISOR_STATE_SYNC_REQUEST_FLAG_WAKE_WAITERS = 1;
 const SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN = 1;
 const SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS = 2;
+const SUPERVISOR_STATE_SYNC_START_ACTION_SKIP = 0;
+const SUPERVISOR_STATE_SYNC_START_ACTION_REQUEST_SYNC = 1;
+const SUPERVISOR_STATE_SYNC_START_ACTION_RETRY_WAITERS = 2;
+const SUPERVISOR_STATE_SYNC_START_FLAG_ACTIVE_VFORK_CHILD_OWNER_MISMATCH = 1;
+const SUPERVISOR_STATE_SYNC_START_FLAG_KERNEL_WORKER_AVAILABLE = 2;
+const SUPERVISOR_STATE_SYNC_START_FLAG_EPOLL_STATE_KERNEL_OWNS = 4;
+const SUPERVISOR_STATE_SYNC_START_FLAG_HELD_EPOLL_OFD = 8;
+const SUPERVISOR_STATE_SYNC_START_FLAG_WAKE_WAITERS = 16;
 const SUPERVISOR_OWNED_STATE_SYNC_ACTION_NONE = 0;
 const SUPERVISOR_OWNED_STATE_SYNC_ACTION_MARK_PROCESS_MEMFS_DIRTY = 1;
 const SUPERVISOR_OWNED_STATE_SYNC_ACTION_SYNC_FORK_SHARED = 2;
@@ -406,6 +414,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   | "supervisor_state_sync_request_flag_wake_waiters"
   | "supervisor_state_sync_run_flag_run"
   | "supervisor_state_sync_run_flag_wake_waiters"
+  | "supervisor_state_sync_start_action"
+  | "supervisor_state_sync_start_action_skip"
+  | "supervisor_state_sync_start_action_request_sync"
+  | "supervisor_state_sync_start_action_retry_waiters"
+  | "supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch"
+  | "supervisor_state_sync_start_flag_kernel_worker_available"
+  | "supervisor_state_sync_start_flag_epoll_state_kernel_owns"
+  | "supervisor_state_sync_start_flag_held_epoll_ofd"
+  | "supervisor_state_sync_start_flag_wake_waiters"
   | "supervisor_owned_state_sync_action"
   | "supervisor_owned_state_sync_action_none"
   | "supervisor_owned_state_sync_action_mark_process_memfs_dirty"
@@ -613,6 +630,34 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
       actions |= SUPERVISOR_WAIT_IN_WORKER_STATUS_ACTION_SYNC_PIPE;
     }
     return actions;
+  };
+  const stateSyncStartAction = (kind: number, flags: number): number => {
+    if (
+      ![
+        SUPERVISOR_STATE_SYNC_KIND_PIPE,
+        SUPERVISOR_STATE_SYNC_KIND_EPOLL,
+        SUPERVISOR_STATE_SYNC_KIND_SOCKET,
+      ].includes(kind)
+    ) {
+      return -22;
+    }
+    if ((flags & SUPERVISOR_STATE_SYNC_START_FLAG_ACTIVE_VFORK_CHILD_OWNER_MISMATCH) !== 0) {
+      return SUPERVISOR_STATE_SYNC_START_ACTION_SKIP;
+    }
+    if (kind === SUPERVISOR_STATE_SYNC_KIND_PIPE || kind === SUPERVISOR_STATE_SYNC_KIND_SOCKET) {
+      return (flags & SUPERVISOR_STATE_SYNC_START_FLAG_KERNEL_WORKER_AVAILABLE) !== 0
+        ? SUPERVISOR_STATE_SYNC_START_ACTION_REQUEST_SYNC
+        : SUPERVISOR_STATE_SYNC_START_ACTION_SKIP;
+    }
+    if ((flags & SUPERVISOR_STATE_SYNC_START_FLAG_EPOLL_STATE_KERNEL_OWNS) === 0) {
+      return SUPERVISOR_STATE_SYNC_START_ACTION_SKIP;
+    }
+    if ((flags & SUPERVISOR_STATE_SYNC_START_FLAG_HELD_EPOLL_OFD) !== 0) {
+      return SUPERVISOR_STATE_SYNC_START_ACTION_REQUEST_SYNC;
+    }
+    return (flags & SUPERVISOR_STATE_SYNC_START_FLAG_WAKE_WAITERS) !== 0
+      ? SUPERVISOR_STATE_SYNC_START_ACTION_RETRY_WAITERS
+      : SUPERVISOR_STATE_SYNC_START_ACTION_SKIP;
   };
   const ownedStateSyncAction = (status: number, completedSyncEffects: number, flags: number): number => {
     const syncEffectPipeState = 1 << 0;
@@ -985,6 +1030,15 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     | "supervisor_state_sync_request_flag_wake_waiters"
     | "supervisor_state_sync_run_flag_run"
     | "supervisor_state_sync_run_flag_wake_waiters"
+    | "supervisor_state_sync_start_action"
+    | "supervisor_state_sync_start_action_skip"
+    | "supervisor_state_sync_start_action_request_sync"
+    | "supervisor_state_sync_start_action_retry_waiters"
+    | "supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch"
+    | "supervisor_state_sync_start_flag_kernel_worker_available"
+    | "supervisor_state_sync_start_flag_epoll_state_kernel_owns"
+    | "supervisor_state_sync_start_flag_held_epoll_ofd"
+    | "supervisor_state_sync_start_flag_wake_waiters"
     | "supervisor_owned_state_sync_action"
     | "supervisor_owned_state_sync_action_none"
     | "supervisor_owned_state_sync_action_mark_process_memfs_dirty"
@@ -2101,6 +2155,22 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
   nextKernel.supervisor_state_sync_run_flag_run ??= () => SUPERVISOR_STATE_SYNC_RUN_FLAG_RUN;
   nextKernel.supervisor_state_sync_run_flag_wake_waiters ??= () =>
     SUPERVISOR_STATE_SYNC_RUN_FLAG_WAKE_WAITERS;
+  nextKernel.supervisor_state_sync_start_action_skip ??= () =>
+    SUPERVISOR_STATE_SYNC_START_ACTION_SKIP;
+  nextKernel.supervisor_state_sync_start_action_request_sync ??= () =>
+    SUPERVISOR_STATE_SYNC_START_ACTION_REQUEST_SYNC;
+  nextKernel.supervisor_state_sync_start_action_retry_waiters ??= () =>
+    SUPERVISOR_STATE_SYNC_START_ACTION_RETRY_WAITERS;
+  nextKernel.supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch ??= () =>
+    SUPERVISOR_STATE_SYNC_START_FLAG_ACTIVE_VFORK_CHILD_OWNER_MISMATCH;
+  nextKernel.supervisor_state_sync_start_flag_kernel_worker_available ??= () =>
+    SUPERVISOR_STATE_SYNC_START_FLAG_KERNEL_WORKER_AVAILABLE;
+  nextKernel.supervisor_state_sync_start_flag_epoll_state_kernel_owns ??= () =>
+    SUPERVISOR_STATE_SYNC_START_FLAG_EPOLL_STATE_KERNEL_OWNS;
+  nextKernel.supervisor_state_sync_start_flag_held_epoll_ofd ??= () =>
+    SUPERVISOR_STATE_SYNC_START_FLAG_HELD_EPOLL_OFD;
+  nextKernel.supervisor_state_sync_start_flag_wake_waiters ??= () =>
+    SUPERVISOR_STATE_SYNC_START_FLAG_WAKE_WAITERS;
   nextKernel.supervisor_owned_state_sync_action_none ??= () =>
     SUPERVISOR_OWNED_STATE_SYNC_ACTION_NONE;
   nextKernel.supervisor_owned_state_sync_action_mark_process_memfs_dirty ??= () =>
@@ -2142,6 +2212,8 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     completedSyncEffects: number,
     flags: number,
   ) => ownedStateSyncAction(status, completedSyncEffects, flags);
+  nextKernel.supervisor_state_sync_start_action ??= (kind: number, flags: number) =>
+    stateSyncStartAction(kind, flags);
   nextKernel.supervisor_state_sync_request ??= (vmPtr: number, kind: number, flags: number) => {
     const key = `${vmPtr}:${kind}`;
     const request = stateSyncRequests.get(key) ?? { queuedRunFlags: 0, inFlight: false };

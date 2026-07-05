@@ -157,6 +157,11 @@ export type SupervisorStateSyncKind =
   | "epoll"
   | "socket";
 
+export type SupervisorStateSyncStartAction =
+  | "skip"
+  | "request-sync"
+  | "retry-waiters";
+
 export interface SupervisorOwnedStateSyncActions {
   markProcessMemfsDirty: boolean;
   syncForkSharedState: boolean;
@@ -186,6 +191,14 @@ type SupervisorNumberConstExportName =
   | "supervisor_state_sync_request_flag_wake_waiters"
   | "supervisor_state_sync_run_flag_run"
   | "supervisor_state_sync_run_flag_wake_waiters"
+  | "supervisor_state_sync_start_action_skip"
+  | "supervisor_state_sync_start_action_request_sync"
+  | "supervisor_state_sync_start_action_retry_waiters"
+  | "supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch"
+  | "supervisor_state_sync_start_flag_kernel_worker_available"
+  | "supervisor_state_sync_start_flag_epoll_state_kernel_owns"
+  | "supervisor_state_sync_start_flag_held_epoll_ofd"
+  | "supervisor_state_sync_start_flag_wake_waiters"
   | "supervisor_owned_state_sync_action_none"
   | "supervisor_owned_state_sync_action_mark_process_memfs_dirty"
   | "supervisor_owned_state_sync_action_sync_fork_shared"
@@ -757,6 +770,105 @@ function supervisorStateSyncRunFlagRun(kernel: KernelExports): number {
 
 function supervisorStateSyncRunFlagWakeWaiters(kernel: KernelExports): number {
   return readSupervisorNumberConst(kernel, "supervisor_state_sync_run_flag_wake_waiters");
+}
+
+function supervisorStateSyncStartActionValue(
+  kernel: KernelExports,
+  action: SupervisorStateSyncStartAction,
+): number {
+  switch (action) {
+    case "skip":
+      return readSupervisorNumberConst(kernel, "supervisor_state_sync_start_action_skip");
+    case "request-sync":
+      return readSupervisorNumberConst(kernel, "supervisor_state_sync_start_action_request_sync");
+    case "retry-waiters":
+      return readSupervisorNumberConst(kernel, "supervisor_state_sync_start_action_retry_waiters");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+function normalizeSupervisorStateSyncStartAction(
+  kernel: KernelExports,
+  result: number,
+): SupervisorStateSyncStartAction {
+  const actions: SupervisorStateSyncStartAction[] = [
+    "skip",
+    "request-sync",
+    "retry-waiters",
+  ];
+  for (const action of actions) {
+    if (result === supervisorStateSyncStartActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor state-sync start action is unknown: ${result}`);
+}
+
+function supervisorStateSyncStartFlags(
+  kernel: KernelExports,
+  options: {
+    activeVforkChildOwnerMismatch: boolean;
+    kernelWorkerAvailable: boolean;
+    epollStateKernelOwns: boolean;
+    heldEpollOfd: boolean;
+    wakeWaiters: boolean;
+  },
+): number {
+  let flags = 0;
+  if (options.activeVforkChildOwnerMismatch) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch",
+    );
+  }
+  if (options.kernelWorkerAvailable) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_state_sync_start_flag_kernel_worker_available",
+    );
+  }
+  if (options.epollStateKernelOwns) {
+    flags |= readSupervisorNumberConst(
+      kernel,
+      "supervisor_state_sync_start_flag_epoll_state_kernel_owns",
+    );
+  }
+  if (options.heldEpollOfd) {
+    flags |= readSupervisorNumberConst(kernel, "supervisor_state_sync_start_flag_held_epoll_ofd");
+  }
+  if (options.wakeWaiters) {
+    flags |= readSupervisorNumberConst(kernel, "supervisor_state_sync_start_flag_wake_waiters");
+  }
+  return flags;
+}
+
+export function supervisorStateSyncStartAction(
+  kernel: KernelExports,
+  kind: SupervisorStateSyncKind,
+  options: {
+    activeVforkChildOwnerMismatch: boolean;
+    kernelWorkerAvailable: boolean;
+    epollStateKernelOwns: boolean;
+    heldEpollOfd: boolean;
+    wakeWaiters: boolean;
+  },
+): SupervisorStateSyncStartAction {
+  const readAction = kernel.supervisor_state_sync_start_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor state-sync start action export is missing");
+  }
+  const result = readAction.call(
+    kernel,
+    supervisorStateSyncKindValue(kernel, kind),
+    supervisorStateSyncStartFlags(kernel, options),
+  );
+  if (result < 0) {
+    throw new Error(`kernel supervisor state-sync start action failed: ${result}`);
+  }
+  return normalizeSupervisorStateSyncStartAction(kernel, result);
 }
 
 export function supervisorStateSyncRequest(

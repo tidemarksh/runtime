@@ -15,6 +15,7 @@ import {
   supervisorStateSyncComplete,
   supervisorStateSyncNextRun,
   supervisorStateSyncRequest,
+  supervisorStateSyncStartAction,
   type SupervisorBlockedWaitWakeSource,
 } from "../../supervisor-blocked-resume.js";
 import {
@@ -237,18 +238,27 @@ export function createWorkerSchedulerStateSyncHelpers(
   }
 
   function requestEpollStateSync(handle: ProcessHandle, retryWaiters = false): Promise<void> {
-    if (hasActiveVforkChildOwnerMismatch(handle)) {
-      return Promise.resolve();
-    }
-    if (!kernelWorkerOwnsEpollState(handle)) {
-      return Promise.resolve();
-    }
-    if (collectHeldEpollOfdIds(handle).length === 0) {
-      if (retryWaiters) {
+    const heldEpollOfd = collectHeldEpollOfdIds(handle).length > 0;
+    const startAction = supervisorStateSyncStartAction(handle.kernel, "epoll", {
+      activeVforkChildOwnerMismatch: hasActiveVforkChildOwnerMismatch(handle),
+      kernelWorkerAvailable: false,
+      epollStateKernelOwns: kernelWorkerOwnsEpollState(handle),
+      heldEpollOfd,
+      wakeWaiters: retryWaiters,
+    });
+    switch (startAction) {
+      case "skip":
+        return Promise.resolve();
+      case "retry-waiters":
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-skip-no-ofd:${handle.pid}:retry=1`);
         retryEpollWaitersInKernelShare(handle);
+        return Promise.resolve();
+      case "request-sync":
+        break;
+      default: {
+        const exhaustive: never = startAction;
+        throw new Error(`unknown supervisor state-sync start action: ${exhaustive}`);
       }
-      return Promise.resolve();
     }
 
     const shouldStart = supervisorStateSyncRequest(
@@ -370,11 +380,24 @@ export function createWorkerSchedulerStateSyncHelpers(
 
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     transferDebugStats(handle).pipeSyncRequests += 1;
-    if (hasActiveVforkChildOwnerMismatch(handle)) {
-      return Promise.resolve();
-    }
-    if (!processHasKernelWorkerOwnership(handle)) {
-      return Promise.resolve();
+    const startAction = supervisorStateSyncStartAction(handle.kernel, "pipe", {
+      activeVforkChildOwnerMismatch: hasActiveVforkChildOwnerMismatch(handle),
+      kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+      epollStateKernelOwns: false,
+      heldEpollOfd: false,
+      wakeWaiters,
+    });
+    switch (startAction) {
+      case "skip":
+        return Promise.resolve();
+      case "request-sync":
+        break;
+      case "retry-waiters":
+        throw new Error("kernel supervisor returned epoll retry action for pipe state sync");
+      default: {
+        const exhaustive: never = startAction;
+        throw new Error(`unknown supervisor state-sync start action: ${exhaustive}`);
+      }
     }
 
     const shouldStart = supervisorStateSyncRequest(
@@ -486,11 +509,24 @@ export function createWorkerSchedulerStateSyncHelpers(
 
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     transferDebugStats(handle).socketSyncRequests += 1;
-    if (hasActiveVforkChildOwnerMismatch(handle)) {
-      return Promise.resolve();
-    }
-    if (!processHasKernelWorkerOwnership(handle)) {
-      return Promise.resolve();
+    const startAction = supervisorStateSyncStartAction(handle.kernel, "socket", {
+      activeVforkChildOwnerMismatch: hasActiveVforkChildOwnerMismatch(handle),
+      kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+      epollStateKernelOwns: false,
+      heldEpollOfd: false,
+      wakeWaiters,
+    });
+    switch (startAction) {
+      case "skip":
+        return Promise.resolve();
+      case "request-sync":
+        break;
+      case "retry-waiters":
+        throw new Error("kernel supervisor returned epoll retry action for socket state sync");
+      default: {
+        const exhaustive: never = startAction;
+        throw new Error(`unknown supervisor state-sync start action: ${exhaustive}`);
+      }
     }
 
     const shouldStart = supervisorStateSyncRequest(

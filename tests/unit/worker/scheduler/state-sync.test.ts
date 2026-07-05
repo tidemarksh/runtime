@@ -350,6 +350,31 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
   expect(clearPipeSyncBeforeRetry).not.toHaveBeenCalled();
 });
 
+test("requestEpollStateSync delegates no-ofd retry action to supervisor", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const handle = makeHandle({ runtimeId: 1 });
+  addKernelShareMember(handle);
+  const epollWorker = {} as Worker;
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, {
+    status: handle.kernel.abi_status_epoll_wait(),
+  } as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestEpollStateSync(handle, true);
+
+  expect(processKernelWorkerRequest(handle)).not.toHaveBeenCalled();
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "epoll-sync-skip-no-ofd:1:retry=1");
+});
+
 test("requestSocketStateSync applies socket payload state to fork-share members before wake", async () => {
   const retryHostBlockedWorker = vi.fn();
   const socketTable = new Uint8Array(16 * 384);
