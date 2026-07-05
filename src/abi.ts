@@ -697,6 +697,11 @@ export interface KernelExports {
   supervisor_scheduler_futex_waiter_action?(status: number): number;
   supervisor_scheduler_futex_waiter_action_not_waiter?(): number;
   supervisor_scheduler_futex_waiter_action_waiter?(): number;
+  supervisor_worker_status_transition_action?(status: number): number;
+  supervisor_worker_status_transition_action_enqueue?(): number;
+  supervisor_worker_status_transition_action_connect_wait?(): number;
+  supervisor_worker_status_transition_action_park_futex?(): number;
+  supervisor_worker_status_transition_action_host_wait?(): number;
   supervisor_stdio_output_settle_kind_visible?(): number;
   supervisor_stdio_output_settle_kind_inherited_child?(): number;
   supervisor_stdio_pipe_read_progress_action_none?(): number;
@@ -2184,6 +2189,11 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_scheduler_futex_waiter_action",
   "supervisor_scheduler_futex_waiter_action_not_waiter",
   "supervisor_scheduler_futex_waiter_action_waiter",
+  "supervisor_worker_status_transition_action",
+  "supervisor_worker_status_transition_action_enqueue",
+  "supervisor_worker_status_transition_action_connect_wait",
+  "supervisor_worker_status_transition_action_park_futex",
+  "supervisor_worker_status_transition_action_host_wait",
   "supervisor_stdio_output_settle_kind_visible",
   "supervisor_stdio_output_settle_kind_inherited_child",
   "supervisor_stdio_pipe_read_progress_action_none",

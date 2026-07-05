@@ -104,6 +104,12 @@ export type SupervisorSchedulerFutexWaiterAction =
   | "not-waiter"
   | "waiter";
 
+export type SupervisorWorkerStatusTransitionAction =
+  | "enqueue"
+  | "connect-wait"
+  | "park-futex"
+  | "host-wait";
+
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
@@ -266,7 +272,11 @@ type SupervisorNumberConstExportName =
   | "supervisor_scheduler_block_worker_action_record_blocked"
   | "supervisor_scheduler_block_worker_action_park_futex"
   | "supervisor_scheduler_futex_waiter_action_not_waiter"
-  | "supervisor_scheduler_futex_waiter_action_waiter";
+  | "supervisor_scheduler_futex_waiter_action_waiter"
+  | "supervisor_worker_status_transition_action_enqueue"
+  | "supervisor_worker_status_transition_action_connect_wait"
+  | "supervisor_worker_status_transition_action_park_futex"
+  | "supervisor_worker_status_transition_action_host_wait";
 
 function readSupervisorNumberConst(
   kernel: KernelExports,
@@ -1420,6 +1430,46 @@ export function supervisorSchedulerFutexWaiterAction(
     }
   }
   throw new Error(`kernel supervisor scheduler futex-waiter action is unknown: ${result}`);
+}
+
+function supervisorWorkerStatusTransitionActionValue(
+  kernel: KernelExports,
+  action: SupervisorWorkerStatusTransitionAction,
+): number {
+  switch (action) {
+    case "enqueue":
+      return readSupervisorNumberConst(kernel, "supervisor_worker_status_transition_action_enqueue");
+    case "connect-wait":
+      return readSupervisorNumberConst(kernel, "supervisor_worker_status_transition_action_connect_wait");
+    case "park-futex":
+      return readSupervisorNumberConst(kernel, "supervisor_worker_status_transition_action_park_futex");
+    case "host-wait":
+      return readSupervisorNumberConst(kernel, "supervisor_worker_status_transition_action_host_wait");
+    default: {
+      const exhaustive: never = action;
+      return exhaustive;
+    }
+  }
+}
+
+export function supervisorWorkerStatusTransitionAction(
+  kernel: KernelExports,
+  status: number,
+): SupervisorWorkerStatusTransitionAction {
+  const readAction = kernel.supervisor_worker_status_transition_action;
+  if (readAction === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_worker_status_transition_action");
+  }
+  const result = readAction.call(kernel, status);
+  if (result < 0) {
+    throw new Error(`kernel supervisor worker status transition action failed: ${result}`);
+  }
+  for (const action of ["enqueue", "connect-wait", "park-futex", "host-wait"] as const) {
+    if (result === supervisorWorkerStatusTransitionActionValue(kernel, action)) {
+      return action;
+    }
+  }
+  throw new Error(`kernel supervisor worker status transition action is unknown: ${result}`);
 }
 
 function supervisorBlockedPostNetworkPumpActionValue(

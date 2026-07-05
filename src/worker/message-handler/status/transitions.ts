@@ -49,10 +49,9 @@ import {
   drainSupervisorCloneSpawnHostOp,
 } from "../../supervisor-host-op.js";
 import {
-  supervisorBlockedStatusIsConnectWait,
-  supervisorBlockedStatusIsHostWait,
   supervisorBlockedStatusNeedsNetworkSidecarRestore,
   supervisorBlockedWaitTimerRequired,
+  supervisorWorkerStatusTransitionAction,
 } from "../../../supervisor-blocked-resume.js";
 import {
   supervisorProcessStatusAllowsPidMismatch,
@@ -445,10 +444,11 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     if (supervisorBlockedStatusNeedsNetworkSidecarRestore(handle.kernel, status)) {
       restoreRuntimeNetworkSidecarForHandle(handle, deps.processHandles, thread.vmPtr);
     }
+    const workerStatusTransitionAction = supervisorWorkerStatusTransitionAction(handle.kernel, status);
 
     if (
       networkConnections(handle).size > 0
-      && !supervisorBlockedStatusIsConnectWait(handle.kernel, status)
+      && workerStatusTransitionAction !== "connect-wait"
     ) {
       void deps.pumpNetworkConnections(handle, thread.vmPtr)
         .then(async (changed) => {
@@ -580,7 +580,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (supervisorBlockedStatusIsConnectWait(handle.kernel, status)) {
+    if (workerStatusTransitionAction === "connect-wait") {
       if (supervisorBlockedWaitTimerRequired(handle.kernel, thread.vmPtr)) {
         deps.blockWorker(handle, worker, status, thread.vmPtr);
         deps.pumpProcess(handle);
@@ -888,7 +888,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (status === handle.kernel.abi_status_futex_wait()) {
+    if (workerStatusTransitionAction === "park-futex") {
       const hostTimer = drainSupervisorArmHostTimerHostOp(handle, thread.vmPtr);
       if (hostTimer === undefined) {
         throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
@@ -909,7 +909,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       return;
     }
 
-    if (supervisorBlockedStatusIsHostWait(handle.kernel, status)) {
+    if (workerStatusTransitionAction === "host-wait") {
       void executeHostBlockedStatusTransition(deps, handle, worker, thread.vmPtr, status)
         .then((outcome) => {
           consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);

@@ -274,6 +274,10 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_scheduler_block_worker_action_park_futex: 1,
   supervisor_scheduler_futex_waiter_action_not_waiter: 0,
   supervisor_scheduler_futex_waiter_action_waiter: 1,
+  supervisor_worker_status_transition_action_enqueue: 0,
+  supervisor_worker_status_transition_action_connect_wait: 1,
+  supervisor_worker_status_transition_action_park_futex: 2,
+  supervisor_worker_status_transition_action_host_wait: 3,
   supervisor_stdio_output_settle_kind_visible: 1,
   supervisor_stdio_output_settle_kind_inherited_child: 2,
   supervisor_stdio_pipe_read_progress_action_none: 0,
@@ -721,6 +725,21 @@ export function makeSupervisorAbiStubs(
     status === callOptionalNumber(receiver, "abi_status_futex_wait")
       ? DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_futex_waiter_action_waiter
       : DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_futex_waiter_action_not_waiter;
+  const supervisorWorkerStatusTransitionAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (status === callOptionalNumber(receiver, "abi_status_connect")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_connect_wait;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_futex_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_park_futex;
+    }
+    if (supervisorStatusIsHostWait(receiver, status)) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_host_wait;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_enqueue;
+  };
   const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
     vmPtr !== 0
     && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
@@ -2620,6 +2639,9 @@ export function makeSupervisorAbiStubs(
     },
     supervisor_scheduler_futex_waiter_action(this: KernelExports | undefined, status: number) {
       return supervisorSchedulerFutexWaiterAction(currentExports(this), status);
+    },
+    supervisor_worker_status_transition_action(this: KernelExports | undefined, status: number) {
+      return supervisorWorkerStatusTransitionAction(currentExports(this), status);
     },
     supervisor_stdio_output_settle_max_passes(kind: number) {
       switch (kind) {
