@@ -6,6 +6,10 @@ import {
   setBlockedRpcGeneration,
   setBlockedRpcPending,
 } from "../../../../src/worker/host-blocked-state.js";
+import {
+  setProcessMemfsDirty,
+  setProcessMemfsPublishPending,
+} from "../../../../src/worker/process-memfs-state.js";
 import { drainProcessOutput } from "../../../../src/worker/stdio.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -22,9 +26,19 @@ function seedBlockedRpcState(
   setBlockedRpcGeneration(blockedState as never, generation);
 }
 
+type ProcessExitHandleOverrides = Partial<ProcessHandle> & {
+  memfsDirty?: boolean;
+  memfsPublishPending?: boolean;
+};
+
 function makeHandle(
-  overrides: Partial<ProcessHandle> = {},
+  overrides: ProcessExitHandleOverrides = {},
 ): ProcessHandle {
+  const {
+    memfsDirty,
+    memfsPublishPending,
+    ...handleOverrides
+  } = overrides;
   const kernel = {
     abi_max_fds: () => 16,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fd >= 0 && fd <= 2 ? fd + 1 : 0,
@@ -95,9 +109,9 @@ function makeHandle(
     supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
     supervisor_blocked_status_is_socket_wait: (status: number) =>
       status === 29 || status === 30 ? 1 : 0,
-    ...(overrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
+    ...(handleOverrides.kernel as Partial<ProcessHandle["kernel"]> | undefined),
   } as ProcessHandle["kernel"];
-  return {
+  const handle = {
     runtimeId: 1,
     pid: 3,
     parentPid: 1,
@@ -138,9 +152,16 @@ function makeHandle(
     vforkWorker: null,
     workerDebugLog: [],
     guestWriteWatchRegions: [],
-    ...overrides,
+    ...handleOverrides,
     kernel,
   } as unknown as ProcessHandle;
+  if (memfsDirty !== undefined) {
+    setProcessMemfsDirty(handle, memfsDirty);
+  }
+  if (memfsPublishPending !== undefined) {
+    setProcessMemfsPublishPending(handle, memfsPublishPending);
+  }
+  return handle;
 }
 
 async function flushMicrotasks(count = 10): Promise<void> {
@@ -670,7 +691,7 @@ test("completeProcessExit routes deferred parent record rejection through local 
 test("completeProcessExit preserves published file data during exit MemFS publication", async () => {
   const handle = makeHandle({
     parentPid: null,
-    processMemfsDirty: true,
+    memfsDirty: true,
   });
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const publishRuntimeFsState = vi.fn(() => 1);
@@ -717,7 +738,7 @@ test("completeProcessExit publishes dirty MemFS locally when no exit threads rem
   const baseKernel = makeHandle().kernel;
   const handle = makeHandle({
     parentPid: null,
-    processMemfsDirty: true,
+    memfsDirty: true,
     onExit,
     kernel: {
       ...baseKernel,
@@ -769,7 +790,7 @@ test("completeProcessExit publishes dirty MemFS locally when exit thread slots a
   ]);
   const handle = makeHandle({
     parentPid: null,
-    processMemfsDirty: true,
+    memfsDirty: true,
     onExit,
     kernel: {
       ...baseKernel,
@@ -826,7 +847,7 @@ test("completeProcessExit publishes dirty MemFS locally when no live exit thread
   const baseKernel = makeHandle().kernel;
   const handle = makeHandle({
     parentPid: null,
-    processMemfsDirty: true,
+    memfsDirty: true,
     onExit,
     kernel: {
       ...baseKernel,
@@ -880,8 +901,8 @@ test("completeProcessExit publishes dirty MemFS locally when no live exit thread
 test("completeProcessExit skips clean kernel-worker MemFS publication", async () => {
   const handle = makeHandle({
     parentPid: null,
-    processMemfsDirty: false,
-    processMemfsPublishPending: false,
+    memfsDirty: false,
+    memfsPublishPending: false,
   });
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
   const publishRuntimeFsState = vi.fn(() => 1);
@@ -994,7 +1015,7 @@ test("completeProcessExit notifies process exit before waiting on final kernel-w
   const order: string[] = [];
   const handle = makeHandle({
     parentPid: null,
-    processMemfsPublishPending: true,
+    memfsPublishPending: true,
     onExit: (code) => {
       order.push(`exit:${code}`);
     },
@@ -1044,7 +1065,7 @@ test("completeProcessExit notifies process exit before waiting on final host std
   const order: string[] = [];
   const handle = makeHandle({
     parentPid: null,
-    processMemfsPublishPending: true,
+    memfsPublishPending: true,
     onExit: (code) => {
       order.push(`exit:${code}`);
     },

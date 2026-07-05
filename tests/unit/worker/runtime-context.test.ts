@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { createWorkerRuntimeContext } from "../../../src/worker/runtime-context.js";
+import { setProcessMemfsDirty } from "../../../src/worker/process-memfs-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(runtimeId: number, pid: number): ProcessHandle {
@@ -132,8 +133,8 @@ test("flushRuntimeFsStateFromDirtyHandle publishes one snapshot for identical li
   handleA.memory = kernelA.memory;
   handleB.kernel = kernelB;
   handleB.memory = kernelB.memory;
-  handleA.processMemfsDirty = true;
-  handleB.processMemfsDirty = true;
+  setProcessMemfsDirty(handleA, true);
+  setProcessMemfsDirty(handleB, true);
   context.processHandles.set(handleA.pid, handleA);
   context.processHandles.set(handleB.pid, handleB);
   context.markRuntimeFsDirty(handleA);

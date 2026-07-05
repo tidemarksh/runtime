@@ -13,6 +13,10 @@ import { createWorkerOwnershipGuard } from "../../ownership/process-state.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 import { requestOwnedForkSharedStateSync } from "../../sync/fork-shared.js";
 import {
+  isProcessMemfsDirty,
+  setProcessMemfsDirty,
+} from "../../process-memfs-state.js";
+import {
   clearThreadOwnerAsyncStatus,
   setThreadOwnerAsyncStatus,
 } from "../../thread-host-state.js";
@@ -62,7 +66,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     );
     const hasProcessMemfsEffect = (completedSyncEffects & syncEffects.syncEffectProcessMemfs) !== 0;
     if (isRunningWorker && hasProcessMemfsEffect) {
-      handle.processMemfsDirty = true;
+      setProcessMemfsDirty(handle, true);
     }
     const activeVforkChildOwnerMismatch = handle.vforkWorker === worker
       && supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
@@ -89,7 +93,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const shouldSyncProcessMemfs = isRunningWorker
       && handle.kernelWorkerRequest !== null
       && handle.pid > 0
-      && handle.processMemfsDirty
+      && isProcessMemfsDirty(handle)
       && shouldPublishDirtyMemfs
       && !activeVforkChildOwnerMismatch
       && !deps.statusDefersOwnedStateSync(handle, status);
@@ -140,7 +144,7 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           for (const member of kernelShareOtherMembers(handle)) {
             deps.markRuntimeFsDirty(member);
           }
-          handle.processMemfsDirty = false;
+          setProcessMemfsDirty(handle, false);
         })
       : Promise.resolve();
     setThreadOwnerAsyncStatus(thread, status);

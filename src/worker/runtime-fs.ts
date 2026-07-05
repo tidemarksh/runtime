@@ -2,6 +2,7 @@ import { attachKernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { detachedKernelScratchBase } from "./kernel-scratch.js";
 import { normalizePath, preloadSnapshotEntries } from "./process-fs.js";
+import { isProcessMemfsDirty } from "./process-memfs-state.js";
 import type {
   KernelShareGroup,
   KernelSyncHandle,
@@ -118,7 +119,7 @@ export function flushRuntimeFsStateFromDirtyHandle(
 
   const liveRepresentatives = new Map<KernelShareGroup, ProcessHandle>();
   for (const handle of dirtyHandles) {
-    if (!handle.processMemfsDirty) {
+    if (!isProcessMemfsDirty(handle)) {
       continue;
     }
     if (handle.pid > 0 && context.processHandles.get(handle.pid) !== handle) {

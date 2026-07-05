@@ -26,6 +26,12 @@ import {
   isBlockedRpcPending,
 } from "./host-blocked-state.js";
 import { getHandleForkSharedSync } from "./fork-shared-sync-state.js";
+import {
+  isProcessMemfsDirty,
+  isProcessMemfsPublishPending,
+  setProcessMemfsDirty,
+  setProcessMemfsPublishPending,
+} from "./process-memfs-state.js";
 
 interface WorkerExitDeps {
   processHandles: Map<number, ProcessHandle>;
@@ -1752,7 +1758,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     if (!deps.snapshotProcessFs || !deps.publishRuntimeFsState) {
       return;
     }
-    if (!handle.processMemfsDirty && !handle.processMemfsPublishPending) {
+    if (!isProcessMemfsDirty(handle) && !isProcessMemfsPublishPending(handle)) {
       return;
     }
     try {
@@ -1784,8 +1790,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       }
       const entries = deps.snapshotProcessFs(handle);
       deps.publishRuntimeFsState(handle.runtimeId, entries);
-      handle.processMemfsDirty = false;
-      handle.processMemfsPublishPending = false;
+      setProcessMemfsDirty(handle, false);
+      setProcessMemfsPublishPending(handle, false);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-fs-publish:${handle.pid}:${entries.length}`);
     } catch (error) {
       deps.appendRuntimeLifecycleEvent(
@@ -2029,10 +2035,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       `exit-output-branch:${handle.pid}:parent=${parent?.pid ?? 0}:owner=${handle.stdioOwner?.pid ?? 0}`,
     );
     if (parent) {
-      if (handle.processMemfsDirty || handle.processMemfsPublishPending) {
+      const publishPending = isProcessMemfsPublishPending(handle);
+      if (isProcessMemfsDirty(handle) || publishPending) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
-          `exit-parent-prepublish-skip:${parent.pid}:${handle.pid}:dirty-memfs=1:publish-pending=${handle.processMemfsPublishPending ? 1 : 0}`,
+          `exit-parent-prepublish-skip:${parent.pid}:${handle.pid}:dirty-memfs=1:publish-pending=${publishPending ? 1 : 0}`,
         );
       }
     } else {

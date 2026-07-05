@@ -557,7 +557,6 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
       vmPtr: 0x1234,
       status: 0,
     }]]),
-    processMemfsDirty: false,
     vforkSnapshot: null,
     vforkWorker: null,
     exitInProgress: false,

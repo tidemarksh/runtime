@@ -239,7 +239,6 @@ export function makeHostBoundaryHandle(
     vforkReadyWorkers: [],
     runningWorker: null,
     hostBlockedWorkers: new Map(),
-    processMemfsDirty: false,
     networkConnections: new Map(),
     networkPendingConnectFds: new Set(),
     networkClosedFds: new Set(),

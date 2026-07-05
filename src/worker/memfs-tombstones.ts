@@ -1,14 +1,16 @@
 import { writeKernelScratch } from "./kernel-scratch.js";
+import {
+  forgetProcessMemfsDeletedPath,
+  processMemfsDeletedPaths,
+  processMemfsDeletedPathSet,
+} from "./process-memfs-state.js";
 import { normalizePath } from "./process-fs.js";
 import type { ProcessHandle } from "./types.js";
 
 const encoder = new TextEncoder();
 
 function deletedPathSet(handle: ProcessHandle): Set<string> {
-  if (!handle.processMemfsDeletedPaths) {
-    handle.processMemfsDeletedPaths = new Set();
-  }
-  return handle.processMemfsDeletedPaths;
+  return processMemfsDeletedPathSet(handle);
 }
 
 export function resolveLocalMemfsPath(handle: ProcessHandle, path: string): number {
@@ -47,14 +49,14 @@ export function rememberMemfsDeletedPath(handle: ProcessHandle, path: string): v
 }
 
 export function forgetMemfsDeletedPath(handle: ProcessHandle, path: string): void {
-  handle.processMemfsDeletedPaths?.delete(normalizePath(path));
+  forgetProcessMemfsDeletedPath(handle, normalizePath(path));
 }
 
 export function reapplyMemfsDeletedPaths(
   handle: ProcessHandle,
 ): Array<{ path: string; removed: boolean; postIno: number }> {
-  const paths = handle.processMemfsDeletedPaths;
-  if (!paths || paths.size === 0) {
+  const paths = processMemfsDeletedPaths(handle);
+  if (paths.length === 0) {
     return [];
   }
   const results: Array<{ path: string; removed: boolean; postIno: number }> = [];

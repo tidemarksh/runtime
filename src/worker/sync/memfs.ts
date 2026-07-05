@@ -5,6 +5,7 @@ import {
 import { adoptKernelStateForHandle } from "../kernel-state.js";
 import { describeSyncCause, type SyncCause } from "../contracts/sync.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import { setProcessMemfsDirty } from "../process-memfs-state.js";
 import {
   restoreProcessState,
   snapshotProcessState,
@@ -46,5 +47,5 @@ export async function syncProcessMemfsViaKernelWorker(
   handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   restoreProcessState(handle, processStateSnapshot);
-  handle.processMemfsDirty = false;
+  setProcessMemfsDirty(handle, false);
 }

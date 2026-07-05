@@ -23,6 +23,7 @@ import {
 import {
   applyThreadMemfsKernelWriteToForkShareMembers,
 } from "./memfs-kernel-write.js";
+import { isProcessMemfsDirty } from "../../process-memfs-state.js";
 import {
   maskIncompatibleOfdSlotKernelWrite,
   maskRegularFileFdEntryRollbackGuestWrite,
@@ -167,7 +168,7 @@ function isDirtyMemfsKernelMemoryWrite(
   ptr: number,
   length: number,
 ): boolean {
-  if (!handle.processMemfsDirty || length <= 0) {
+  if (!isProcessMemfsDirty(handle) || length <= 0) {
     return false;
   }
   const faultStatus = handle.kernel.abi_status_fault?.();

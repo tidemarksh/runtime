@@ -16,6 +16,7 @@ import { getThreadExecveProcessState } from "../../../../src/worker/thread-execv
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending-pipe-slot-state.js";
+import { setProcessMemfsDirty } from "../../../../src/worker/process-memfs-state.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
@@ -36,7 +37,6 @@ function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
   handle.workerDebugLog ??= [];
   handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
   handle.vforkSnapshot ??= null;
-  handle.processMemfsDirty ??= false;
   return handle;
 }
 
@@ -712,8 +712,8 @@ test("status handler does not roll back dirty memfs from fault snapshots", () =>
     },
     onStdout: null,
     runningWorker: worker,
-    processMemfsDirty: true,
   } as never;
+  setProcessMemfsDirty(handle, true);
 
   handler(handle, worker, {
     type: "status",

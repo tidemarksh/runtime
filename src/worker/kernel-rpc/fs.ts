@@ -27,6 +27,11 @@ import {
   resolveLocalMemfsPath,
 } from "../memfs-tombstones.js";
 import {
+  isProcessMemfsDirty,
+  setProcessMemfsDirty,
+  setProcessMemfsPublishPending,
+} from "../process-memfs-state.js";
+import {
   createTransferDebugStats,
   type ProcessHandle,
   type ThreadWorkerState,
@@ -1327,7 +1332,7 @@ async function resumeFsViaKernelWorkerInner(
     }
     const dirtyMemfsPeers = deps.kernelShareOtherMembers(handle)
       .filter((member) => (
-        member.processMemfsDirty
+        isProcessMemfsDirty(member)
         && hasLiveWorkerState(member, deps.threadWorkerStates)
         && member.runningWorker === null
         && !member.exitInProgress
@@ -1349,7 +1354,7 @@ async function resumeFsViaKernelWorkerInner(
         memfsOnly: true,
         sourceVmPtr: peer.vmPtr,
       });
-      peer.processMemfsDirty = false;
+      setProcessMemfsDirty(peer, false);
     }
     deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
     handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -1548,8 +1553,8 @@ async function resumeFsViaKernelWorkerInner(
     }
     const dirtyMemfsHandles: ProcessHandle[] = [];
     if (memfsMutated) {
-      handle.processMemfsDirty = true;
-      handle.processMemfsPublishPending = true;
+      setProcessMemfsDirty(handle, true);
+      setProcessMemfsPublishPending(handle, true);
       if (fsResponseDisposition.processOwnerMatches) {
         if (memfsPublishReady && forkShareMembers.length > 0) {
           for (const member of forkShareMembers) {

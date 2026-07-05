@@ -9,6 +9,10 @@ import {
   getThreadOwnerAsyncStatus,
   setThreadHostIdentity,
 } from "../../../../src/worker/thread-host-state.js";
+import {
+  isProcessMemfsDirty,
+  setProcessMemfsDirty,
+} from "../../../../src/worker/process-memfs-state.js";
 
 function makeKernelState() {
   return {
@@ -215,7 +219,6 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -315,7 +318,6 @@ test("fork-shared OFD sync accepts an owned worker status after running slot is 
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -430,7 +432,6 @@ test("kernel completed fork-shared effect syncs available parent targets", async
       sharedOfdIds: new Set([3]),
     },
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -541,7 +542,6 @@ test("fcntl F_SETFL on an unshared OFD does not request fork-shared sync", () =>
       sharedOfdIds: new Set([8]),
     },
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 0, stderrPipe: 0 },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -641,7 +641,6 @@ test("kernel pipe data-plane effect does not request fork-shared sync", () => {
       sharedOfdIds: new Set([3]),
     },
     hostStdio: { refCount: 0, stdinPipe: 0, stdoutPipe: 5, stderrPipe: 0 },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -723,7 +722,6 @@ test("fork-shared OFD sync skips exiting peer targets", async () => {
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -822,7 +820,6 @@ test("fork-shared OFD sync keeps a quiescent parent reader target for a method-c
       members: new Set(),
       sharedOfdIds: new Set([8]),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -936,7 +933,6 @@ test("queued fork-shared OFD sync clears both handle and share promises", async 
       members: new Set(),
       sharedOfdIds: new Set([2]),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -1041,7 +1037,6 @@ test("queued no-target fork-shared OFD sync waits without replacing the active s
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -1153,7 +1148,6 @@ test("fork-shared-only pipe effects sync when the source holds tracked shared st
       members: new Set(),
       sharedOfdIds: new Set([1]),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -1233,7 +1227,6 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: true,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -1251,6 +1244,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
       kernel_attach_runtime_state: vi.fn(),
     },
   };
+  setProcessMemfsDirty(handle as never, true);
   handle.kernelShare.members.add(handle);
   const continueAfterOwnedStateSync = vi.fn(() => {
     order.push("continue");
@@ -1313,7 +1307,7 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
   });
   expect(requestPipeStateSync).not.toHaveBeenCalled();
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
-  expect(handle.processMemfsDirty).toBe(false);
+  expect(isProcessMemfsDirty(handle as never)).toBe(false);
   expect(order).toEqual(["memfs", "continue"]);
 });
 
@@ -1338,7 +1332,6 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: false,
     kernelState: makeKernelState(),
     kernel: {
       ...supervisorPipeControlKernelStubs,
@@ -1392,7 +1385,7 @@ test("dirty process memfs is deferred on a successful process-memfs-only effect"
   expect(handled).toBe(false);
   expect(continueAfterOwnedStateSync).not.toHaveBeenCalled();
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
-  expect(handle.processMemfsDirty).toBe(true);
+  expect(isProcessMemfsDirty(handle as never)).toBe(true);
 });
 
 test("active vfork child pid mismatch defers parent-owned state sync", () => {
@@ -1417,7 +1410,6 @@ test("active vfork child pid mismatch defers parent-owned state sync", () => {
       members: new Set(),
       sharedOfdIds: new Set(),
     },
-    processMemfsDirty: false,
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: 3,
