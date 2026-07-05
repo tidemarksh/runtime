@@ -1,5 +1,13 @@
 import type { KernelExports, ProcessSpawnHandoff } from "../abi.js";
 import { ensureMemoryCapacity, kernelScratchBase } from "./kernel-scratch.js";
+import {
+  lastSupervisorFdControlSeq,
+  lastSupervisorFsControlSeq,
+  lastSupervisorSignalControlSeq,
+  setLastSupervisorFdControlSeq,
+  setLastSupervisorFsControlSeq,
+  setLastSupervisorSignalControlSeq,
+} from "./supervisor-control-seq-state.js";
 import type { ProcessHandle } from "./types.js";
 
 const SUPERVISOR_SHADOW_THREAD_EVENT_SCRATCH_OFFSET = 0x2c000;
@@ -513,11 +521,11 @@ export function pollSupervisorFdControlDiagnostic(handle: ProcessHandle): string
     if (record === undefined) {
       return undefined;
     }
-    const lastSeq = handle.lastSupervisorFdControlSeq ?? 0n;
+    const lastSeq = lastSupervisorFdControlSeq(handle);
     if (record.seq <= lastSeq) {
       return undefined;
     }
-    handle.lastSupervisorFdControlSeq = record.seq;
+    setLastSupervisorFdControlSeq(handle, record.seq);
     return formatSupervisorFdControlRecord(record);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -651,11 +659,11 @@ export function pollSupervisorFsControlDiagnostic(handle: ProcessHandle): string
     if (record === undefined) {
       return undefined;
     }
-    const lastSeq = handle.lastSupervisorFsControlSeq ?? 0n;
+    const lastSeq = lastSupervisorFsControlSeq(handle);
     if (record.seq <= lastSeq) {
       return undefined;
     }
-    handle.lastSupervisorFsControlSeq = record.seq;
+    setLastSupervisorFsControlSeq(handle, record.seq);
     return formatSupervisorFsControlRecord(record);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -786,11 +794,11 @@ export function pollSupervisorSignalControlDiagnostic(handle: ProcessHandle): st
     if (record === undefined) {
       return undefined;
     }
-    const lastSeq = handle.lastSupervisorSignalControlSeq ?? 0n;
+    const lastSeq = lastSupervisorSignalControlSeq(handle);
     if (record.seq <= lastSeq) {
       return undefined;
     }
-    handle.lastSupervisorSignalControlSeq = record.seq;
+    setLastSupervisorSignalControlSeq(handle, record.seq);
     return formatSupervisorSignalControlRecord(record);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

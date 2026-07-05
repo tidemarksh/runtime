@@ -140,9 +140,6 @@ export interface ProcessHandle {
   // Futex/runnable/dead-thread decisions remain supervisor-owned.
   hostBlockedWorkers: Map<Worker, HostBlockedWorkerState>;
   pendingChildSpawnRecords: number;
-  lastSupervisorFdControlSeq?: bigint;
-  lastSupervisorFsControlSeq?: bigint;
-  lastSupervisorSignalControlSeq?: bigint;
   processMemfsDirty: boolean;
   processMemfsPublishPending: boolean;
   processMemfsDeletedPaths?: Set<string>;
