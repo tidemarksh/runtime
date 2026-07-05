@@ -7,7 +7,7 @@ import {
   handleFutexWait,
 } from "../../../../src/thread-worker/blocking.js";
 import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
-import { createWorkerScheduler } from "../../../../src/worker/scheduler.js";
+import { createWorkerScheduler } from "../../../../src/worker/host-boundary/worker-scheduler.js";
 import {
   getThreadGeneration,
   getThreadRunningGeneration,

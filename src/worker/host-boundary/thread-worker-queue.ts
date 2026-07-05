@@ -71,7 +71,7 @@ import {
 import type {
   ThreadWorkerInbound,
   WorkerSchedulerQueueHelpers,
-} from "../scheduler/types.js";
+} from "./worker-scheduler-types.js";
 
 const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 5_000_000;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;

@@ -59,7 +59,7 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import { transferDebugStats } from "../worker-debug-stats.js";
-import type { WorkerSchedulerStateSyncHelpers } from "../scheduler/types.js";
+import type { WorkerSchedulerStateSyncHelpers } from "./worker-scheduler-types.js";
 
 interface WorkerSchedulerStateSyncDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;

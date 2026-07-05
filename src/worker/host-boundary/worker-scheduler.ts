@@ -13,23 +13,23 @@ import {
   drainHiddenProcessOutput,
   drainProcessOutput,
 } from "../stdio.js";
-import { appendWorkerDebugLog } from "./debug-log.js";
-import { createPipePollScheduler } from "../host-boundary/blocked-poll.js";
-import { createPruningScheduler } from "../host-boundary/worker-pruning.js";
-import { createWorkerSchedulerQueueHelpers } from "../host-boundary/thread-worker-queue.js";
-import { createRunLoopScheduler, logNetworkDebug } from "./run-loop.js";
+import { appendWorkerDebugLog } from "./worker-debug-log.js";
+import { createPipePollScheduler } from "./blocked-poll.js";
+import { createPruningScheduler } from "./worker-pruning.js";
+import { createWorkerSchedulerQueueHelpers } from "./thread-worker-queue.js";
+import { createRunLoopScheduler, logNetworkDebug } from "./worker-run-loop.js";
 import { createSocketWaitScheduler } from "../diagnostics/socket-wait.js";
 import {
   createBlockedWaitDiagnostics,
-} from "../host-boundary/blocked-wait-diagnostics.js";
+} from "./blocked-wait-diagnostics.js";
 import {
   createBlockedWaitTimers,
   type BlockedWaitTimers,
-} from "../host-boundary/blocked-wait-timers.js";
+} from "./blocked-wait-timers.js";
 import {
   createBlockedRetryCoordinator,
-} from "../host-boundary/blocked-retry.js";
-import { createWorkerSchedulerStateSyncHelpers } from "../host-boundary/state-sync.js";
+} from "./blocked-retry.js";
+import { createWorkerSchedulerStateSyncHelpers } from "./state-sync.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -38,7 +38,7 @@ import { clearThreadRunningGeneration } from "../thread-host-state.js";
 import type {
   WorkerScheduler,
   WorkerSchedulerDeps,
-} from "./types.js";
+} from "./worker-scheduler-types.js";
 import {
   copyHostBlockedEffectState,
   isBlockedRpcPending,

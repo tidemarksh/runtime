@@ -54,7 +54,7 @@ import {
 import { createWorkerLifecycleHelpers } from "../lifecycle.js";
 import { createWorkerMessageHandler } from "../message-handler.js";
 import { createWorkerRuntimeContext } from "../runtime-context.js";
-import { createWorkerScheduler } from "../scheduler.js";
+import { createWorkerScheduler } from "../host-boundary/worker-scheduler.js";
 import { createWorkerOrchestratorFacade } from "./facade.js";
 import type {
   WorkerOrchestrator,
