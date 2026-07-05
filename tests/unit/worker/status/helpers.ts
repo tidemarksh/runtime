@@ -10,6 +10,7 @@ import {
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import {
   networkClosedFds,
   networkClosedSocketSlots,
@@ -23,7 +24,7 @@ import {
   type NetworkRecvPayloadWatermark,
   type NetworkSocketSlotSnapshot,
 } from "../../../../src/worker/network-socket-state.js";
-import type { ProcessHandle } from "../../../../src/worker/types.js";
+import type { KernelWorkerRequestFn, ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type NetworkPayloadSeed = Omit<NetworkRecvPayloadWatermark, "recvBufIdx"> & {
@@ -151,6 +152,7 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     kernel: overrideKernel,
     memory: overrideMemory,
     networkConnections: initialNetworkConnections,
+    kernelWorkerRequest: initialKernelWorkerRequest,
     ...rest
   } = overrides;
   const memory = (overrideMemory as WebAssembly.Memory | undefined)
@@ -165,7 +167,6 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
     memory,
     kernel,
     kernelState: makeKernelState(),
-    kernelWorkerRequest: undefined,
     stdoutPipe: 0,
     stderrPipe: 0,
     stdinPipe: 0,
@@ -194,6 +195,10 @@ export function makeHandle(overrides: Record<string, unknown> = {}) {
   for (const [fd, connection] of initialNetworkConnections instanceof Map ? initialNetworkConnections : []) {
     networkConnections(handle as ProcessHandle).set(fd, connection as never);
   }
+  setProcessKernelWorkerRequest(
+    handle as ProcessHandle,
+    initialKernelWorkerRequest as KernelWorkerRequestFn | undefined,
+  );
   return handle;
 }
 

@@ -19,6 +19,7 @@ import { setProcessOnExit } from "../../../../src/worker/process-callback-state.
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { FakeWorker } from "../../../support/fake-worker.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   const primaryWorker = new FakeWorker() as unknown as Worker;
@@ -95,6 +96,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  seedProcessKernelWorkerRequestFixture(handle);
   setProcessDebugCommand(handle, "destroy-test");
   return handle;
 }

@@ -5,6 +5,7 @@ import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.j
 import { createWorkerKernelRpcProcessLifecycleHelpers } from "../../../../src/worker/kernel-rpc/process-lifecycle.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -171,6 +172,7 @@ function makeHandle(
     recordedChildExits: Array<[number, number]>;
     publishedStates: KernelRuntimeState[];
   };
+  seedProcessKernelWorkerRequestFixture(handle);
   setProcessDebugCommand(handle, "test");
   addKernelShareMember(handle);
   return handle;

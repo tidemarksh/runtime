@@ -1,14 +1,25 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
-import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
+import { createWorkerWaitInWorkerStatusHandler as createRawWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
 import {
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
   setThreadHostIdentity,
   setThreadRunningGeneration,
 } from "../../../../src/worker/thread-host-state.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+
+function createWorkerWaitInWorkerStatusHandler(
+  deps: Parameters<typeof createRawWorkerWaitInWorkerStatusHandler>[0],
+): ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler> {
+  const handler = createRawWorkerWaitInWorkerStatusHandler(deps);
+  return ((...args: Parameters<ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler>>) => {
+    seedProcessKernelWorkerRequestFixture(args[0]);
+    return handler(...args);
+  }) as ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler>;
+}
 
 test("waitInWorker debug log keeps compact futex fields", () => {
   const appendWorkerDebugLog = vi.fn();

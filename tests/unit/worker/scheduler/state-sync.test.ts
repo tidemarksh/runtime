@@ -20,6 +20,14 @@ import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeHandle(overrides: Record<string, unknown> = {}) {
+  const hasKernelWorkerRequestOverride = Object.prototype.hasOwnProperty.call(
+    overrides,
+    "kernelWorkerRequest",
+  );
+  const {
+    kernelWorkerRequest: overrideKernelWorkerRequest,
+    ...handleOverrides
+  } = overrides;
   let runtimeState = {
     heapBase: 0,
     heapPtr: 0,
@@ -135,13 +143,15 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     thread_socket_recv_available: () => 0,
     thread_socket_read_bytes: () => 0n,
   };
-  return {
-    pid: 1,
-    vmPtr: 0,
-    kernelWorkerRequest: vi.fn(async () => ({
+  const kernelWorkerRequest = hasKernelWorkerRequestOverride
+    ? overrideKernelWorkerRequest
+    : vi.fn(async () => ({
       type: "pipe-state-synced",
       kernelState: runtimeState,
-    })),
+    }));
+  const handle = {
+    pid: 1,
+    vmPtr: 0,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -169,8 +179,10 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
     transferDebugStats: createTransferDebugStats(),
     vforkSnapshot: null,
     vforkWorker: null,
-    ...overrides,
+    ...handleOverrides,
   } as never;
+  setProcessKernelWorkerRequest(handle, kernelWorkerRequest as never);
+  return handle;
 }
 
 test("requestPipeStateSync drains the visible stdio owner for hidden-child internal sync", async () => {

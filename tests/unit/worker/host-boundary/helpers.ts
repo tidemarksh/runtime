@@ -236,7 +236,6 @@ export function makeHostBoundaryHandle(
     outputBacklog: [],
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
-    kernelWorkerRequest: undefined,
     workers: new Set([worker]),
     transferDebugStats: createTransferDebugStats(),
     workerMessageDebugStats: createWorkerMessageDebugStats(),

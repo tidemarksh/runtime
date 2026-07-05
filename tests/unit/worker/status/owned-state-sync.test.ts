@@ -1,6 +1,7 @@
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerOwnedStateSyncHandler } from "../../../../src/worker/message-handler/status/owned-state-sync.js";
+import { createWorkerOwnedStateSyncHandler as createRawWorkerOwnedStateSyncHandler } from "../../../../src/worker/message-handler/status/owned-state-sync.js";
+import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import {
   getHandleForkSharedSync,
   getProcessKernelShareForkSharedSync,
@@ -15,6 +16,26 @@ import {
   setProcessMemfsDirty,
 } from "../../../../src/worker/process-memfs-state.js";
 import { setProcessExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
+
+function seedKernelWorkerRequestFixture(handle: unknown): void {
+  const fixture = handle as { kernelWorkerRequest?: unknown };
+  if (!Object.prototype.hasOwnProperty.call(fixture, "kernelWorkerRequest")) {
+    return;
+  }
+  const kernelWorkerRequest = fixture.kernelWorkerRequest;
+  delete fixture.kernelWorkerRequest;
+  setProcessKernelWorkerRequest(handle as never, kernelWorkerRequest as never);
+}
+
+function createWorkerOwnedStateSyncHandler(
+  deps: Parameters<typeof createRawWorkerOwnedStateSyncHandler>[0],
+): ReturnType<typeof createRawWorkerOwnedStateSyncHandler> {
+  const handler = createRawWorkerOwnedStateSyncHandler(deps);
+  return ((request: Parameters<ReturnType<typeof createRawWorkerOwnedStateSyncHandler>>[0]) => {
+    seedKernelWorkerRequestFixture(request.handle);
+    return handler(request);
+  }) as ReturnType<typeof createRawWorkerOwnedStateSyncHandler>;
+}
 
 function makeKernelState() {
   return {

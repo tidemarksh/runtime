@@ -16,6 +16,7 @@ import {
   getPendingKernelStateForNextStep,
   snapshotPendingGuestMemoryWritesForNextStep,
 } from "../../../../src/worker/thread-step-payload.js";
+import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import {
   isBlockedRpcPending,
@@ -24,7 +25,7 @@ import {
   setBlockedRpcPending,
   setPipeCanonicalEofReady,
 } from "../../../../src/worker/host-blocked-state.js";
-import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import type { KernelWorkerRequestFn, ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import {
   FS_OP_CLOSE,
@@ -266,9 +267,13 @@ function makeHandle(
   kernel: KernelExports,
   runtimeBridge: ProcessHandle["runtimeBridge"],
   worker: Worker,
-  overrides: Partial<ProcessHandle> = {},
+  overrides: Partial<ProcessHandle> & { kernelWorkerRequest?: KernelWorkerRequestFn } = {},
 ): ProcessHandle {
   installSupervisorBlockedResumeStub(kernel);
+  const {
+    kernelWorkerRequest,
+    ...handleOverrides
+  } = overrides;
   const handle = {
     runtimeId: 1,
     pid: 1,
@@ -311,8 +316,9 @@ function makeHandle(
     vforkWorker: null,
     workerDebugLog: [],
     guestWriteWatchRegions: [],
-    ...overrides,
+    ...handleOverrides,
   } as ProcessHandle;
+  setProcessKernelWorkerRequest(handle, kernelWorkerRequest);
   setProcessDebugCommand(handle, "test");
   return handle;
 }

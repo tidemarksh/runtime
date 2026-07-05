@@ -32,6 +32,7 @@ import {
   processLastDebugMessage,
   setProcessLastDebugMessage,
 } from "../../../../src/worker/process-debug-state.js";
+import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import { seedNetworkSocketState } from "./helpers.js";
@@ -43,6 +44,11 @@ const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
 const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
+  if (Object.prototype.hasOwnProperty.call(handle, "kernelWorkerRequest")) {
+    const kernelWorkerRequest = handle.kernelWorkerRequest;
+    delete handle.kernelWorkerRequest;
+    setProcessKernelWorkerRequest(handle as never, kernelWorkerRequest as never);
+  }
   networkConnections(handle);
   workerDebugLog(handle);
   workerMessageDebugStats(handle);

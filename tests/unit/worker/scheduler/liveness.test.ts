@@ -958,7 +958,6 @@ function makeHandle(
     outputBacklog: [],
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
-    kernelWorkerRequest: undefined,
     workers: new Set([worker]),
     vforkReadyWorkers: [],
     runningWorker: null,

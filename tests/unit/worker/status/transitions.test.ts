@@ -226,7 +226,6 @@ function makeHandle(worker: Worker) {
     workers: new Set([worker]),
     vforkReadyWorkers: [],
     hostBlockedWorkers: new Map(),
-    kernelWorkerRequest: undefined,
     kernelState: makeKernelState(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {

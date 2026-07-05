@@ -2,7 +2,7 @@ import { expect, test, vi } from "vite-plus/test";
 import {
   addProcessWorker,
 } from "../../../../src/worker/process-worker-state.js";
-import { createWorkerKernelRpcFsHelpers } from "../../../../src/worker/host-boundary/fs-host-ops.js";
+import { createWorkerKernelRpcFsHelpers as createRawWorkerKernelRpcFsHelpers } from "../../../../src/worker/host-boundary/fs-host-ops.js";
 import {
   FS_OP_FSTAT,
   FS_OP_CLOSE,
@@ -29,7 +29,27 @@ import {
 } from "../../../../src/worker/process-memfs-state.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+
+function createWorkerKernelRpcFsHelpers(
+  deps: Parameters<typeof createRawWorkerKernelRpcFsHelpers>[0],
+): ReturnType<typeof createRawWorkerKernelRpcFsHelpers> {
+  const helpers = createRawWorkerKernelRpcFsHelpers(deps);
+  const resumeFsViaKernelWorker: typeof helpers.resumeFsViaKernelWorker = (...args) => {
+    seedProcessKernelWorkerRequestFixture(args[0]);
+    return helpers.resumeFsViaKernelWorker(...args);
+  };
+  const resumeFsViaKernelWorkerOutcome: typeof helpers.resumeFsViaKernelWorkerOutcome = (...args) => {
+    seedProcessKernelWorkerRequestFixture(args[0]);
+    return helpers.resumeFsViaKernelWorkerOutcome(...args);
+  };
+  return {
+    ...helpers,
+    resumeFsViaKernelWorker,
+    resumeFsViaKernelWorkerOutcome,
+  };
+}
 
 function makeKernelState(): KernelRuntimeState {
   return {

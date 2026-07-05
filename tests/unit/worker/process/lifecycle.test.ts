@@ -10,6 +10,7 @@ import { createWorkerLifecycleHelpers } from "../../../../src/worker/lifecycle.j
 import { processExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -91,6 +92,7 @@ function makeHandle(
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  seedProcessKernelWorkerRequestFixture(handle);
   setProcessDebugCommand(handle, "test");
   addKernelShareMember(handle);
   return { handle, releaseHostStdio };

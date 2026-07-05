@@ -25,6 +25,7 @@ import {
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 
 const FD_TYPE_NONE = 0;
 const FD_TYPE_FILE = 1;
@@ -721,6 +722,7 @@ function makeHandle(pid: number, fdMap: Map<number, number>): ProcessHandle {
     workerDebugLog: [],
     guestWriteWatchRegions: [],
   } as ProcessHandle;
+  seedProcessKernelWorkerRequestFixture(handle);
   setProcessDebugCommand(handle, "");
   addKernelShareMember(handle);
   return handle;
