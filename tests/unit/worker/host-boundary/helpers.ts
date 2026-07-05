@@ -163,8 +163,6 @@ export function makeHostBoundaryThread(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
   };
   clearThreadWaitingInWorkerStatus(thread);

@@ -1,9 +1,3 @@
-import type { KernelRuntimeState } from "../../abi.js";
-import type {
-  GuestMemoryWriteSnapshot,
-  KernelWorkerPipeSlotSnapshot,
-} from "../../messages.js";
-
 export interface ThreadWorkerState {
   vmPtr: number;
   ownerPid: number;
@@ -34,9 +28,6 @@ export interface ThreadWorkerState {
   hotStatusPcs: Record<string, number>;
   initialized: boolean;
   pipeCanonicalEofReadyOnNextBlock?: boolean;
-  pendingKernelStateForNextStep?: KernelRuntimeState;
-  pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
-  pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
   resumeWorkersOnReady: Worker[];
 }
 

@@ -19,6 +19,7 @@ import {
   fsRingRequestEntryOffset,
 } from "../../../../src/layout/fs-ring.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
+import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../../src/worker/thread-step-payload.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
@@ -400,9 +401,7 @@ test("kernel-worker fs outcome returns wake effect after local publication", asy
   } as unknown as ProcessHandle;
   const worker = {} as Worker;
   handle.workers.add(worker);
-  const threadState = {
-    pendingGuestMemoryWrites: [],
-  } as unknown as ThreadWorkerState;
+  const threadState = {} as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, threadState);
   const markRuntimeFsDirty = vi.fn();
@@ -565,12 +564,8 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
   const siblingWorker = {} as Worker;
   handle.workers.add(worker);
   handle.workers.add(siblingWorker);
-  const threadState = {
-    pendingGuestMemoryWrites: [],
-  } as unknown as ThreadWorkerState;
-  const siblingThreadState = {
-    pendingGuestMemoryWrites: [],
-  } as unknown as ThreadWorkerState;
+  const threadState = {} as ThreadWorkerState;
+  const siblingThreadState = {} as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, threadState);
   threadWorkerStates.set(siblingWorker, siblingThreadState);
@@ -601,12 +596,14 @@ test("kernel-worker fs outcome applies mmap guest memory writes from fs response
 
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
   expect(new Uint8Array(handle.memory.buffer, 0x1200, mappedBytes.length)).toEqual(mappedBytes);
-  expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
-  expect(threadState.pendingGuestMemoryWrites[0].guestPtr).toBe(0x200);
-  expect(threadState.pendingGuestMemoryWrites[0].bytes).toEqual(mappedBytes);
-  expect(siblingThreadState.pendingGuestMemoryWrites).toHaveLength(1);
-  expect(siblingThreadState.pendingGuestMemoryWrites[0].guestPtr).toBe(0x200);
-  expect(siblingThreadState.pendingGuestMemoryWrites[0].bytes).toEqual(mappedBytes);
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(threadState);
+  const siblingPendingWrites = snapshotPendingGuestMemoryWritesForNextStep(siblingThreadState);
+  expect(pendingWrites).toHaveLength(1);
+  expect(pendingWrites[0].guestPtr).toBe(0x200);
+  expect(pendingWrites[0].bytes).toEqual(mappedBytes);
+  expect(siblingPendingWrites).toHaveLength(1);
+  expect(siblingPendingWrites[0].guestPtr).toBe(0x200);
+  expect(siblingPendingWrites[0].bytes).toEqual(mappedBytes);
 });
 
 test("kernel-worker fs outcome defers file write publication to a later sync point", async () => {

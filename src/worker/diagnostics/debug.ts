@@ -32,6 +32,10 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
 } from "../thread-host-state.js";
+import {
+  pendingGuestMemoryWritesForNextStepCount,
+  pendingPipeSlotsForNextStepCount,
+} from "../thread-step-payload.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -300,8 +304,8 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `last=${state.lastStatus ?? "null"}`,
     `lastPc=${state.lastStatusPc === null ? "null" : `0x${state.lastStatusPc.toString(16)}`}`,
     `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,
-    `pendingPipeSlots=${state.pendingPipeSlotsForNextStep.length}`,
-    `pendingGuestWrites=${state.pendingGuestMemoryWrites.length}`,
+    `pendingPipeSlots=${pendingPipeSlotsForNextStepCount(state)}`,
+    `pendingGuestWrites=${pendingGuestMemoryWritesForNextStepCount(state)}`,
     `resumeReady=${state.resumeWorkersOnReady.length}`,
     ...(recentSteps.length === 0 ? [] : [`recentSteps=${recentSteps}`]),
     ...(recentStatuses.length === 0 ? [] : [`recentStatuses=${recentStatuses}`]),

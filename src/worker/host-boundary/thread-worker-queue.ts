@@ -30,6 +30,11 @@ import {
   getThreadWaitingInWorkerStatus,
 } from "../thread-host-state.js";
 import {
+  takePendingGuestMemoryWritesForNextStep,
+  takePendingKernelStateForNextStep,
+  takePendingPipeSlotsForNextStep,
+} from "../thread-step-payload.js";
+import {
   appendSchedulerQueueDebugLog,
   formatSchedulerStepDebugSuffix,
   formatSchedulerStepFdSnapshot,
@@ -269,8 +274,6 @@ export function createWorkerSchedulerQueueHelpers(
       lastStatusS11: null,
       hotStatusPcs: {},
       initialized: false,
-      pendingPipeSlotsForNextStep: [],
-      pendingGuestMemoryWrites: [],
       resumeWorkersOnReady: [],
     });
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
@@ -519,10 +522,7 @@ export function createWorkerSchedulerQueueHelpers(
     }
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
     const fdEntries = snapshotProcessFdEntriesForThread(handle, vmPtr ?? 0);
-    const pendingKernelState = thread?.pendingKernelStateForNextStep;
-    if (thread && pendingKernelState !== undefined) {
-      thread.pendingKernelStateForNextStep = undefined;
-    }
+    const pendingKernelState = takePendingKernelStateForNextStep(thread);
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
       budget: stepBudget,
@@ -543,11 +543,13 @@ export function createWorkerSchedulerQueueHelpers(
       handle,
       `step-fds:0x${(vmPtr ?? 0).toString(16)}:${formatSchedulerStepFdSnapshot(handle, vmPtr, fdEntries, stepOfdSlots)}`,
     );
-    if (thread?.pendingPipeSlotsForNextStep?.length) {
-      stepMessage.pipeSlots = thread.pendingPipeSlotsForNextStep.splice(0);
+    const pendingPipeSlots = takePendingPipeSlotsForNextStep(thread);
+    if (pendingPipeSlots.length > 0) {
+      stepMessage.pipeSlots = pendingPipeSlots;
     }
-    if (thread && (thread.pendingGuestMemoryWrites?.length ?? 0) > 0) {
-      stepMessage.guestMemoryWrites = thread.pendingGuestMemoryWrites.splice(0);
+    const pendingGuestMemoryWrites = takePendingGuestMemoryWritesForNextStep(thread);
+    if (pendingGuestMemoryWrites.length > 0) {
+      stepMessage.guestMemoryWrites = pendingGuestMemoryWrites;
     }
     if (thread && deps.takeThreadWorkerBlockedResume(handle, next)) {
       stepMessage.resumeBlockedSyscall = true;

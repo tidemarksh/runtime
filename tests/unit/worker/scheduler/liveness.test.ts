@@ -25,6 +25,12 @@ import {
   getThreadWaitingInWorkerStatus,
   setThreadOwnerAsyncStatus,
 } from "../../../../src/worker/thread-host-state.js";
+import {
+  appendPendingGuestMemoryWrites,
+  appendPendingPipeSlotsForNextStep,
+  getPendingKernelStateForNextStep,
+  setPendingKernelStateForNextStep,
+} from "../../../../src/worker/thread-step-payload.js";
 import { createTransferDebugStats, createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
@@ -472,8 +478,6 @@ function makeThreadState(vmPtr: number): ThreadWorkerState {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
   };
   clearThreadWaitingInWorkerStatus(thread);
@@ -1157,9 +1161,7 @@ test("scheduler uses pending worker kernel state for one active vfork child step
   const worker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
-  const thread = makeThreadState(0x1234) as ThreadWorkerState & {
-    pendingKernelStateForNextStep?: ProcessHandle["kernelState"];
-  };
+  const thread = makeThreadState(0x1234);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
@@ -1190,7 +1192,7 @@ test("scheduler uses pending worker kernel state for one active vfork child step
     sid: 1,
     inheritedSharedOfdIds: [],
   };
-  thread.pendingKernelStateForNextStep = childKernelState;
+  setPendingKernelStateForNextStep(thread, childKernelState);
 
   const scheduler = createWorkerScheduler({
     appendRuntimeLifecycleEvent: () => {},
@@ -1208,7 +1210,7 @@ test("scheduler uses pending worker kernel state for one active vfork child step
     type: "step",
     kernelState: childKernelState,
   }));
-  expect(thread.pendingKernelStateForNextStep).toBeUndefined();
+  expect(getPendingKernelStateForNextStep(thread)).toBeUndefined();
 });
 
 test("blocked FS retry pumps after clearing owner async status", async () => {
@@ -3860,10 +3862,10 @@ test("pumpProcess preserves a stale unanswered no-ready running worker with pend
   thread.lastStepAtMs = 7_500;
   thread.lastStatusAtMs = 7_000;
   thread.lastStatus = 0;
-  thread.pendingGuestMemoryWrites.push({
+  appendPendingGuestMemoryWrites(thread, [{
     guestPtr: 0x4000,
     bytes: new Uint8Array([1, 2, 3]),
-  });
+  }]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(worker, thread);
   const { exports: kernel } = makeKernel();
@@ -5028,10 +5030,10 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
   } as unknown as Worker;
   const ordinaryThread = makeThreadState(0x1234);
   const continuationThread = makeThreadState(0x5678);
-  continuationThread.pendingPipeSlotsForNextStep.push({
+  appendPendingPipeSlotsForNextStep(continuationThread, [{
     pipeSlot: 1,
     slot: new Uint8Array(16),
-  } as never);
+  } as never]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(ordinaryWorker, ordinaryThread);
   threadWorkerStates.set(continuationWorker, continuationThread);

@@ -11,6 +11,10 @@ import {
   getThreadOwnerAsyncStatus,
   setThreadOwnerAsyncStatus,
 } from "../../../../src/worker/thread-host-state.js";
+import {
+  getPendingKernelStateForNextStep,
+  snapshotPendingGuestMemoryWritesForNextStep,
+} from "../../../../src/worker/thread-step-payload.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 import {
@@ -788,7 +792,6 @@ test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-s
     vmPtr: 0x1234,
     initialized: true,
     waitingInWorkerStatus: null,
-    pendingGuestMemoryWrites: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -816,15 +819,16 @@ test("executeHostBlockedSyscallResume queues pselect fd_set writes after owner-s
 
   await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 21);
 
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(threadState as never);
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([
+  expect(pendingWrites.map((write) => write.guestPtr)).toEqual([
     0x200,
     0x240,
     0x280,
   ]);
-  expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x08, 0, 0, 0, 0, 0, 0, 0]);
-  expect([...threadState.pendingGuestMemoryWrites[1].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
-  expect([...threadState.pendingGuestMemoryWrites[2].bytes]).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
+  expect([...pendingWrites[0].bytes]).toEqual([0x08, 0, 0, 0, 0, 0, 0, 0]);
+  expect([...pendingWrites[1].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
+  expect([...pendingWrites[2].bytes]).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
@@ -899,7 +903,6 @@ test("executeHostBlockedSyscallResume follows supervisor pipe defer action", asy
     vmPtr: 0x1234,
     initialized: true,
     waitingInWorkerStatus: null,
-    pendingGuestMemoryWrites: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1008,7 +1011,6 @@ test("executeHostBlockedSyscallResume follows supervisor pipe direct action", as
     vmPtr: 0x1234,
     initialized: true,
     waitingInWorkerStatus: null,
-    pendingGuestMemoryWrites: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1030,8 +1032,9 @@ test("executeHostBlockedSyscallResume follows supervisor pipe direct action", as
 
   expect(kernel.supervisor_blocked_pipe_resume_action).toHaveBeenCalledWith(0x1234);
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(threadState.pendingGuestMemoryWrites.map((write) => write.guestPtr)).toEqual([Number(readBufferPtr)]);
-  expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x61, 0x62, 0x63]);
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(threadState as never);
+  expect(pendingWrites.map((write) => write.guestPtr)).toEqual([Number(readBufferPtr)]);
+  expect([...pendingWrites[0].bytes]).toEqual([0x61, 0x62, 0x63]);
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
@@ -1109,7 +1112,6 @@ test("executeHostBlockedSyscallResume syncs socket before mixed pipe supervisor 
     vmPtr: 0x1234,
     initialized: true,
     waitingInWorkerStatus: null,
-    pendingGuestMemoryWrites: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1219,7 +1221,6 @@ test("executeHostBlockedSyscallResume queues the full socket read buffer after o
     vmPtr: 0x1234,
     initialized: true,
     waitingInWorkerStatus: null,
-    pendingGuestMemoryWrites: [],
   };
   const threadWorkerStates = new WeakMap<Worker, typeof threadState>();
   threadWorkerStates.set(worker, threadState);
@@ -1247,13 +1248,14 @@ test("executeHostBlockedSyscallResume queues the full socket read buffer after o
 
   await helpers.executeHostBlockedSyscallResume(handle, worker, 0x1234, 29);
 
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(threadState as never);
   expect(threadResumeBlockedSyscall).toHaveBeenCalledWith(0x1234);
-  expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
-  expect(threadState.pendingGuestMemoryWrites[0].guestPtr).toBe(readPtr);
-  expect(threadState.pendingGuestMemoryWrites[0].bytes.length).toBe(readLen);
-  expect(threadState.pendingGuestMemoryWrites[0].bytes[65_535]).toBe(0xff);
-  expect(threadState.pendingGuestMemoryWrites[0].bytes[65_536]).toBe(0x00);
-  expect(threadState.pendingGuestMemoryWrites[0].bytes[readLen - 1]).toBe((readLen - 1) & 0xff);
+  expect(pendingWrites).toHaveLength(1);
+  expect(pendingWrites[0].guestPtr).toBe(readPtr);
+  expect(pendingWrites[0].bytes.length).toBe(readLen);
+  expect(pendingWrites[0].bytes[65_535]).toBe(0xff);
+  expect(pendingWrites[0].bytes[65_536]).toBe(0x00);
+  expect(pendingWrites[0].bytes[readLen - 1]).toBe((readLen - 1) & 0xff);
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
@@ -1554,9 +1556,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   expect(handle.kernelState).toEqual(initialKernelState);
   expect(handle.kernelState).not.toEqual(localChildKernelState);
   expect(threadResumeFs).not.toHaveBeenCalled();
-  expect((threadWorkerStates.get(worker) as ThreadWorkerState & {
-    pendingKernelStateForNextStep?: KernelRuntimeState;
-  }).pendingKernelStateForNextStep).toEqual(childKernelState);
+  expect(getPendingKernelStateForNextStep(threadWorkerStates.get(worker) as ThreadWorkerState)).toEqual(childKernelState);
   expect(kernel.kernel_attach_runtime_state).not.toHaveBeenCalledWith(
     childKernelState.heapBase,
     childKernelState.heapPtr,

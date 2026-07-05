@@ -47,8 +47,6 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> & {
     lastStatusS11: null,
     hotStatusPcs: {},
     initialized: true,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
     ...rest,
   } as ThreadWorkerState;

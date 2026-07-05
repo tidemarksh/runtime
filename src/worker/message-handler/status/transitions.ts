@@ -58,6 +58,7 @@ import {
   setThreadOwnerAsyncStatus,
   setThreadWaitingInWorkerStatus,
 } from "../../thread-host-state.js";
+import { appendPendingPipeSlotsForNextStep } from "../../thread-step-payload.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -518,7 +519,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             refreshPipeControlFromKernelShare(handle);
             const pipeSlotsForNextStep = snapshotProcessPipeSlotsForThreadStep(handle, thread.vmPtr);
             if (pipeSlotsForNextStep.length > 0) {
-              thread.pendingPipeSlotsForNextStep.push(...pipeSlotsForNextStep);
+              appendPendingPipeSlotsForNextStep(thread, pipeSlotsForNextStep);
             }
             if (!workerStillOwnedByHandle()) {
               clearThreadOwnerAsyncStatus(thread);

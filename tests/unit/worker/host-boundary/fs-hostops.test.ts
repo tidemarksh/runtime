@@ -3,6 +3,7 @@ import {
   appendPendingGuestMemoryWrites,
   formatGuestMemoryWriteWatchOverlap,
 } from "../../../../src/worker/guest-memory-writes.js";
+import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../../src/worker/thread-step-payload.js";
 import {
   makeHostBoundaryThread,
 } from "./helpers.js";
@@ -16,7 +17,7 @@ test("fs host boundary queues guest memory writes from supervisor-directed host 
     { guestPtr: 0x3000, bytes: Uint8Array.from([5]) },
   ]);
 
-  expect(thread.pendingGuestMemoryWrites).toEqual([
+  expect(snapshotPendingGuestMemoryWritesForNextStep(thread)).toEqual([
     { guestPtr: 0x1000, bytes: Uint8Array.from([1, 2, 9, 8, 7]) },
     { guestPtr: 0x3000, bytes: Uint8Array.from([5]) },
   ]);

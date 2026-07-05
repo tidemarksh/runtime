@@ -2,7 +2,8 @@ import { expect, test, vi } from "vite-plus/test";
 import { createWorkerKernelRpcBlockedRpcTestHelpers as createWorkerKernelRpcBlockedRpcHelpersBase } from "../../../../src/worker/host-boundary/blocked-rpc-resume.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import { POLLFD_BYTES } from "../../../../src/layout/poll.js";
-import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../../src/worker/thread-step-payload.js";
+import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
 
 function makeKernelState(): KernelRuntimeState {
@@ -133,10 +134,7 @@ function makeHelpers(
   worker: Worker,
   overrides: Partial<Parameters<typeof createWorkerKernelRpcBlockedRpcHelpersBase>[0]> = {},
 ) {
-  const threadState = {
-    pendingGuestMemoryWrites: [],
-    pendingPipeSlotsForNextStep: [],
-  };
+  const threadState = {} as ThreadWorkerState;
   const threadWorkerStates = new WeakMap<Worker, object>();
   threadWorkerStates.set(worker, threadState);
   const deps = {
@@ -232,7 +230,7 @@ test("blocked-rpc follows supervisor pipe direct action and captures read writeb
 
   expect(kernel.supervisor_blocked_pipe_resume_action).toHaveBeenCalledWith(vmPtr);
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
-  expect(threadState.pendingGuestMemoryWrites).toEqual([{
+  expect(snapshotPendingGuestMemoryWritesForNextStep(threadState)).toEqual([{
     guestPtr: Number(readBufferPtr),
     bytes: new Uint8Array([0x61, 0x62, 0x63]),
   }]);
@@ -276,12 +274,13 @@ test("blocked-rpc captures pselect writeback after supervisor pipe direct action
     helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(threadState);
   expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
-  expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
-  expect(threadState.pendingGuestMemoryWrites[0]).toMatchObject({
+  expect(pendingWrites).toHaveLength(1);
+  expect(pendingWrites[0]).toMatchObject({
     guestPtr: Number(readfdsPtr),
   });
-  expect([...threadState.pendingGuestMemoryWrites[0].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
+  expect([...pendingWrites[0].bytes]).toEqual([0x10, 0, 0, 0, 0, 0, 0, 0]);
 });
 
 test("blocked-rpc syncs socket state before mixed pipe supervisor action", async () => {
@@ -381,7 +380,7 @@ test("blocked-rpc socket recv keeps host read writeback and socket sync", async 
     helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_socket_recv()),
   ).resolves.toBeUndefined();
 
-  expect(threadState.pendingGuestMemoryWrites).toEqual([{
+  expect(snapshotPendingGuestMemoryWritesForNextStep(threadState)).toEqual([{
     guestPtr: Number(recvBufferPtr),
     bytes: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
   }]);
@@ -432,9 +431,10 @@ test("blocked-rpc captures ppoll writeback after supervisor pipe direct action",
     helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
   ).resolves.toBeUndefined();
 
-  expect(threadState.pendingGuestMemoryWrites).toHaveLength(1);
-  expect(threadState.pendingGuestMemoryWrites[0]).toMatchObject({
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(threadState);
+  expect(pendingWrites).toHaveLength(1);
+  expect(pendingWrites[0]).toMatchObject({
     guestPtr: Number(pollfdsPtr),
   });
-  expect(threadState.pendingGuestMemoryWrites[0].bytes.byteLength).toBe(2 * POLLFD_BYTES);
+  expect(pendingWrites[0].bytes.byteLength).toBe(2 * POLLFD_BYTES);
 });

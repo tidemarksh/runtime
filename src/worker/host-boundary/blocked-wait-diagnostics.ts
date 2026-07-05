@@ -18,6 +18,7 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
 } from "../thread-host-state.js";
+import { pendingGuestMemoryWritesForNextStepCount } from "../thread-step-payload.js";
 
 export interface BlockedWaitDiagnosticsDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -138,7 +139,7 @@ export function formatRunningRetryBlocker(
   return `runningVm=0x${runningVmPtr.toString(16)}:runningStatus=${runningStatus}`
     + `:runningLast=${runningThread?.lastStatus ?? "null"}:runningWait=${waitingInWorkerStatus ?? "null"}`
     + `:runningSteps=${runningThread === undefined ? "null" : `${runningThread.stepCount}/${runningThread.statusCount}`}`
-    + `:pendingWrites=${runningThread?.pendingGuestMemoryWrites.length ?? "null"}`
+    + `:pendingWrites=${runningThread === undefined ? "null" : pendingGuestMemoryWritesForNextStepCount(runningThread)}`
     + `:lastStepAge=${lastStepAge}:lastStatusAge=${lastStatusAge}`
     + `:proc=0x${processPtr.toString(16)}`
     + `:initialized=${runningThread === undefined ? "null" : runningThread.initialized ? 1 : 0}`

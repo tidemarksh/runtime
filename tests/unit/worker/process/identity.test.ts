@@ -30,8 +30,6 @@ function makeWorkerState(vmPtr: number): ThreadWorkerState {
     initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
     resumeWorkersOnReady: [],
   };
 }
