@@ -1,8 +1,12 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.js";
 import { createWorkerKernelRpcProcessLifecycleHelpers } from "../../../../src/worker/kernel-rpc/process-lifecycle.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -50,6 +54,7 @@ function makeHandle(
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     wasmModule: {} as WebAssembly.Module,
     kernel: {
+      ...makeSupervisorAbiStubs(),
       memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       kernel_attach_runtime_state(
         heapBase: number,
@@ -129,6 +134,10 @@ function makeHandle(
       process_record_child_exit(childPid: number, waitStatus: number) {
         recordedChildExits.push([childPid, waitStatus]);
       },
+      process_child_ppid: () => 1,
+      process_child_pgid: () => 1,
+      process_child_sid: () => 1,
+      process_next_pid: () => 8,
     } as unknown as KernelExports,
     kernelState: baseState,
     stdinPipe: 0,
@@ -147,24 +156,12 @@ function makeHandle(
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "test",
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
@@ -175,11 +172,13 @@ function makeHandle(
     recordedChildExits: Array<[number, number]>;
     publishedStates: KernelRuntimeState[];
   };
-  handle.kernelShare.members.add(handle);
+  seedProcessKernelWorkerRequestFixture(handle);
+  setProcessDebugCommand(handle, "test");
+  addKernelShareMember(handle);
   return handle;
 }
 
-test("recordChildExitViaKernelWorker syncs parent pipe state and drains output before parent wake", async () => {
+test("recordChildExitViaKernelWorker returns parent wake effects after draining output", async () => {
   const order: string[] = [];
   const baseState = makeKernelState();
   const syncedState = {
@@ -207,9 +206,8 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult() {},
-    kickBlockedWorkers(parent) {
-      order.push(`kick:${parent.pid}`);
+    notifyHostEffectProgress(parent) {
+      order.push(`progress:${parent.pid}`);
     },
     requestPipeStateSync: async (parent, wakeWaiters = false) => {
       order.push(`pipe-sync:${parent.pid}:${wakeWaiters ? "wake" : "sync"}`);
@@ -223,11 +221,10 @@ test("recordChildExitViaKernelWorker syncs parent pipe state and drains output b
   expect(order).toEqual([
     "drain:1",
     "drain:1",
+    "pipe-sync:1:wake",
+    "progress:1",
   ]);
-  expect(outcome.effects).toEqual([
-    { kind: "request-pipe-state-sync", wakeWaiters: true },
-    { kind: "kick-blocked-workers" },
-  ]);
+  expect(outcome.effects).toBeUndefined();
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
   expect(originalKernelState.heapPtr).toBe(baseState.heapPtr);
@@ -280,8 +277,7 @@ test("syncProcessLifecycleViaKernelWorker rewrites provisional child pid after s
     failProcess(errorHandle, error) {
       throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
     },
-    handleBlockedRetryResult() {},
-    kickBlockedWorkers() {},
+    notifyHostEffectProgress() {},
     requestPipeStateSync: async () => {},
     clearVforkSnapshot() {},
   });

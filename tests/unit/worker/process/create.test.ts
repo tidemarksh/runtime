@@ -1,4 +1,11 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { readPublishedKernelRuntimeState } from "../../../../src/bridge/runtime-state.js";
 import {
@@ -7,9 +14,15 @@ import {
   readResidentFileData,
 } from "../../../../src/fs/sab-page-cache.js";
 import { createWorkerProcessFactory } from "../../../../src/worker/create-process.js";
+import { guestWriteWatchRegions } from "../../../../src/worker/guest-write-watch-state.js";
 import { destroyWorkerPool } from "../../../../src/worker/pool.js";
+import {
+  processDebugCommand,
+  setProcessDebugCommand,
+} from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { AutoPreparedFakeWorker } from "../../../support/fake-worker.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -102,6 +115,7 @@ function makeFakeProcessKernel(memory: WebAssembly.Memory): FakeProcessKernel {
     return ino;
   };
   return {
+    ...makeSupervisorAbiStubs(),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_max_fds: () => 64,
@@ -302,7 +316,7 @@ function makeParentHandle(): ProcessHandle {
     process_current_pgid: () => 77,
     process_current_sid: () => 88,
   } as unknown as ProcessHandle["kernel"];
-  return {
+  const handle = {
     runtimeId: 7,
     pid: 1,
     parentPid: null,
@@ -321,28 +335,18 @@ function makeParentHandle(): ProcessHandle {
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "parent",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "parent");
+  return handle;
 }
 
 beforeEach(() => {
@@ -395,19 +399,19 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
   expect(fakeKernel.envPtrs.map((ptr) => readCString(kernelMemory, ptr))).toEqual(["KEY=VALUE", "LANG=C"]);
   expect(fakeKernel.processUsePipeStdio).toHaveBeenCalledWith(0x1234);
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 1);
-  expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "full" });
+  expect(registerProcessWithKernelWorker).not.toHaveBeenCalled();
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
-  expect(handle.stdinPipe).toBe(1);
-  expect(handle.stdoutPipe).toBe(2);
-  expect(handle.stderrPipe).toBe(3);
-  expect(handle.hostStdio).toMatchObject({
+  expect(processStdinPipe(handle)).toBe(1);
+  expect(processStdoutPipe(handle)).toBe(2);
+  expect(processStderrPipe(handle)).toBe(3);
+  expect(processHostStdio(handle)).toMatchObject({
     stdinPipe: 1,
     stdoutPipe: 2,
     stderrPipe: 3,
     refCount: 1,
   });
-  expect(handle.kernelShare.members.has(handle)).toBe(true);
-  expect(handle.debugCommand).toBe("/bin/test");
+  expect(kernelShareMembers(handle).has(handle)).toBe(true);
+  expect(processDebugCommand(handle)).toBe("/bin/test");
   expect(processHandles.size).toBe(0);
   expect(attachThreadWorker).toHaveBeenCalledWith(handle, {
     worker: handle.worker,
@@ -451,7 +455,7 @@ test("createProcess configures debug guest write watch before attaching the work
     },
   );
 
-  expect(handle.guestWriteWatchRegions).toEqual([
+  expect(guestWriteWatchRegions(handle)).toEqual([
     { slot: 0, start: 0x1000, end: 0x1020 },
     { slot: 1, start: 0x2000, end: 0x2010 },
   ]);
@@ -677,9 +681,9 @@ test("createProcess delegates cwd resolution and lifecycle seeding for runtime-o
   expect(registerProcessWithKernelWorker).toHaveBeenCalledWith(handle, { seedMemfsMode: "none" });
   expect(fakeKernel.processSetCwdIno).toHaveBeenCalledWith(0x1234, 33);
   expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "create-process");
-  expect(handle.stdinPipe).toBe(1);
-  expect(handle.stdoutPipe).toBe(2);
-  expect(handle.stderrPipe).toBe(3);
+  expect(processStdinPipe(handle)).toBe(1);
+  expect(processStdoutPipe(handle)).toBe(2);
+  expect(processStderrPipe(handle)).toBe(3);
   expect(initializeProcessLifecycleViaKernelWorker).toHaveBeenCalledWith(
     handle,
     0x1234,

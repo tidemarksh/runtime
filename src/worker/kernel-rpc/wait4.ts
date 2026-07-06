@@ -1,3 +1,5 @@
+import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
@@ -5,10 +7,14 @@ import {
 import {
   adoptKernelStateForHandle,
 } from "../kernel-state.js";
+import { publishKernelRuntimeState } from "../../bridge/runtime-state.js";
+import { supervisorWait4RpcLocalStatusAction } from "../../supervisor-blocked-resume.js";
+import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
-import { completedKernelRpcOutcome, type KernelRpcResumeEffect, type KernelRpcResumeOutcome } from "./outcomes.js";
+import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
+import { finishBlockedRpc } from "../host-blocked-state.js";
 
 export function createWorkerKernelRpcWait4Helpers(
   deps: WorkerKernelRpcLifecycleDeps,
@@ -18,44 +24,40 @@ export function createWorkerKernelRpcWait4Helpers(
     worker: Worker,
     vmPtr: number,
   ): Promise<KernelRpcResumeOutcome> {
-    const effects: KernelRpcResumeEffect[] = [];
-    if (!handle.kernelWorkerRequest || handle.pid <= 0) {
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
-    }
+    const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeWait4ViaKernelWorker");
 
     try {
       const localStatus = handle.kernel.thread_status(vmPtr);
-      if (localStatus !== handle.kernel.abi_status_wait4()) {
-        const blocked = handle.blockedWorkers.get(worker);
+      if (supervisorWait4RpcLocalStatusAction(handle.kernel, localStatus) !== "start") {
+        const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
-          blocked.rpcPending = false;
+          finishBlockedRpc(blocked, null);
         }
         deps.appendWorkerDebugLog(
           handle,
           `wait4-rpc-skip:0x${vmPtr.toString(16)}:local=${localStatus}`,
         );
-        effects.push({ kind: "handle-blocked-retry-result", status: localStatus });
-        return completedKernelRpcOutcome(localStatus, effects);
+        return completedKernelRpcOutcome(localStatus);
       }
       deps.appendWorkerDebugLog(
         handle,
         `wait4-rpc-start:0x${vmPtr.toString(16)}:local=${localStatus}`,
       );
-      const response = expectKernelWorkerResponse(await handle.kernelWorkerRequest({
+      const response = expectKernelWorkerResponse(await kernelWorkerRequest({
         type: "resume-wait4",
         pid: handle.pid,
         vmPtr,
         kernelState: handle.kernelState,
       }), "wait4-resumed", "resume-wait4");
 
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (!blocked || blocked.vmPtr !== vmPtr) {
-        return { kind: "stale", effects };
+        return { kind: "stale" };
       }
-      blocked.rpcPending = false;
+      finishBlockedRpc(blocked, null);
 
-      if (!handle.workers.has(worker) || !deps.threadWorkerStates.has(worker)) {
-        return { kind: "process-gone", effects };
+      if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
+        return { kind: "process-gone" };
       }
 
       handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
@@ -66,28 +68,25 @@ export function createWorkerKernelRpcWait4Helpers(
       );
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      effects.push(
-        { kind: "publish-runtime-kernel-state" },
-        { kind: "request-pipe-state-sync", wakeWaiters: true },
-        { kind: "settle-visible-process-output" },
-      );
+      publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+      await deps.requestPipeStateSync(handle, true);
+      await deps.settleVisibleProcessOutput(handle, deps.requestPipeStateSync);
       deps.appendWorkerDebugLog(
         handle,
         `wait4-rpc-post-sync:0x${vmPtr.toString(16)}:local=${handle.kernel.thread_status(vmPtr)}`,
       );
 
       const status = handle.kernel.thread_status(vmPtr);
-      effects.push({ kind: "handle-blocked-retry-result", status });
-      return completedKernelRpcOutcome(status, effects);
+      return completedKernelRpcOutcome(status);
     } catch (error) {
-      const blocked = handle.blockedWorkers.get(worker);
+      const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (blocked && blocked.vmPtr === vmPtr) {
-        blocked.rpcPending = false;
+        finishBlockedRpc(blocked, null);
       }
-      if (handle.workers.has(worker) && deps.threadWorkerStates.has(worker)) {
+      if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
-      return { kind: "process-gone", effects };
+      return { kind: "process-gone" };
     }
   }
 

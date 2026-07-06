@@ -45,6 +45,18 @@ import {
   readOpfsBackingSourceRange,
   type OpfsBackingFileHandle,
 } from "./kernel-worker/opfs-backing-source.js";
+import {
+  clearGuestWriteWatchRegions,
+  guestWriteWatchRegions,
+  setGuestWriteWatchRegions,
+} from "./worker/guest-write-watch-state.js";
+import {
+  setProcessOnError,
+  setProcessOnExit,
+  setProcessOnStdout,
+} from "./worker/process-callback-state.js";
+import { processLastDebugMessage } from "./worker/process-debug-state.js";
+import { outputBacklog } from "./worker/stdio-buffer-state.js";
 
 export interface RuntimeOptions {
   wasmBytes: BufferSource;
@@ -400,19 +412,19 @@ export class Runtime {
     });
 
     const proc = new Process(pid, handle);
-    handle.onExit = (code) => {
+    setProcessOnExit(handle, (code) => {
       this.processes.delete(pid);
       proc.exitCode = code;
       proc.exited = true;
       proc._onExit?.(code);
-    };
-    handle.onError = (error) => {
+    });
+    setProcessOnError(handle, (error) => {
       this.processes.delete(pid);
       proc.exitCode = 1;
       proc.exited = true;
       proc.fatalError = error;
       proc._onError?.(error);
-    };
+    });
 
     this.processes.set(pid, handle);
     return proc;
@@ -735,11 +747,12 @@ export class Runtime {
     if (!handle) {
       throw new Error(`unknown pid: ${pid}`);
     }
-    handle.onStdout = cb;
-    for (const chunk of handle.outputBacklog) {
+    setProcessOnStdout(handle, cb);
+    const backlog = outputBacklog(handle);
+    for (const chunk of backlog) {
       cb(chunk);
     }
-    handle.outputBacklog.length = 0;
+    backlog.length = 0;
   }
 
   writeStdin(pid: number, data: Uint8Array): void {
@@ -830,11 +843,12 @@ export class Process {
   }
 
   onStdout(cb: (data: Uint8Array) => void): void {
-    this.handle.onStdout = cb;
-    for (const chunk of this.handle.outputBacklog) {
+    setProcessOnStdout(this.handle, cb);
+    const backlog = outputBacklog(this.handle);
+    for (const chunk of backlog) {
       cb(chunk);
     }
-    this.handle.outputBacklog.length = 0;
+    backlog.length = 0;
   }
 
   writeStdin(_data: Uint8Array): void {
@@ -842,13 +856,13 @@ export class Process {
   }
 
   debugInfo(): string | undefined {
-    return this.handle.lastDebugMessage;
+    return processLastDebugMessage(this.handle);
   }
 
   configureGuestWriteWatch(regions: GuestWriteWatchRegion[]): void {
-    this.handle.guestWriteWatchRegions = regions.map((region) => ({ ...region }));
+    setGuestWriteWatchRegions(this.handle, regions);
     this.handle.kernel.debug_clear_guest_write_watch_trace?.();
-    for (const region of this.handle.guestWriteWatchRegions) {
+    for (const region of guestWriteWatchRegions(this.handle)) {
       this.handle.kernel.debug_configure_guest_write_watch?.(
         region.slot,
         toKernelU64(region.start),
@@ -858,7 +872,7 @@ export class Process {
   }
 
   clearGuestWriteWatch(): void {
-    this.handle.guestWriteWatchRegions = [];
+    clearGuestWriteWatchRegions(this.handle);
     this.handle.kernel.debug_clear_guest_write_watch_trace?.();
   }
 

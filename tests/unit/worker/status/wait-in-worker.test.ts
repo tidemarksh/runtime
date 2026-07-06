@@ -1,13 +1,45 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
-import { createWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/wait-in-worker.js";
+import { createWorkerWaitInWorkerStatusHandler as createRawWorkerWaitInWorkerStatusHandler } from "../../../../src/worker/message-handler/status/wait-in-worker.js";
+import {
+  getThreadRunningGeneration,
+  getThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
+  setThreadRunningGeneration,
+} from "../../../../src/worker/thread-host-state.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+
+function createWorkerWaitInWorkerStatusHandler(
+  deps: Parameters<typeof createRawWorkerWaitInWorkerStatusHandler>[0],
+): ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler> {
+  const handler = createRawWorkerWaitInWorkerStatusHandler(deps);
+  return ((...args: Parameters<ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler>>) => {
+    seedProcessKernelWorkerRequestFixture(args[0]);
+    seedProcessHandleStateFixture(args[0]);
+    return handler(...args);
+  }) as ReturnType<typeof createRawWorkerWaitInWorkerStatusHandler>;
+}
 
 test("waitInWorker debug log keeps compact futex fields", () => {
   const appendWorkerDebugLog = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
+  const parkSupervisorFutexWait = vi.fn();
+  const pumpProcess = vi.fn();
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  const thread = { vmPtr: 0x1234, initialized: true, waitingInWorkerStatus: null } as {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+  };
   const handler = createWorkerWaitInWorkerStatusHandler({
     appendWorkerDebugLog,
     clearBlockedWorker: () => {},
-    pumpProcess: () => {},
+    notifyWorkerStatusProgress,
+    parkSupervisorFutexWait,
+    pumpProcess,
     blockWorker: () => {},
     failProcess: () => {},
     requestEpollStateSync: async () => {},
@@ -25,13 +57,23 @@ test("waitInWorker debug log keeps compact futex fields", () => {
         stderrPipe: 0,
         refCount: 1,
       },
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+      memory,
       outputBacklog: [],
       kernel: {
+        ...makeSupervisorAbiStubs(),
+        abi_status_futex_wait: () => 20,
         abi_status_epoll_wait: () => 22,
         abi_status_pipe_wait: () => 21,
         abi_status_socket_recv: () => 23,
         abi_status_socket_send: () => 24,
+        supervisor_blocked_status_is_epoll_wait: (status: number) => status === 22 ? 1 : 0,
+        supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
+        supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
+        supervisor_blocked_status_is_socket_wait: (status: number) =>
+          status === 23 || status === 24 ? 1 : 0,
+        kernel_heap_ptr: () => 0,
+        supervisor_host_op_record_bytes: () => 64,
+        supervisor_next_host_op: () => 0,
       },
       kernelState: {
         heapBase: 0,
@@ -58,7 +100,7 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       onStdout: null,
     } as never,
     {} as Worker,
-    { vmPtr: 0x1234, initialized: true, waitingInWorkerStatus: null } as never,
+    thread as never,
     {
       type: "status",
       status: 20,
@@ -153,6 +195,15 @@ test("waitInWorker debug log keeps compact futex fields", () => {
       "thread-futex-wait:stage=entry:vm=0x1234:addr=0x37d61c40",
     ),
   );
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
+  expect(parkSupervisorFutexWait).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
+    0x1234,
+    "wait-in-worker-futex-supervisor-owned",
+  );
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(expect.anything());
+  expect(pumpProcess).toHaveBeenCalledWith(expect.anything());
 });
 
 test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", async () => {
@@ -194,6 +245,7 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
   const handler = createWorkerWaitInWorkerStatusHandler({
     appendWorkerDebugLog: () => {},
     clearBlockedWorker: () => {},
+    notifyWorkerStatusProgress: () => {},
     pumpProcess: () => {},
     blockWorker: () => {},
     failProcess: () => {},
@@ -217,10 +269,17 @@ test("waitInWorker defers local pipe drain when kernel-worker owns pipe state", 
       outputBacklog: [],
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernel: {
+        ...makeSupervisorAbiStubs(),
+        abi_status_futex_wait: () => 25,
         abi_status_epoll_wait: () => 22,
         abi_status_pipe_wait: () => 21,
         abi_status_socket_recv: () => 23,
         abi_status_socket_send: () => 24,
+        supervisor_blocked_status_is_epoll_wait: (status: number) => status === 22 ? 1 : 0,
+        supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
+        supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
+        supervisor_blocked_status_is_socket_wait: (status: number) =>
+          status === 23 || status === 24 ? 1 : 0,
       },
       kernelState,
       runtimeBridge: {
@@ -260,20 +319,20 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     ownerPid: 17,
     initialized: true,
     waitingInWorkerStatus: null as number | null,
-    waitingInWorkerReconcileDeferred: false,
-    runningGeneration: 12 as number | null,
   };
+  setThreadRunningGeneration(thread as never, 12);
   const threadWorkerStates = new WeakMap<Worker, typeof thread>();
   threadWorkerStates.set(worker, thread);
+  setThreadHostIdentity(thread as never, 17, 9);
   const blockWorker = vi.fn();
   const requestPipeStateSync = vi.fn(async () => {});
-  const kickBlockedWorkers = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
   const pumpProcess = vi.fn();
   const handler = createWorkerWaitInWorkerStatusHandler({
     appendWorkerDebugLog: () => {},
     clearBlockedWorker: () => {},
     pumpProcess,
-    kickBlockedWorkers,
+    notifyWorkerStatusProgress,
     blockWorker,
     failProcess: () => {},
     requestEpollStateSync: async () => {},
@@ -314,11 +373,18 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     workers: new Set([worker]),
     kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
     kernel: {
+      ...makeSupervisorAbiStubs(),
+      abi_status_futex_wait: () => 25,
       abi_status_epoll_wait: () => 22,
       abi_status_pipe_wait: () => 21,
       abi_status_socket_recv: () => 23,
       abi_status_socket_send: () => 24,
       abi_status_wait4: () => 20,
+      supervisor_blocked_status_is_epoll_wait: (status: number) => status === 22 ? 1 : 0,
+      supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
+      supervisor_blocked_status_is_wait4: (status: number) => status === 20 ? 1 : 0,
+      supervisor_blocked_status_is_socket_wait: (status: number) =>
+        status === 23 || status === 24 ? 1 : 0,
     },
     kernelState,
     runtimeBridge: {
@@ -326,10 +392,8 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
       stateSab: new SharedArrayBuffer(176),
     },
     onStdout: null,
-    runningWorker: worker,
-    vforkSnapshot: null,
-    vforkWorker: null,
   } as never;
+  hostExecutionState(handle).runningWorker = worker;
 
   handler(
     handle,
@@ -349,126 +413,14 @@ test("waitInWorker WAIT4 routes to owner-side blocked scheduling with kernel-wor
     true,
   );
 
-  expect(handle.runningWorker).toBeNull();
-  expect(thread.runningGeneration).toBeNull();
-  expect(thread.waitingInWorkerStatus).toBeNull();
-  expect(thread.waitingInWorkerReconcileDeferred).toBe(false);
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(getThreadRunningGeneration(thread)).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(blockWorker).toHaveBeenCalledWith(handle, worker, 20, 0x4321);
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
 
   await Promise.resolve();
   await Promise.resolve();
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
-  expect(pumpProcess).toHaveBeenCalledWith(handle);
-});
-
-test("waitInWorker clears a running worker that is already parked in worker-local wait", () => {
-  const runningWorker = {} as Worker;
-  const waitingWorker = {} as Worker;
-  const threadWorkerStates = new WeakMap<Worker, {
-    vmPtr: number;
-    initialized: boolean;
-    waitingInWorkerStatus: number | null;
-    runningGeneration?: number | null;
-  }>();
-  const runningThread = {
-    vmPtr: 0x1111,
-    initialized: true,
-    waitingInWorkerStatus: 20,
-    runningGeneration: 7,
-  };
-  const waitingThread = {
-    vmPtr: 0x2222,
-    initialized: true,
-    waitingInWorkerStatus: null,
-    runningGeneration: null,
-  };
-  threadWorkerStates.set(runningWorker, runningThread);
-  threadWorkerStates.set(waitingWorker, waitingThread);
-  const appendWorkerDebugLog = vi.fn();
-  const pumpProcess = vi.fn();
-  const handler = createWorkerWaitInWorkerStatusHandler({
-    appendWorkerDebugLog,
-    clearBlockedWorker: () => {},
-    pumpProcess,
-    kickBlockedWorkers: () => {},
-    blockWorker: () => {},
-    failProcess: () => {},
-    requestEpollStateSync: async () => {},
-    requestPipeStateSync: async () => {},
-    requestSocketStateSync: async () => {},
-    threadWorkerStates,
-  } as never);
-
-  const handle = {
-    stdoutPipe: 0,
-    stderrPipe: 0,
-    hostStdio: {
-      stdinPipe: 0,
-      stdoutPipe: 0,
-      stderrPipe: 0,
-      refCount: 1,
-    },
-    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
-    outputBacklog: [],
-    kernel: {
-      abi_status_epoll_wait: () => 22,
-      abi_status_pipe_wait: () => 21,
-      abi_status_socket_recv: () => 23,
-      abi_status_socket_send: () => 24,
-    },
-    kernelState: {
-      heapBase: 0,
-      heapPtr: 0,
-      ofdTablePtr: 0,
-      memfsPtr: 0,
-      memStatePtr: 0,
-      epollTablePtr: 0,
-      socketTablePtr: 0,
-      socketUsed: 0,
-      pipeBase: 0,
-      pipeUsed: 0n,
-      netBufBase: 0,
-      netBufUsed: 0n,
-      sigSlotsPtr: 0,
-      processPendingPtr: 0,
-      processRuntimeStatePtr: 0,
-      timeStatePtr: 0,
-    },
-    runtimeBridge: {
-      notifySab: new SharedArrayBuffer(12),
-      stateSab: new SharedArrayBuffer(176),
-    },
-    onStdout: null,
-    runningWorker,
-    vforkSnapshot: null,
-    vforkWorker: null,
-  } as never;
-
-  handler(
-    handle,
-    waitingWorker,
-    waitingThread as never,
-    {
-      type: "status",
-      status: 20,
-      vmPtr: 0x2222,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      kernelState: handle.kernelState,
-      waitInWorker: true,
-      debug: "",
-    },
-    false,
-  );
-
-  expect(handle.runningWorker).toBeNull();
-  expect(runningThread.runningGeneration).toBeNull();
-  expect(waitingThread.waitingInWorkerStatus).toBe(20);
-  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
-    handle,
-    "running-worker-cleared:wait-in-worker:0x1111",
-  );
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(pumpProcess).toHaveBeenCalledWith(handle);
 });

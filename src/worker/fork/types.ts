@@ -21,12 +21,7 @@ export interface WorkerForkDeps {
     sid: number,
     flushSharedMappings: boolean,
   ): Promise<void>;
-  kickBlockedWorkers(handle: ProcessHandle): void;
-  recordChildExitViaKernelWorker(
-    parent: ProcessHandle,
-    childPid: number,
-    waitStatus: number,
-  ): Promise<void>;
+  notifyForkProgress(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(
     targets: ProcessHandle[],
@@ -42,11 +37,11 @@ export interface WorkerForkDeps {
     vmPtr: number,
     childPid: number,
   ): Promise<KernelRpcResumeOutcome>;
-  syncForkSharedStateLocally(
+  rollbackVforkExecveHandoffViaKernelWorker(
     handle: ProcessHandle,
-    targets: ProcessHandle[],
-    options: { cause: SyncCause; includeMemfs?: boolean; trackHeldOfds?: boolean; ofdIds?: number[] },
-  ): void;
+    vmPtr: number,
+    childPid: number,
+  ): Promise<KernelRpcResumeOutcome>;
   syncForkSharedStateViaKernelWorker(
     handle: ProcessHandle,
     targets: ProcessHandle[],

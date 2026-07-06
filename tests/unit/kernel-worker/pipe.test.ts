@@ -1,10 +1,28 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate shared-state bridge behavior during supervisor migration.
 import { expect, test } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";
 import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
 
 const FD_TYPE_PIPE = 6;
+const PIPE_SLOT_MODE_READ = 1;
+const PIPE_SLOT_MODE_WRITE = 2;
+const PIPE_SLOT_MODE_CONTROL = 4;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE = 1;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP = 2;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY = 3;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS = 4;
+const PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL = 5;
+const PIPE_SLOT_SNAPSHOT_ACTION_SKIP = 1;
+const PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT = 2;
+const PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL = 4;
+const PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE = 8;
+const PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE = 16;
+const PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO = 32;
+const PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL = 64;
+const PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA = 128;
+const PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION = 256;
+const PIPE_SLOT_SNAPSHOT_ACTION_STOP = 512;
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_BYTES = 32 + PIPE_BUF_SIZE;
 
@@ -44,12 +62,327 @@ function pipeSlotBase(state: KernelRuntimeState, pipeSlot: number): number {
   return state.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
 }
 
+function pipeCounterAhead(sourceValue: number, targetValue: number): boolean {
+  return sourceValue > targetValue
+    || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
+}
+
+function pipeGenerationAhead(sourceValue: number, targetValue: number): boolean {
+  return targetValue === 0
+    || sourceValue > targetValue
+    || (sourceValue < targetValue && targetValue > 0x80000000 && sourceValue < 0x80000000);
+}
+
+function pipeSlotSnapshotMergeAction(
+  context: number,
+  mode: number,
+  freshFlag: number,
+  sourceHead: number,
+  sourceTail: number,
+  sourceReadOpen: number,
+  sourceWriteOpen: number,
+  sourceGeneration: number,
+  targetHeadInput: number,
+  targetTailInput: number,
+  targetReadOpen: number,
+  targetWriteOpen: number,
+  targetGeneration: number,
+): number {
+  const readMode = (mode & PIPE_SLOT_MODE_READ) !== 0;
+  const writeMode = (mode & PIPE_SLOT_MODE_WRITE) !== 0;
+  const controlMode = (mode & PIPE_SLOT_MODE_CONTROL) !== 0;
+  const fresh = freshFlag !== 0;
+  const sharedState = context === PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE;
+  const threadStep = context === PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP;
+  const kernelWorkerApply = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY;
+  const kernelWorkerProcess = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS;
+  const kernelWorkerCanonical = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL;
+  const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
+  let targetHead = targetHeadInput;
+  let targetTail = targetTailInput;
+
+  if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
+    if (sourceHead === 0 && sourceTail === 0 && !pipeGenerationAhead(sourceGeneration, targetGeneration)) {
+      if (kernelWorkerCanonical) {
+        if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
+          return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+        }
+      } else if (targetHead !== targetTail && !fresh) {
+        return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+      }
+    }
+    let action = PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    if (
+      fresh
+      || pipeGenerationAhead(sourceGeneration, targetGeneration)
+      || (targetReadOpen <= 0 && targetWriteOpen <= 0)
+    ) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    } else if (syncGenerationWithoutApply) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+    }
+    return action;
+  }
+
+  if (
+    (
+      fresh
+      || ((kernelWorkerProcess || kernelWorkerCanonical) && targetReadOpen <= 0 && targetWriteOpen <= 0)
+    )
+    && sourceHead === 0
+    && sourceTail === 0
+    && targetHead === targetTail
+    && sourceReadOpen > 0
+    && sourceWriteOpen > 0
+    && readMode
+    && writeMode
+  ) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
+  if (kernelWorkerProcess && sourceHead === 0 && sourceTail === 0 && (targetHead !== 0 || targetTail !== 0)) {
+    let action = PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+    if (targetReadOpen <= 0 && targetWriteOpen <= 0) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT;
+    }
+    return action;
+  }
+
+  if (
+    kernelWorkerApply
+    && sourceHead === 0
+    && sourceTail === 0
+    && (targetHead !== 0 || targetTail !== 0)
+    && targetReadOpen <= 0
+    && targetWriteOpen <= 0
+  ) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
+  if (
+    (threadStep || kernelWorkerApply)
+    && targetReadOpen <= 0
+    && targetWriteOpen <= 0
+    && targetHead === targetTail
+    && (sourceReadOpen > 0 || sourceWriteOpen > 0)
+    && (writeMode || controlMode)
+  ) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
+  let action = 0;
+  if (controlMode && (sharedState || threadStep || kernelWorkerApply)) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL;
+  }
+  if (
+    readMode
+    && (!writeMode || kernelWorkerProcess)
+    && sourceHead !== 0
+    && sourceHead === sourceTail
+    && targetTail !== sourceTail
+    && pipeCounterAhead(sourceTail, targetTail)
+  ) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE;
+    targetHead = sourceHead;
+    targetTail = sourceTail;
+  }
+  if (
+    writeMode
+    && !readMode
+    && sourceHead === 0
+    && sourceTail !== 0
+    && targetHead !== 0
+    && (targetHead === targetTail || targetTail === 0)
+    && pipeCounterAhead(sourceTail, targetTail)
+  ) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO;
+    targetHead = 0;
+  }
+
+  if (sharedState) {
+    let readHeadAdvanced = false;
+    if (readMode) {
+      if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+        targetHead = sourceHead;
+        readHeadAdvanced = true;
+      }
+      if (pipeCounterAhead(sourceTail, targetTail) || (readHeadAdvanced && sourceHead !== sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+        targetTail = sourceTail;
+      } else if (
+        sourceTail === targetTail
+        && sourceHead !== sourceTail
+        && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+      ) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    if (writeMode) {
+      if (pipeCounterAhead(sourceTail, targetTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      } else if (
+        sourceTail === targetTail
+        && sourceHead !== sourceTail
+        && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+      ) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  }
+
+  if (kernelWorkerProcess) {
+    if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+    }
+    if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+    } else if (writeMode && sourceTail === targetTail && sourceHead !== sourceTail) {
+      action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+    }
+    return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  }
+
+  if (kernelWorkerCanonical) {
+    if (readMode) {
+      if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+        targetHead = sourceHead;
+      }
+      if (pipeCounterAhead(sourceTail, targetTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    if (writeMode) {
+      let repairedHead = false;
+      if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+        repairedHead = true;
+      }
+      if (pipeCounterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+        action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+      }
+    }
+    return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+  }
+
+  if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE;
+  }
+  if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE | PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA;
+  } else if (
+    writeMode
+    && sourceTail === targetTail
+    && sourceHead !== sourceTail
+    && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+  ) {
+    action |= PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL;
+  }
+  return action | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
+}
+
 function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
   let runtimeState = makeKernelState();
   let stdinPipeSlot = 0;
   let stdoutPipeSlot = 0;
   let stderrPipeSlot = 0;
   let fdMap = new Map<number, number>();
+
+  const validPipeSlot = (pipeSlot: number): boolean => pipeSlot > 0 && pipeSlot < 64;
+  const pipeBit = (pipeSlot: number): bigint => validPipeSlot(pipeSlot) ? 1n << BigInt(pipeSlot) : 0n;
+  const privatePipeSlotMask = (): bigint => (
+    pipeBit(stdinPipeSlot) | pipeBit(stdoutPipeSlot) | pipeBit(stderrPipeSlot)
+  );
+  const heldOfdRefcount = (ofdId: number): number => {
+    let refcount = 0;
+    for (const heldOfdId of fdMap.values()) {
+      if (heldOfdId === ofdId) {
+        refcount += 1;
+      }
+    }
+    return refcount;
+  };
+  const pipeModeForOfd = (ofdId: number): { pipeSlot: number; mode: number } | null => {
+    if (ofdId <= 0 || ofdId >= 256) {
+      return null;
+    }
+    const view = new DataView(memory.buffer);
+    const ofdBase = runtimeState.ofdTablePtr + ofdId * 32;
+    if (view.getInt32(ofdBase, true) !== FD_TYPE_PIPE) {
+      return null;
+    }
+    const pipeSlot = view.getUint32(ofdBase + 24, true);
+    if (!validPipeSlot(pipeSlot)) {
+      return null;
+    }
+    return {
+      pipeSlot,
+      mode: view.getInt32(ofdBase + 4, true) >= 0 ? PIPE_SLOT_MODE_READ : PIPE_SLOT_MODE_WRITE,
+    };
+  };
+  const heldPipeSlotMask = (): bigint => {
+    const privateMask = privatePipeSlotMask();
+    let mask = 0n;
+    for (const ofdId of new Set(fdMap.values())) {
+      const mode = pipeModeForOfd(ofdId);
+      if (!mode) {
+        continue;
+      }
+      const bit = pipeBit(mode.pipeSlot);
+      if (bit !== 0n && (privateMask & bit) === 0n) {
+        mask |= bit;
+      }
+    }
+    return mask;
+  };
+  const pipeSlotMode = (pipeSlot: number): number => {
+    if ((privatePipeSlotMask() & pipeBit(pipeSlot)) !== 0n) {
+      return 0;
+    }
+    let mode = 0;
+    for (const ofdId of new Set(fdMap.values())) {
+      const ofdPipeMode = pipeModeForOfd(ofdId);
+      if (ofdPipeMode?.pipeSlot === pipeSlot) {
+        mode |= ofdPipeMode.mode;
+      }
+    }
+    return mode;
+  };
+  const pipeOpenCount = (pipeSlot: number, requestedMode: number): number => {
+    if (!validPipeSlot(pipeSlot)) {
+      return 0;
+    }
+    let count = 0;
+    if (stdinPipeSlot === pipeSlot && (requestedMode & PIPE_SLOT_MODE_WRITE) !== 0) {
+      count += 1;
+    }
+    if (stdoutPipeSlot === pipeSlot && (requestedMode & PIPE_SLOT_MODE_READ) !== 0) {
+      count += 1;
+    }
+    if (stderrPipeSlot === pipeSlot && (requestedMode & PIPE_SLOT_MODE_READ) !== 0) {
+      count += 1;
+    }
+    for (const ofdId of new Set(fdMap.values())) {
+      const ofdPipeMode = pipeModeForOfd(ofdId);
+      if (
+        ofdPipeMode?.pipeSlot === pipeSlot
+        && (ofdPipeMode.mode & requestedMode) !== 0
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  };
 
   const exports = {
     memory,
@@ -131,6 +464,13 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     },
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
     process_fd_flags: () => 0,
+    supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
+    },
     process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, _fdFlags: number) => {
       if (ofdId === 0) {
         fdMap.delete(fd);
@@ -147,6 +487,86 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
       stdinPipeSlot = 0;
       stdoutPipeSlot = 0;
       stderrPipeSlot = 0;
+    },
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => heldOfdRefcount(ofdId),
+    supervisor_process_private_pipe_slot_mask: () => privatePipeSlotMask(),
+    supervisor_process_private_pipe_source_mode: (_vmPtr: number, pipeSlot: number) => (
+      (privatePipeSlotMask() & pipeBit(pipeSlot)) !== 0n
+        ? PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE
+        : 0
+    ),
+    supervisor_process_private_pipe_target_mode: (_vmPtr: number, pipeSlot: number) => (
+      (privatePipeSlotMask() & pipeBit(pipeSlot)) !== 0n ? PIPE_SLOT_MODE_READ : 0
+    ),
+    supervisor_process_held_pipe_slot_mask: () => heldPipeSlotMask(),
+    supervisor_process_pipe_used_mask: () => 1n | privatePipeSlotMask() | heldPipeSlotMask(),
+    supervisor_process_pipe_slot_mode: (_vmPtr: number, pipeSlot: number) => pipeSlotMode(pipeSlot),
+    supervisor_process_pipe_read_open_count: (_vmPtr: number, pipeSlot: number) => (
+      pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_READ)
+    ),
+    supervisor_process_pipe_write_open_count: (_vmPtr: number, pipeSlot: number) => (
+      pipeOpenCount(pipeSlot, PIPE_SLOT_MODE_WRITE)
+    ),
+    supervisor_pipe_reconcile_control: (pipeSlot: number, readOpen: number, writeOpen: number) => {
+      if (!validPipeSlot(pipeSlot) || readOpen < 0 || writeOpen < 0) {
+        return 0;
+      }
+      const slotBase = pipeSlotBase(runtimeState, pipeSlot);
+      const view = new DataView(memory.buffer);
+      view.setInt32(slotBase + 8, Math.trunc(readOpen), true);
+      view.setInt32(slotBase + 12, Math.trunc(writeOpen), true);
+      return 1;
+    },
+    supervisor_pipe_slot_mode_read: () => PIPE_SLOT_MODE_READ,
+    supervisor_pipe_slot_mode_write: () => PIPE_SLOT_MODE_WRITE,
+    supervisor_pipe_slot_mode_control: () => PIPE_SLOT_MODE_CONTROL,
+    supervisor_pipe_slot_snapshot_context_shared_state: () => PIPE_SLOT_SNAPSHOT_CONTEXT_SHARED_STATE,
+    supervisor_pipe_slot_snapshot_context_thread_step: () => PIPE_SLOT_SNAPSHOT_CONTEXT_THREAD_STEP,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_apply: () => PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_process: () => PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_canonical: () =>
+      PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL,
+    supervisor_pipe_slot_snapshot_action_skip: () => PIPE_SLOT_SNAPSHOT_ACTION_SKIP,
+    supervisor_pipe_slot_snapshot_action_apply_slot: () => PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT,
+    supervisor_pipe_slot_snapshot_action_apply_control: () => PIPE_SLOT_SNAPSHOT_ACTION_APPLY_CONTROL,
+    supervisor_pipe_slot_snapshot_action_set_head_to_source: () => PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_TO_SOURCE,
+    supervisor_pipe_slot_snapshot_action_set_tail_to_source: () => PIPE_SLOT_SNAPSHOT_ACTION_SET_TAIL_TO_SOURCE,
+    supervisor_pipe_slot_snapshot_action_set_head_zero: () => PIPE_SLOT_SNAPSHOT_ACTION_SET_HEAD_ZERO,
+    supervisor_pipe_slot_snapshot_action_copy_full: () => PIPE_SLOT_SNAPSHOT_ACTION_COPY_FULL,
+    supervisor_pipe_slot_snapshot_action_copy_tail_delta: () => PIPE_SLOT_SNAPSHOT_ACTION_COPY_TAIL_DELTA,
+    supervisor_pipe_slot_snapshot_action_sync_generation: () => PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION,
+    supervisor_pipe_slot_snapshot_action_stop: () => PIPE_SLOT_SNAPSHOT_ACTION_STOP,
+    supervisor_pipe_slot_snapshot_merge_action: pipeSlotSnapshotMergeAction,
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_ofd_status_flags(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_status_flags(ofdId) : 0;
+    },
+    supervisor_ofd_ino(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_ino(ofdId) : 0;
+    },
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
+    supervisor_ofd_reconcile_refcount(this: KernelExports, ofdId: number, expectedRefcount: number) {
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      const currentRefcount = this.kernel_ofd_refcount(ofdId);
+      const expected = Math.trunc(expectedRefcount);
+      if (expected < 0) {
+        return currentRefcount;
+      }
+      new DataView(memory.buffer).setInt32(
+        runtimeState.ofdTablePtr + ofdId * 32 + 16,
+        expected,
+        true,
+      );
+      return expected;
     },
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
@@ -312,6 +732,109 @@ function makeSharedStateSync(
     restoreProcSelfExe: () => {},
   });
 }
+
+function installSupervisorPipeAuthority(
+  exports: TestKernelExports,
+  options: {
+    usedMask: bigint;
+    heldMask: bigint;
+    modes: Map<number, number>;
+    readOpen: Map<number, number>;
+    writeOpen: Map<number, number>;
+  },
+): void {
+  exports.supervisor_process_private_pipe_slot_mask = () => 0n;
+  exports.supervisor_process_private_pipe_source_mode = () => 0;
+  exports.supervisor_process_private_pipe_target_mode = () => 0;
+  exports.supervisor_process_pipe_used_mask = () => options.usedMask;
+  exports.supervisor_process_held_pipe_slot_mask = () => options.heldMask;
+  exports.supervisor_process_pipe_slot_mode = (_vmPtr: number, pipeSlot: number) => options.modes.get(pipeSlot) ?? 0;
+  exports.supervisor_process_pipe_read_open_count = (_vmPtr: number, pipeSlot: number) => options.readOpen.get(pipeSlot) ?? 0;
+  exports.supervisor_process_pipe_write_open_count = (_vmPtr: number, pipeSlot: number) => options.writeOpen.get(pipeSlot) ?? 0;
+}
+
+test("kernel-worker pipe control recompute uses supervisor process endpoint counts", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const pipeMask = 1n << 6n;
+
+  installSupervisorPipeAuthority(parentExports, {
+    usedMask: 1n | pipeMask,
+    heldMask: pipeMask,
+    modes: new Map([[6, PIPE_SLOT_MODE_READ]]),
+    readOpen: new Map([[6, 1]]),
+    writeOpen: new Map(),
+  });
+  installSupervisorPipeAuthority(childExports, {
+    usedMask: 1n | pipeMask,
+    heldMask: pipeMask,
+    modes: new Map([[6, PIPE_SLOT_MODE_WRITE]]),
+    readOpen: new Map(),
+    writeOpen: new Map([[6, 1]]),
+  });
+
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map<number, KernelExports>([
+      [1, parentExports],
+      [2, childExports],
+    ]),
+    canonicalProcesses: new Map([
+      [1, { ppid: 0 }],
+      [2, { ppid: 0 }],
+    ]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 || pid === 2 ? 0x1234 : 0),
+  });
+
+  const { kernelState, readOpen, writeOpen, managedPipeSlots } =
+    primitives.recomputeCanonicalPipeControlState();
+
+  expect(managedPipeSlots).toContain(6);
+  expect(readOpen[6]).toBe(1);
+  expect(writeOpen[6]).toBe(1);
+  expect((kernelState.pipeUsed & pipeMask) !== 0n).toBe(true);
+});
+
+test("kernel-worker pipe control recompute does not add host stdio over supervisor counts", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const pipeMask = 1n << 4n;
+
+  parentExports.setHostStdioSlots({ stdout: 4 });
+  seedPipeSlot(parentMemory, 4, 0xaa, 1, 1);
+  installSupervisorPipeAuthority(parentExports, {
+    usedMask: 1n | pipeMask,
+    heldMask: pipeMask,
+    modes: new Map(),
+    readOpen: new Map(),
+    writeOpen: new Map(),
+  });
+
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map<number, KernelExports>([
+      [1, parentExports],
+    ]),
+    canonicalProcesses: new Map([
+      [1, { ppid: 0 }],
+    ]),
+    getCanonicalProcessVmPtr: (pid) => (pid === 1 ? 0x1234 : 0),
+  });
+
+  const { kernelState, readOpen, writeOpen, managedPipeSlots } =
+    primitives.recomputeCanonicalPipeControlState();
+
+  expect(managedPipeSlots).toContain(4);
+  expect(readOpen[4]).toBe(0);
+  expect(writeOpen[4]).toBe(0);
+  expect((kernelState.pipeUsed & pipeMask) !== 0n).toBe(false);
+});
 
 test("kernel-worker releaseHostStdio keeps sibling private host stdio pipe counts intact", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });

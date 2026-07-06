@@ -1,4 +1,5 @@
 import {
+  assertSupervisorRuntimeAbi,
   guestAddressProfileForProcessCreation,
   processCreateWithMemoryPolicy,
   processGuestBaseForAddressProfile,
@@ -15,13 +16,36 @@ import {
   publishResidentPage,
   readResidentFileData,
 } from "../fs/sab-page-cache.js";
+import { supervisorResidentPageTableAuthority } from "../fs/supervisor-page-table.js";
 import {
   preloadSnapshotEntries,
   resolveProcessCwdIno,
 } from "./process-fs.js";
 import type { KernelWorkerFileLayerEntry } from "../messages.js";
 import type { GuestWriteWatchRegion } from "../messages.js";
-import { createKernelShareGroup } from "./kernel-share.js";
+import {
+  guestWriteWatchRegions,
+  setGuestWriteWatchRegions,
+} from "./guest-write-watch-state.js";
+import {
+  processLastDebugMessage,
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "./process-debug-state.js";
+import {
+  setProcessOnError,
+  setProcessOnExit,
+  setProcessOnStdout,
+} from "./process-callback-state.js";
+import { setProcessKernelWorkerRequest } from "./process-kernel-worker-request-state.js";
+import { setProcessStdioState } from "./process-stdio-state.js";
+import { setProcessWorkers } from "./process-worker-state.js";
+import { workerDebugLog } from "./worker-debug-log.js";
+import {
+  addKernelShareMember,
+  createKernelShareGroup,
+  setProcessKernelShareGroup,
+} from "./kernel-share.js";
 import {
   alignUp,
   detachedKernelScratchBase,
@@ -36,7 +60,7 @@ import {
   MIN_GUEST_MEMORY_POLICY_LIMIT_BYTES,
   normalizeGuestMemoryPolicyLimitBytesWithMinimum,
 } from "./memory-policy.js";
-import { createTransferDebugStats, createWorkerMessageDebugStats } from "./types.js";
+import { setProcessMemoryOwnership } from "./memory-ownership-state.js";
 import type {
   AttachThreadWorkerRequest,
   CreateProcessOptions,
@@ -107,9 +131,9 @@ function configureInitialGuestWriteWatch(
   if (regions.length === 0) {
     return;
   }
-  handle.guestWriteWatchRegions = regions.map((region) => ({ ...region }));
+  setGuestWriteWatchRegions(handle, regions);
   exports.debug_clear_guest_write_watch_trace?.();
-  for (const region of handle.guestWriteWatchRegions) {
+  for (const region of guestWriteWatchRegions(handle)) {
     exports.debug_configure_guest_write_watch?.(
       region.slot,
       BigInt(Math.trunc(region.start)),
@@ -365,8 +389,9 @@ async function publishInterpResidentPages(
   interpPath: string | null,
   sabPageCache: SharedArrayBuffer | null | undefined,
   kernelWorkerRequest: NonNullable<CreateProcessOptions["kernelWorkerRequest"]> | undefined,
+  kernelExports: KernelExports | undefined,
 ): Promise<void> {
-  if (!interpPath || !sabPageCache || !kernelWorkerRequest) {
+  if (!interpPath || !sabPageCache || !kernelWorkerRequest || !kernelExports) {
     return;
   }
   const resolvedPath = resolveSnapshotPathFollowingSymlinks(entries, interpPath) ?? normalizeGuestPath(interpPath);
@@ -400,7 +425,9 @@ async function publishInterpResidentPages(
         `short PT_INTERP backing range: path=${resolvedPath} offset=${offset} length=${length} actual=${response.data.length}`,
       );
     }
-    if (!publishResidentPage(sabPageCache, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, response.data)) {
+    if (!publishResidentPage(sabPageCache, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, response.data, {
+      authority: supervisorResidentPageTableAuthority(kernelExports),
+    })) {
       throw new Error(`failed to publish PT_INTERP resident page: path=${resolvedPath} offset=${offset}`);
     }
   }
@@ -489,13 +516,15 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     }
     const heapPtr = handle.kernel.kernel_heap_ptr?.() ?? handle.kernelState.heapPtr;
     const entry = `${stage}:heap=0x${heapPtr.toString(16)}:mem=0x${handle.kernelState.memStatePtr.toString(16)}:${brkBase.toString()}:${brkCurrent.toString()}:${mmapNext.toString()}`;
-    handle.workerDebugLog.push(entry);
-    if (handle.workerDebugLog.length > 256) {
-      handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 256);
+    workerDebugLog(handle).push(entry);
+    if (workerDebugLog(handle).length > 256) {
+      workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 256);
     }
-    handle.lastDebugMessage = handle.lastDebugMessage
-      ? `${handle.lastDebugMessage} ${entry}`
-      : entry;
+    const lastDebugMessage = processLastDebugMessage(handle);
+    setProcessLastDebugMessage(
+      handle,
+      lastDebugMessage ? `${lastDebugMessage} ${entry}` : entry,
+    );
   }
 
   async function instantiateProcessKernel(
@@ -518,6 +547,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     configureKernelInstanceStack(exports, MAIN_THREAD_KERNEL_STACK_SLOT);
     const wasmHeapBase = kernelHeapBase(exports, KERNEL_HEAP_BASE_FALLBACK_BYTES);
     exports.kernel_init(wasmHeapBase);
+    assertSupervisorRuntimeAbi(exports);
 
     const now = Date.now();
     exports.set_base_time(
@@ -618,7 +648,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       artifactMaterializedBytes,
     };
 
-    return {
+    const handle: ProcessHandle = {
       runtimeId,
       pid: options.pid ?? 0,
       parentPid: options.parentPid ?? null,
@@ -632,6 +662,18 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       wasmModule,
       kernel: exports,
       kernelState,
+      runtimeBridge,
+      sabPageCache: options.sabPageCache ?? null,
+      networkBridge: options.networkBridge,
+    };
+    setProcessKernelShareGroup(handle, createKernelShareGroup());
+    setProcessKernelWorkerRequest(handle, options.kernelWorkerRequest);
+    setProcessDebugCommand(handle, options.argv?.[0] ?? "<entry>");
+    setProcessLastDebugMessage(handle, undefined);
+    setProcessOnExit(handle, options.onExit);
+    setProcessOnError(handle, options.onError);
+    setProcessOnStdout(handle, options.onStdout);
+    setProcessStdioState(handle, {
       stdinPipe,
       stdoutPipe,
       stderrPipe,
@@ -645,61 +687,10 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       },
       stdinClosed: (options.stdin ?? "pipe") === "closed",
       stdioOwner: null,
-      kernelShare: createKernelShareGroup(),
-      stdinQueue: [],
-      stdinFlushPromise: null,
-      outputBacklog: [],
-      debugCommand: options.argv?.[0] ?? "<entry>",
-      lastDebugMessage: undefined,
-      runtimeBridge,
-      sabPageCache: options.sabPageCache ?? null,
-      kernelWorkerRequest: options.kernelWorkerRequest,
-      networkBridge: options.networkBridge,
-      networkConnections: new Map(),
-      networkConnectionOfds: new Map(),
-      networkOfdSlotWatermarks: new Map(),
-      networkPendingConnectFds: new Set(),
-      networkClosedFds: new Set(),
-      networkClosedSocketSlots: new Map(),
-      networkSocketSlotWatermarks: new Map(),
-      networkRecvHeadWatermarks: new Map(),
-      networkRecvTailWatermarks: new Map(),
-      networkRecvPayloadWatermarks: new Map(),
-      workers: new Set(),
-      readyWorkers: [],
-      runningWorker: null,
-      blockedWorkers: new Map(),
-      pendingChildExitRecords: 0,
-      pendingChildSpawnRecords: 0,
-      childExitSyncRecords: new Map(),
-      pipeSyncPromise: null,
-      pipeSyncQueued: false,
-      pipeWaiterWakeQueued: false,
-      pendingPipeSlotSnapshots: [],
-      epollSyncPromise: null,
-      epollSyncQueued: false,
-      epollWaiterWakeQueued: false,
-      forkSharedSyncPromise: null,
-      processMemfsDirty: false,
-      processMemfsPublishPending: false,
-      processMemfsDeletedPaths: new Set(),
-      ofdSyncPromise: null,
-      ofdSyncQueuedIds: new Set(),
-      socketSyncPromise: null,
-      socketSyncQueued: false,
-      socketWaiterWakeQueued: false,
-      vforkSnapshot: null,
-      vforkWorker: null,
-      exitInProgress: false,
-      onExit: options.onExit,
-      onError: options.onError,
-      onStdout: options.onStdout,
-      workerDebugLog: [],
-      workerMessageDebugStats: createWorkerMessageDebugStats(),
-      transferDebugStats: createTransferDebugStats(),
-      guestWriteWatchRegions: [],
-      memoryOwnership,
-    };
+    });
+    setProcessWorkers(handle, []);
+    setProcessMemoryOwnership(handle, memoryOwnership);
+    return handle;
   }
 
   async function createProcess(
@@ -755,6 +746,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
         interpPath,
         options.sabPageCache,
         options.kernelWorkerRequest,
+        exports,
       );
     }
     const bootstrapEntriesRequireMaterializedData = entriesRequireMaterializedData(bootstrapEntries);
@@ -857,12 +849,15 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     const memfsSeedMode: KernelWorkerMemfsSeedMode = delegateFsHydrationToKernelWorker
       ? bootstrapEntriesRequireMaterializedData ? "metadata" : "none"
       : "full";
-    await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
-    appendMemoryStateDebug(handle, "register");
+    const hasKernelWorkerOwnership = options.kernelWorkerRequest !== undefined && handle.pid > 0;
+    if (hasKernelWorkerOwnership) {
+      await deps.registerProcessWithKernelWorker(handle, { seedMemfsMode: memfsSeedMode });
+      appendMemoryStateDebug(handle, "register");
+    }
     if (delegateFsHydrationToKernelWorker) {
       handle.kernel.process_set_cwd_ino(vmPtr, cwdIno);
     }
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (hasKernelWorkerOwnership) {
       const parent = handle.parentPid !== null ? deps.processHandles.get(handle.parentPid) : undefined;
       const inheritedPgid = parent ? parent.kernel.process_current_pgid(parent.vmPtr) : handle.pid;
       const inheritedSid = parent ? parent.kernel.process_current_sid(parent.vmPtr) : handle.pid;
@@ -879,7 +874,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
     }
     deps.assertProcessStandardFdIntegrity(handle, "create-process");
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
-    handle.kernelShare.members.add(handle);
+    addKernelShareMember(handle);
 
     if (handle.pid > 0) {
       deps.processHandles.set(handle.pid, handle);

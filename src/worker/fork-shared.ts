@@ -1,4 +1,5 @@
 import type { ProcessHandle, ThreadWorkerState, VforkSnapshot } from "./types.js";
+import { getThreadActivityState } from "./thread-activity-state.js";
 import {
   activeKernelShareOfdIds,
   collectProcessHeldOfdRefcounts,
@@ -6,12 +7,62 @@ import {
   hasPlausibleOfdState,
   trackForkSharedOfds,
 } from "./ownership/ofd-table.js";
+import { supervisorOfdReconcileRefcount } from "./ownership/ofd-metadata.js";
+import {
+  deleteKernelShareOfdSlotSnapshot,
+  deleteKernelShareSharedOfdId,
+  getKernelShareOfdSlotSnapshot,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+  setKernelShareOfdSlotSnapshot,
+} from "./kernel-share.js";
 import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../layout/ofd.js";
+
+function requireSupervisorRestoreActionSkip(handle: ProcessHandle): number {
+  const skip = handle.kernel.supervisor_fd_entry_restore_action_skip;
+  if (!skip) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_skip");
+  }
+  return skip.call(handle.kernel);
+}
+
+function requireSupervisorOfdSlotWriteAction(
+  handle: ProcessHandle,
+): (
+  ofdId: number,
+  candidateType: number,
+  candidateHostFd: number,
+  candidateIno: number,
+  candidateOffset: bigint | number,
+) => number {
+  const decide = handle.kernel.supervisor_ofd_slot_write_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_write_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
+function ofdSlotWriteShouldBeSkipped(
+  handle: ProcessHandle,
+  ofdId: number,
+  slot: Uint8Array,
+  decide: ReturnType<typeof requireSupervisorOfdSlotWriteAction>,
+  skipAction: number,
+): boolean {
+  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+  return decide(
+    ofdId,
+    view.getInt32(OFD_TYPE_OFFSET, true),
+    view.getInt32(OFD_HOST_FD_OFFSET, true),
+    view.getUint32(OFD_INO_OFFSET, true),
+    view.getBigInt64(OFD_OFFSET_OFFSET, true),
+  ) === skipAction;
+}
 
 export function snapshotKernelShareOfdSlots(
   handle: ProcessHandle,
@@ -25,7 +76,7 @@ export function snapshotKernelShareOfdSlots(
   }
 
   const snapshots = new Map<number, Uint8Array>();
-  const members = [handle, ...[...handle.kernelShare.members].filter((member) => member !== handle)];
+  const members = [handle, ...kernelShareMemberList(handle).filter((member) => member !== handle)];
   for (const ofdId of ofdIds) {
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
@@ -38,11 +89,11 @@ export function snapshotKernelShareOfdSlots(
       const slotOffset = member.kernelState.ofdTablePtr + ofdId * slotBytes;
       const slot = new Uint8Array(member.memory.buffer, slotOffset, slotBytes).slice();
       snapshots.set(ofdId, slot);
-      handle.kernelShare.ofdSlotSnapshots.set(ofdId, slot);
+      setKernelShareOfdSlotSnapshot(handle, ofdId, slot);
       break;
     }
     if (!snapshots.has(ofdId)) {
-      const cached = handle.kernelShare.ofdSlotSnapshots.get(ofdId);
+      const cached = getKernelShareOfdSlotSnapshot(handle, ofdId);
       if (cached?.length === slotBytes) {
         snapshots.set(ofdId, cached.slice());
       }
@@ -53,8 +104,8 @@ export function snapshotKernelShareOfdSlots(
 
 export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
   const activeOfdIds = activeKernelShareOfdIds(handle);
-  const reservedOfdIds = [...new Set([...handle.kernelShare.sharedOfdIds, ...activeOfdIds])];
-  for (const member of handle.kernelShare.members) {
+  const reservedOfdIds = [...new Set([...kernelShareSharedOfdIdList(handle), ...activeOfdIds])];
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of reservedOfdIds) {
       member.kernel.kernel_reserve_ofd?.(ofdId);
     }
@@ -63,11 +114,11 @@ export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
 
 export function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
   for (const ofdId of staleOfdIds) {
-    for (const member of handle.kernelShare.members) {
+    for (const member of kernelShareMemberList(handle)) {
       member.kernel.kernel_unreserve_ofd?.(ofdId);
     }
-    handle.kernelShare.sharedOfdIds.delete(ofdId);
-    handle.kernelShare.ofdSlotSnapshots.delete(ofdId);
+    deleteKernelShareSharedOfdId(handle, ofdId);
+    deleteKernelShareOfdSlotSnapshot(handle, ofdId);
   }
 }
 
@@ -82,7 +133,7 @@ export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds
   const slotCopies = new Map<number, Uint8Array>();
   const sourceFirstMembers = [
     handle,
-    ...[...handle.kernelShare.members].filter((member) => member !== handle),
+    ...kernelShareMemberList(handle).filter((member) => member !== handle),
   ];
   for (const ofdId of sharedOfdIds) {
     for (const member of sourceFirstMembers) {
@@ -100,8 +151,10 @@ export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds
   }
 
   const targetTable = new Uint8Array(handle.memory.buffer);
+  const decideSlotWrite = requireSupervisorOfdSlotWriteAction(handle);
+  const skipAction = requireSupervisorRestoreActionSkip(handle);
   for (const [ofdId, slotBytesView] of slotCopies) {
-    if (slotWouldRollBackRegularFileOffset(handle, ofdId, slotBytesView)) {
+    if (ofdSlotWriteShouldBeSkipped(handle, ofdId, slotBytesView, decideSlotWrite, skipAction)) {
       continue;
     }
     const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
@@ -109,29 +162,12 @@ export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds
   }
 }
 
-function slotWouldRollBackRegularFileOffset(
-  handle: ProcessHandle,
-  ofdId: number,
-  slot: Uint8Array,
-): boolean {
-  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  if (targetType !== handle.kernel.abi_fd_type_file()) {
-    return false;
-  }
-  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
-  return view.getInt32(OFD_TYPE_OFFSET, true) === targetType
-    && view.getUint32(OFD_INO_OFFSET, true) === handle.kernel.kernel_ofd_ino(ofdId)
-    && view.getInt32(OFD_HOST_FD_OFFSET, true) === handle.kernel.kernel_ofd_host_fd(ofdId)
-    && handle.kernel.kernel_ofd_refcount(ofdId) > 0
-    && view.getBigInt64(OFD_OFFSET_OFFSET, true) < handle.kernel.kernel_ofd_offset(ofdId);
-}
-
 export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfdIds: Iterable<number>): void {
   const maxFds = handle.kernel.abi_max_fds();
   const sharedOfdIdSet = new Set(sharedOfdIds);
   const expectedRefcounts = new Int32Array(maxFds);
 
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     const memberRefcounts = collectProcessHeldOfdRefcounts(member);
     for (const ofdId of sharedOfdIdSet) {
       if (ofdId <= 0 || ofdId >= maxFds) {
@@ -145,24 +181,17 @@ export function reconcileForkSharedOfdRefcounts(handle: ProcessHandle, sharedOfd
     if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    let currentRefcount = handle.kernel.kernel_ofd_refcount(ofdId);
     const expectedRefcount = expectedRefcounts[ofdId] ?? 0;
-    while (currentRefcount < expectedRefcount) {
-      handle.kernel.kernel_retain_ofd(ofdId);
-      currentRefcount += 1;
-    }
-    while (currentRefcount > expectedRefcount) {
-      handle.kernel.kernel_release_ofd(ofdId);
-      currentRefcount -= 1;
-    }
+    supervisorOfdReconcileRefcount(handle, ofdId, expectedRefcount);
   }
 }
 
 export function captureVforkSnapshot(
   handle: ProcessHandle,
-  thread: Pick<ThreadWorkerState, "vmPtr" | "lastStepProcessPtr" | "lastStepPc" | "lastStepSp" | "lastStepS11">,
+  thread: ThreadWorkerState,
 ): VforkSnapshot {
   const ofdIds = trackForkSharedOfds(handle, thread.vmPtr, true);
+  const activity = getThreadActivityState(thread);
   return {
     vmPtr: thread.vmPtr,
     childPid: null,
@@ -170,10 +199,10 @@ export function captureVforkSnapshot(
     pgid: null,
     sid: null,
     parentPid: handle.pid,
-    parentProcessPtr: thread.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(thread.vmPtr),
-    parentPc: thread.lastStepPc ?? handle.kernel.thread_pc(thread.vmPtr),
-    parentSp: thread.lastStepSp ?? handle.kernel.thread_sp(thread.vmPtr),
-    parentS11: thread.lastStepS11 ?? (handle.kernel.thread_s11?.(thread.vmPtr) ?? 0n),
+    parentProcessPtr: activity.lastStepProcessPtr ?? handle.kernel.thread_process_ptr(thread.vmPtr),
+    parentPc: activity.lastStepPc ?? handle.kernel.thread_pc(thread.vmPtr),
+    parentSp: activity.lastStepSp ?? handle.kernel.thread_sp(thread.vmPtr),
+    parentS11: activity.lastStepS11 ?? (handle.kernel.thread_s11?.(thread.vmPtr) ?? 0n),
     inheritedSharedOfdIds: ofdIds,
   };
 }

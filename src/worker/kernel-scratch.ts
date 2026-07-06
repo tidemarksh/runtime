@@ -54,15 +54,6 @@ export function writeDetachedKernelScratch(
   return scratch;
 }
 
-export function copyKernelPrivateRegion(
-  source: WebAssembly.Memory,
-  target: WebAssembly.Memory,
-  endOffset: number,
-): void {
-  ensureMemoryCapacity(target, endOffset);
-  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, 0, endOffset), 0);
-}
-
 export function copyLinearMemoryImage(
   source: WebAssembly.Memory,
   target: WebAssembly.Memory,

@@ -10,6 +10,7 @@ import {
   publishInode,
   readInodeRecord,
   readResidentFileData,
+  type ResidentPageTableAuthority,
 } from "../../../src/fs/sab-page-cache.js";
 import { createSha256VerifiedBackingSource } from "../../../src/kernel-worker/backing-source.js";
 import { createKernelWorkerFsState } from "../../../src/kernel-worker/fs-state.js";
@@ -17,6 +18,24 @@ import { createNodeHostFileBackingSource } from "../../../src/kernel-worker/host
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+const fakeSupervisorPageTableAuthority: ResidentPageTableAuthority = {
+  selectPublishSlot(input) {
+    if (input.existingSlot >= 0) {
+      return input.existingSlot;
+    }
+    if (input.emptySlot >= 0) {
+      return input.emptySlot;
+    }
+    return input.cleanEvictSlot >= 0 ? input.cleanEvictSlot : -1;
+  },
+  decideEviction(input) {
+    if (!input.recordFound) {
+      return "not-found";
+    }
+    return input.dirty ? "dirty-pinned" : "evicted";
+  },
+};
 
 type InodeRecord = {
   ino: number;
@@ -63,6 +82,32 @@ function makeKernelExports(): FakeKernelExports {
   let nextIno = 2;
   let reservedIno: number | null = null;
   let heapPtr = 0x10000;
+  let lastDirtyPageDecision = {
+    result: 0,
+    nextSize: 0,
+    fileObjectId: 0,
+    generation: 0,
+    flags: 0,
+  };
+  let lastDirtyPreparePublishMode = 0;
+  let lastMetadataSyncDecision = {
+    size: 0,
+    backingSource: 0,
+  };
+  let lastBackingSourceRangeDecision = {
+    byteLength: 0,
+    offset: 0,
+    length: 0,
+  };
+  let lastCleanBackingRangeDecision = {
+    readOffset: 0,
+    readLength: 0,
+    outputLength: 0,
+  };
+  let lastBackingObjectDecision = {
+    fileObjectId: 0,
+    generation: 0,
+  };
 
   function putRecord(record: InodeRecord): void {
     recordsByPath.set(record.path, record);
@@ -97,6 +142,471 @@ function makeKernelExports(): FakeKernelExports {
   }
 
   resetRoot();
+
+  function supervisorDirtyPageDecision(
+    op: number,
+    ino: number,
+    offset: bigint | number,
+    lengthOrSize: bigint | number,
+    currentSize: bigint | number,
+    currentFileObjectId: bigint | number,
+    currentGeneration: bigint | number,
+    existingDirtyPages: number,
+    deltaDirtyPages: number,
+    residentPageCapacity: number,
+    pageMapNewer: number,
+  ): number {
+    const offsetNumber = Number(offset);
+    const lengthOrSizeNumber = Number(lengthOrSize);
+    const currentSizeNumber = Number(currentSize);
+    const currentFileObjectIdNumber = Number(currentFileObjectId);
+    const currentGenerationNumber = Number(currentGeneration);
+    lastDirtyPageDecision = {
+      result: 0,
+      nextSize: 0,
+      fileObjectId: 0,
+      generation: 0,
+      flags: 0,
+    };
+    if (ino <= 0 || ino >= 65536) {
+      lastDirtyPageDecision.result = -22;
+      return -22;
+    }
+    if (op === 1) {
+      const end = offsetNumber + lengthOrSizeNumber;
+      if (lengthOrSizeNumber <= 0 || !Number.isSafeInteger(end) || end > 0xffffffff) {
+        lastDirtyPageDecision.result = -22;
+        return -22;
+      }
+      if (existingDirtyPages + deltaDirtyPages > residentPageCapacity) {
+        lastDirtyPageDecision.result = -28;
+        return -28;
+      }
+      lastDirtyPageDecision = {
+        result: lengthOrSizeNumber,
+        nextSize: Math.max(currentSizeNumber, end),
+        fileObjectId: currentFileObjectIdNumber || ino,
+        generation: currentFileObjectIdNumber === 0
+          ? currentGenerationNumber + 1
+          : currentGenerationNumber,
+        flags: 1 | 2,
+      };
+      return lengthOrSizeNumber;
+    }
+    if (op === 2) {
+      if (lengthOrSizeNumber < 0 || lengthOrSizeNumber > 0xffffffff) {
+        lastDirtyPageDecision.result = -22;
+        return -22;
+      }
+      if (deltaDirtyPages > residentPageCapacity) {
+        lastDirtyPageDecision.result = -28;
+        return -28;
+      }
+      lastDirtyPageDecision = {
+        result: 0,
+        nextSize: lengthOrSizeNumber,
+        fileObjectId: currentFileObjectIdNumber || ino,
+        generation: currentGenerationNumber + 1,
+        flags: 1 | 2,
+      };
+      return 0;
+    }
+    if (op === 3) {
+      lastDirtyPageDecision = {
+        result: 0,
+        nextSize: currentSizeNumber,
+        fileObjectId: currentFileObjectIdNumber,
+        generation: currentGenerationNumber,
+        flags: deltaDirtyPages !== 0 || pageMapNewer !== 0 ? 4 : 0,
+      };
+      return 0;
+    }
+    lastDirtyPageDecision.result = -22;
+    return -22;
+  }
+
+  function supervisorDirtyPrepareDecision(
+    ino: number,
+    op: number,
+    expectedSize: bigint | number,
+    publishedPresent: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    publishedDataOff: bigint | number,
+    sourceIsRegular: number,
+    sourceFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+  ): number {
+    const expectedSizeNumber = Number(expectedSize);
+    const publishedSizeNumber = publishedPresent !== 0 ? Number(publishedSize) : expectedSizeNumber;
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    const publishedDataOffNumber = Number(publishedDataOff);
+    const sourceFileObjectIdNumber = Number(sourceFileObjectId);
+    lastDirtyPreparePublishMode = 0;
+    if (
+      ino <= 0
+      || ino >= 65536
+      || !Number.isSafeInteger(expectedSizeNumber)
+      || !Number.isSafeInteger(publishedSizeNumber)
+      || expectedSizeNumber < 0
+      || publishedSizeNumber < 0
+      || (op !== 1 && op !== 2)
+    ) {
+      return -22;
+    }
+    const sourceTruncatedEmpty = sourceIsRegular !== 0 && expectedSizeNumber === 0;
+    const unsupportedWriteSource = op === 1
+      && sourceFileObjectIdNumber === 0
+      && hasDirtyResidentPages === 0
+      && publishedFileObjectIdNumber === 0
+      && publishedDataOffNumber === 0
+      && publishedSizeNumber > 0
+      && !sourceTruncatedEmpty;
+    if (unsupportedWriteSource) {
+      return -95;
+    }
+    if (publishedPresent === 0) {
+      lastDirtyPreparePublishMode = 1;
+    } else if (op === 1 && sourceIsRegular !== 0 && publishedSizeNumber !== expectedSizeNumber) {
+      lastDirtyPreparePublishMode = 2;
+    }
+    return 0;
+  }
+
+  function validBackingIdentity(fileObjectId: number, generation: number): boolean {
+    return Number.isSafeInteger(fileObjectId)
+      && fileObjectId > 0
+      && fileObjectId <= 0xffffffff
+      && Number.isSafeInteger(generation)
+      && generation > 0
+      && generation <= 0xffffffff;
+  }
+
+  function supervisorBackingObjectDecision(
+    op: number,
+    ino: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+  ): number {
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    const publishedGenerationNumber = Number(publishedGeneration);
+    const backingFileObjectIdNumber = Number(backingFileObjectId);
+    const backingGenerationNumber = Number(backingGeneration);
+    lastBackingObjectDecision = { fileObjectId: 0, generation: 0 };
+    if (
+      ino <= 0
+      || ino >= 65536
+      || (publishedFileObjectIdNumber === 0 && publishedGenerationNumber !== 0)
+      || (publishedFileObjectIdNumber !== 0
+        && !validBackingIdentity(publishedFileObjectIdNumber, publishedGenerationNumber))
+      || (backingFileObjectIdNumber === 0 && backingGenerationNumber !== 0)
+      || (backingFileObjectIdNumber !== 0
+        && !validBackingIdentity(backingFileObjectIdNumber, backingGenerationNumber))
+    ) {
+      return -22;
+    }
+    if (op === 1 || op === 2) {
+      if (publishedFileObjectIdNumber !== 0) {
+        lastBackingObjectDecision = {
+          fileObjectId: publishedFileObjectIdNumber,
+          generation: publishedGenerationNumber,
+        };
+      } else if (backingFileObjectIdNumber !== 0) {
+        lastBackingObjectDecision = {
+          fileObjectId: backingFileObjectIdNumber,
+          generation: backingGenerationNumber,
+        };
+      } else {
+        lastBackingObjectDecision = { fileObjectId: ino, generation: 1 };
+      }
+      return 0;
+    }
+    if (op === 3) {
+      const fileObjectId = backingFileObjectIdNumber || publishedFileObjectIdNumber || ino;
+      const baseGeneration = backingGenerationNumber || publishedGenerationNumber;
+      lastBackingObjectDecision = {
+        fileObjectId,
+        generation: baseGeneration === 0 ? 1 : baseGeneration + 1,
+      };
+      return 0;
+    }
+    if (op === 4 || op === 5) {
+      if (!validBackingIdentity(publishedFileObjectIdNumber, publishedGenerationNumber)) {
+        return -22;
+      }
+      lastBackingObjectDecision = {
+        fileObjectId: publishedFileObjectIdNumber,
+        generation: publishedGenerationNumber,
+      };
+      return 0;
+    }
+    return -22;
+  }
+
+  function supervisorDataSyncDecision(
+    kind: number,
+    ino: number,
+    sourceMode: number,
+    sourceSize: bigint | number,
+    targetMode: number,
+    targetSize: bigint | number,
+    publishedPresent: number,
+    publishedMode: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+    pageMapNewer: number,
+    hasBackingFile: number,
+  ): number {
+    const sourceSizeNumber = Number(sourceSize);
+    const targetSizeNumber = Number(targetSize);
+    const publishedSizeNumber = Number(publishedSize);
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    if (
+      ino <= 0
+      || ino >= 65536
+      || sourceSizeNumber < 0
+      || targetSizeNumber < 0
+      || publishedSizeNumber < 0
+    ) {
+      return -22;
+    }
+    if (kind === 1) {
+      const publishedResident = publishedFileObjectIdNumber !== 0 && publishedSizeNumber === sourceSizeNumber;
+      return (sourceMode & 0o170000) === 0o100000
+        && (targetMode & 0o170000) === 0o100000
+        && (publishedPresent === 0 || (publishedMode & 0o170000) === 0o100000)
+        && (pageMapNewer !== 0 || publishedResident)
+        ? 1
+        : 0;
+    }
+    if (kind === 2) {
+      return publishedPresent !== 0
+        && (publishedMode & 0o170000) === 0o100000
+        && publishedSizeNumber > 0
+        && (targetMode & 0o170000) === 0o100000
+        && targetSizeNumber === publishedSizeNumber
+        && (hasBackingFile !== 0 || hasDirtyResidentPages !== 0 || publishedFileObjectIdNumber !== 0)
+        ? 1
+        : 0;
+    }
+    return -22;
+  }
+
+  function supervisorMetadataSyncDecision(
+    ino: number,
+    sourcePresent: number,
+    sourceMode: number,
+    sourceSize: bigint | number,
+    parentPresent: number,
+    parentIno: number,
+    publishedPresent: number,
+    publishedMode: number,
+    publishedSize: bigint | number,
+    publishedParentIno: number,
+    publishedNameMatches: number,
+    hasDirtyResidentPages: number,
+    backingPresent: number,
+  ): number {
+    lastMetadataSyncDecision = { size: 0, backingSource: 0 };
+    if (sourcePresent === 0) {
+      return 1;
+    }
+    const sourceSizeNumber = Number(sourceSize);
+    const publishedSizeNumber = Number(publishedSize);
+    if (ino <= 0 || ino >= 65536 || sourceSizeNumber < 0 || publishedSizeNumber < 0) {
+      return -22;
+    }
+    if (parentPresent === 0 || parentIno === 0) {
+      return 0;
+    }
+    const fileType = sourceMode & 0o170000;
+    if (fileType !== 0o040000 && fileType !== 0o100000) {
+      return 0;
+    }
+    const size = fileType === 0o100000
+      ? hasDirtyResidentPages !== 0 && publishedPresent !== 0
+        ? publishedSizeNumber
+        : sourceSizeNumber
+      : 0;
+    const publishedMetaValid = publishedPresent !== 0
+      && (publishedSizeNumber === size || hasDirtyResidentPages !== 0);
+    const backingSource = hasDirtyResidentPages !== 0
+      ? publishedMetaValid ? 1 : 0
+      : backingPresent !== 0 ? 2 : publishedMetaValid ? 1 : 0;
+    lastMetadataSyncDecision = { size, backingSource };
+    return publishedPresent === 0
+      || publishedMode !== sourceMode
+      || publishedSizeNumber !== size
+      || publishedParentIno !== parentIno
+      || publishedNameMatches === 0
+      ? 3
+      : 2;
+  }
+
+  function supervisorPageTableSourceDecision(
+    ino: number,
+    hasDirtyPages: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    publishedSize: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+    backingSize: bigint | number,
+  ): number {
+    const publishedFileObjectIdNumber = Number(publishedFileObjectId);
+    const publishedGenerationNumber = Number(publishedGeneration);
+    const publishedSizeNumber = Number(publishedSize);
+    const backingFileObjectIdNumber = Number(backingFileObjectId);
+    const backingGenerationNumber = Number(backingGeneration);
+    const backingSizeNumber = Number(backingSize);
+    if (ino <= 0 || ino >= 65536) {
+      return -22;
+    }
+    if (hasDirtyPages !== 0) {
+      return 1;
+    }
+    if (publishedFileObjectIdNumber === 0 || backingFileObjectIdNumber === 0) {
+      return 0;
+    }
+    return (
+      publishedFileObjectIdNumber !== backingFileObjectIdNumber
+      || publishedGenerationNumber !== backingGenerationNumber
+      || publishedSizeNumber !== backingSizeNumber
+    )
+      ? 1
+      : 0;
+  }
+
+  function supervisorBackingSourceRangeDecision(
+    ino: number,
+    fileOffset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+    extentOffset: bigint | number,
+    extentLength: bigint | number,
+    sourceByteLength: bigint | number,
+    requireSourceBounds: number,
+  ): number {
+    const fileOffsetNumber = Number(fileOffset);
+    const lengthNumber = Number(length);
+    const expectedSizeNumber = Number(expectedSize);
+    const extentOffsetNumber = Number(extentOffset);
+    const extentLengthNumber = Number(extentLength);
+    const sourceByteLengthNumber = Number(sourceByteLength);
+    lastBackingSourceRangeDecision = {
+      byteLength: 0,
+      offset: 0,
+      length: 0,
+    };
+    if (
+      ino <= 0
+      || ino >= 65536
+      || !Number.isSafeInteger(fileOffsetNumber)
+      || !Number.isSafeInteger(lengthNumber)
+      || !Number.isSafeInteger(expectedSizeNumber)
+      || !Number.isSafeInteger(extentOffsetNumber)
+      || !Number.isSafeInteger(extentLengthNumber)
+      || fileOffsetNumber < 0
+      || lengthNumber <= 0
+      || expectedSizeNumber < 0
+      || extentOffsetNumber < 0
+      || extentLengthNumber < 0
+      || fileOffsetNumber >= expectedSizeNumber
+      || extentLengthNumber !== expectedSizeNumber
+    ) {
+      return 0;
+    }
+    const sourceEnd = extentOffsetNumber + extentLengthNumber;
+    const sourceOffset = extentOffsetNumber + fileOffsetNumber;
+    if (
+      !Number.isSafeInteger(sourceEnd)
+      || !Number.isSafeInteger(sourceOffset)
+      || (
+        requireSourceBounds !== 0
+        && (
+          !Number.isSafeInteger(sourceByteLengthNumber)
+          || sourceByteLengthNumber < 0
+          || sourceEnd > sourceByteLengthNumber
+        )
+      )
+    ) {
+      return 0;
+    }
+    lastBackingSourceRangeDecision = {
+      byteLength: sourceEnd,
+      offset: sourceOffset,
+      length: Math.min(lengthNumber, expectedSizeNumber - fileOffsetNumber),
+    };
+    return 1;
+  }
+
+  function supervisorCleanBackingRangeDecision(
+    ino: number,
+    offset: bigint | number,
+    length: bigint | number,
+    publishedSize: bigint | number,
+    backingSize: bigint | number,
+  ): number {
+    const offsetNumber = Number(offset);
+    const lengthNumber = Number(length);
+    const publishedSizeNumber = Number(publishedSize);
+    const backingSizeNumber = Number(backingSize);
+    lastCleanBackingRangeDecision = {
+      readOffset: 0,
+      readLength: 0,
+      outputLength: 0,
+    };
+    if (
+      ino <= 0
+      || ino >= 65536
+      || !Number.isSafeInteger(offsetNumber)
+      || !Number.isSafeInteger(lengthNumber)
+      || !Number.isSafeInteger(publishedSizeNumber)
+      || !Number.isSafeInteger(backingSizeNumber)
+      || offsetNumber < 0
+      || lengthNumber <= 0
+      || publishedSizeNumber < 0
+      || backingSizeNumber < 0
+    ) {
+      return 0;
+    }
+    const end = offsetNumber + lengthNumber;
+    if (!Number.isSafeInteger(end) || offsetNumber >= publishedSizeNumber) {
+      return 0;
+    }
+    if (offsetNumber >= backingSizeNumber) {
+      if (publishedSizeNumber > backingSizeNumber && end <= publishedSizeNumber) {
+        lastCleanBackingRangeDecision = {
+          readOffset: offsetNumber,
+          readLength: 0,
+          outputLength: lengthNumber,
+        };
+        return 3;
+      }
+      return 0;
+    }
+    const readLength = Math.min(lengthNumber, backingSizeNumber - offsetNumber);
+    if (readLength === lengthNumber || publishedSizeNumber <= backingSizeNumber) {
+      lastCleanBackingRangeDecision = {
+        readOffset: offsetNumber,
+        readLength,
+        outputLength: readLength,
+      };
+      return 1;
+    }
+    if (end > publishedSizeNumber) {
+      return 0;
+    }
+    lastCleanBackingRangeDecision = {
+      readOffset: offsetNumber,
+      readLength,
+      outputLength: lengthNumber,
+    };
+    return 2;
+  }
 
   const exports = {
     memory,
@@ -324,6 +834,80 @@ function makeKernelExports(): FakeKernelExports {
       const kindMask = record.kind === "dir" ? 0o040000 : 0o100000;
       record.mode = kindMask | mode;
       return 0n;
+    },
+    supervisor_fs_dirty_page_op_write: () => 1,
+    supervisor_fs_dirty_page_op_truncate: () => 2,
+    supervisor_fs_dirty_page_op_flush: () => 3,
+    supervisor_fs_dirty_page_flag_update_inode: () => 1,
+    supervisor_fs_dirty_page_flag_publish_dirty: () => 2,
+    supervisor_fs_dirty_page_flag_writeback_required: () => 4,
+    supervisor_fs_dirty_prepare_publish_none: () => 0,
+    supervisor_fs_dirty_prepare_publish_missing: () => 1,
+    supervisor_fs_dirty_prepare_publish_size_update: () => 2,
+    supervisor_fs_dirty_prepare_decision: supervisorDirtyPrepareDecision,
+    supervisor_fs_dirty_prepare_publish_mode: () => lastDirtyPreparePublishMode,
+    supervisor_fs_data_sync_kind_export: () => 1,
+    supervisor_fs_data_sync_kind_restore: () => 2,
+    supervisor_fs_sync_action_none: () => 0,
+    supervisor_fs_sync_action_externalize: () => 1,
+    supervisor_fs_data_sync_decision: supervisorDataSyncDecision,
+    supervisor_fs_metadata_sync_action_none: () => 0,
+    supervisor_fs_metadata_sync_action_remove: () => 1,
+    supervisor_fs_metadata_sync_action_ensure: () => 2,
+    supervisor_fs_metadata_sync_action_publish_ensure: () => 3,
+    supervisor_fs_metadata_backing_none: () => 0,
+    supervisor_fs_metadata_backing_published: () => 1,
+    supervisor_fs_metadata_backing_backing: () => 2,
+    supervisor_fs_metadata_sync_decision: supervisorMetadataSyncDecision,
+    supervisor_fs_metadata_sync_size: () => BigInt(lastMetadataSyncDecision.size),
+    supervisor_fs_metadata_sync_backing_source: () => lastMetadataSyncDecision.backingSource,
+    supervisor_fs_backing_object_op_source: () => 1,
+    supervisor_fs_backing_object_op_materialize: () => 2,
+    supervisor_fs_backing_object_op_replace: () => 3,
+    supervisor_fs_backing_object_op_flush_write: () => 4,
+    supervisor_fs_backing_object_op_flush_truncate: () => 5,
+    supervisor_fs_backing_object_decision: supervisorBackingObjectDecision,
+    supervisor_fs_backing_object_file_object_id: () => BigInt(lastBackingObjectDecision.fileObjectId),
+    supervisor_fs_backing_object_generation: () => BigInt(lastBackingObjectDecision.generation),
+    supervisor_fs_backing_source_range_none: () => 0,
+    supervisor_fs_backing_source_range_read: () => 1,
+    supervisor_fs_backing_source_range_decision: supervisorBackingSourceRangeDecision,
+    supervisor_fs_backing_source_range_source_byte_length: () => BigInt(lastBackingSourceRangeDecision.byteLength),
+    supervisor_fs_backing_source_range_source_offset: () => BigInt(lastBackingSourceRangeDecision.offset),
+    supervisor_fs_backing_source_range_read_length: () => BigInt(lastBackingSourceRangeDecision.length),
+    supervisor_fs_clean_backing_range_none: () => 0,
+    supervisor_fs_clean_backing_range_read: () => 1,
+    supervisor_fs_clean_backing_range_read_zero_tail: () => 2,
+    supervisor_fs_clean_backing_range_zero: () => 3,
+    supervisor_fs_clean_backing_range_decision: supervisorCleanBackingRangeDecision,
+    supervisor_fs_clean_backing_range_read_offset: () => BigInt(lastCleanBackingRangeDecision.readOffset),
+    supervisor_fs_clean_backing_range_read_length: () => BigInt(lastCleanBackingRangeDecision.readLength),
+    supervisor_fs_clean_backing_range_output_length: () => BigInt(lastCleanBackingRangeDecision.outputLength),
+    supervisor_fs_page_table_source_backing: () => 0,
+    supervisor_fs_page_table_source_resident: () => 1,
+    supervisor_fs_page_table_source_decision: supervisorPageTableSourceDecision,
+    supervisor_fs_dirty_page_decision: supervisorDirtyPageDecision,
+    supervisor_fs_dirty_page_decision_next_size: () => BigInt(lastDirtyPageDecision.nextSize),
+    supervisor_fs_dirty_page_decision_file_object_id: () => BigInt(lastDirtyPageDecision.fileObjectId),
+    supervisor_fs_dirty_page_decision_generation: () => BigInt(lastDirtyPageDecision.generation),
+    supervisor_fs_dirty_page_decision_flags: () => lastDirtyPageDecision.flags,
+    supervisor_fs_resident_page_evict_not_found: () => 0,
+    supervisor_fs_resident_page_evict_dirty_pinned: () => 1,
+    supervisor_fs_resident_page_evict_evicted: () => 2,
+    supervisor_fs_resident_page_slot_decision: (existingSlot, emptySlot, cleanEvictSlot) => {
+      if (existingSlot >= 0) {
+        return existingSlot;
+      }
+      if (emptySlot >= 0) {
+        return emptySlot;
+      }
+      return cleanEvictSlot >= 0 ? cleanEvictSlot : -1;
+    },
+    supervisor_fs_resident_page_evict_status: (recordFound, dirty) => {
+      if (recordFound === 0) {
+        return 0;
+      }
+      return dirty !== 0 ? 1 : 2;
     },
     opLog,
     fileData: (path: string) => {
@@ -726,6 +1310,115 @@ test("kernel-worker sparse dirty resident writes read source bytes then zero hol
     .toBe("XYZ");
 });
 
+test("kernel-worker applies supervisor dirty write denial without publishing resident pages", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  canonicalExports.supervisor_fs_dirty_page_decision = () => -28;
+
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-28);
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("not-found");
+});
+
+test("kernel-worker dirty writes follow supervisor prepare decisions", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  const originalPrepareDecision = canonicalExports.supervisor_fs_dirty_prepare_decision;
+  canonicalExports.supervisor_fs_dirty_prepare_decision = () => -95;
+
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(-95);
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcdef");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("not-found");
+
+  canonicalExports.supervisor_fs_dirty_prepare_decision = originalPrepareDecision;
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
+});
+
+test("kernel-worker follows supervisor page-table source selection", () => {
+  const { canonicalExports, fsState } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array()))
+    .toBe("abcXYZ");
+
+  canonicalExports.supervisor_fs_page_table_source_decision = () => (
+    canonicalExports.supervisor_fs_page_table_source_backing?.() ?? 0
+  );
+  expect(new TextDecoder().decode(fsState.readBackingFileByInode(ino) ?? new Uint8Array()))
+    .toBe("abcdef");
+});
+
+test("kernel-worker clean backing reads follow supervisor range decisions", () => {
+  const { canonicalExports, fsState } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  const originalDecision = canonicalExports.supervisor_fs_clean_backing_range_decision;
+  const originalReadOffset = canonicalExports.supervisor_fs_clean_backing_range_read_offset;
+  const originalReadLength = canonicalExports.supervisor_fs_clean_backing_range_read_length;
+  const originalOutputLength = canonicalExports.supervisor_fs_clean_backing_range_output_length;
+
+  canonicalExports.supervisor_fs_clean_backing_range_decision = () => 0;
+  expect(fsState.readBackingFileRangeByInode(ino, 0, 3)).toBeNull();
+
+  canonicalExports.supervisor_fs_clean_backing_range_decision = () => (
+    canonicalExports.supervisor_fs_clean_backing_range_zero?.() ?? 3
+  );
+  canonicalExports.supervisor_fs_clean_backing_range_read_offset = () => 0n;
+  canonicalExports.supervisor_fs_clean_backing_range_read_length = () => 0n;
+  canonicalExports.supervisor_fs_clean_backing_range_output_length = () => 3n;
+  expect(fsState.readBackingFileRangeByInode(ino, 0, 3)).toEqual(new Uint8Array(3));
+
+  canonicalExports.supervisor_fs_clean_backing_range_decision = originalDecision;
+  canonicalExports.supervisor_fs_clean_backing_range_read_offset = originalReadOffset;
+  canonicalExports.supervisor_fs_clean_backing_range_read_length = originalReadLength;
+  canonicalExports.supervisor_fs_clean_backing_range_output_length = originalOutputLength;
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 3) ?? new Uint8Array()))
+    .toBe("abc");
+});
+
+test("kernel-worker does not write back when supervisor dirty flush says no-op", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  const decide = canonicalExports.supervisor_fs_dirty_page_decision;
+  canonicalExports.supervisor_fs_dirty_page_decision = (...args) => {
+    if (args[0] === canonicalExports.supervisor_fs_dirty_page_op_flush?.()) {
+      return 0;
+    }
+    return decide?.(...args) ?? -22;
+  };
+  canonicalExports.supervisor_fs_dirty_page_decision_flags = () => 0;
+
+  expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("dirty-pinned");
+  expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
+});
+
+test("kernel-worker routes empty dirty flush through supervisor no-op decision", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const decide = canonicalExports.supervisor_fs_dirty_page_decision;
+  let flushDecisions = 0;
+  canonicalExports.supervisor_fs_dirty_page_decision = (...args) => {
+    if (args[0] === canonicalExports.supervisor_fs_dirty_page_op_flush?.()) {
+      flushDecisions += 1;
+    }
+    return decide?.(...args) ?? -22;
+  };
+
+  expect(fsState.flushDirtyResidentFileByInode(2)).toBe(true);
+  expect(flushDecisions).toBe(1);
+});
+
 test("kernel-worker flushes dirty resident pages to backing and leaves clean resident pages", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
 
@@ -733,12 +1426,12 @@ test("kernel-worker flushes dirty resident pages to backing and leaves clean res
   const ino = canonicalExports.fileIno("/lib/runtime.bin");
   expect(ino).toBeGreaterThan(1);
   expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("dirty-pinned");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("dirty-pinned");
 
   expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
   expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 6) ?? new Uint8Array()))
     .toBe("abcXYZ");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
@@ -773,7 +1466,7 @@ test("kernel-worker flushes source-backed dirty resident ranges without full sou
   expect(sourceReads).toEqual([]);
   expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 6) ?? new Uint8Array()))
     .toBe("abcXYZ");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
 
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
     .toBe("abcXYZ");
@@ -811,7 +1504,7 @@ test("kernel-worker flush truncates source-backed dirty resident files to inode 
   expect(sourceReads).toEqual([]);
   expect(new TextDecoder().decode(readResidentFileData(sabPageCache, ino, 0, 3) ?? new Uint8Array()))
     .toBe("abc");
-  expect(evictResidentPage(sabPageCache, ino, 0)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
 
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
     .toBe("abc");
@@ -842,6 +1535,39 @@ test("kernel-worker reads registered partial source ranges without full source m
   expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
   expect(fsState.readBackingFileRangeByInode(ino, 0, backingExtent.length)).toBeNull();
   expect(fsState.readBackingFileByInode(ino)).toBeNull();
+});
+
+test("kernel-worker source-backed reads follow supervisor range decisions", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const source = encoder.encode("prefix:artifact-bytes:suffix");
+  const sourceReads: Array<[number, number]> = [];
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: "prefix:".length,
+    length: "artifact-bytes".length,
+  };
+
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: backingExtent.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSourceObject(backingExtent.sourceIdentity, {
+    byteLength: source.length,
+    readRange(offset, length) {
+      sourceReads.push([offset, length]);
+      return source.subarray(offset, Math.min(source.length, offset + length));
+    },
+  });
+
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  const originalDecision = canonicalExports.supervisor_fs_backing_source_range_decision;
+  canonicalExports.supervisor_fs_backing_source_range_decision = () => 0;
+  expect(fsState.readBackingFileRangeByInode(ino, 9, 5)).toBeNull();
+  expect(sourceReads).toEqual([]);
+
+  canonicalExports.supervisor_fs_backing_source_range_decision = originalDecision;
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 9, 5) ?? new Uint8Array())).toBe("bytes");
+  expect(sourceReads).toEqual([["prefix:".length + 9, 5]]);
 });
 
 test("kernel-worker demand-fills OPFS source ranges into registered backing source", async () => {
@@ -1020,6 +1746,26 @@ test("kernel-worker syncFileDataMutation clears stale source backing extent on e
   expect(dataSnapshot?.kind === "file" ? dataSnapshot.backingExtent : undefined).toBeUndefined();
 });
 
+test("kernel-worker data sync follows supervisor externalize action", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const data = encoder.encode("published-data");
+
+  fsState.writeFile("/lib/runtime.bin", data, 0o755, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  expect(ino).toBeGreaterThan(1);
+
+  const originalDecision = canonicalExports.supervisor_fs_data_sync_decision;
+  canonicalExports.supervisor_fs_data_sync_decision = () => (
+    canonicalExports.supervisor_fs_sync_action_none?.() ?? 0
+  );
+  canonicalExports.opLog.length = 0;
+
+  expect(fsState.syncFileDataMutation(canonicalExports, ino)).toBe(false);
+  expect(canonicalExports.opLog.some((entry) => entry.startsWith("external:/lib/runtime.bin:"))).toBe(false);
+
+  canonicalExports.supervisor_fs_data_sync_decision = originalDecision;
+});
+
 test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes without rematerializing bytes", () => {
   const { canonicalExports, fsState } = makeFsState();
   const publishedData = encoder.encode("published-data");
@@ -1073,6 +1819,27 @@ test("kernel-worker syncMetadataMutation materializes absolute-path file creatio
   expect(ino).toBeGreaterThan(1);
   expect(memberExports.fileIno("/work/new.txt")).toBe(ino);
   expect(readInodeRecord(sabPageCache, ino)).not.toBeNull();
+});
+
+test("kernel-worker metadata sync follows supervisor publish action", () => {
+  const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.mkdir("/work", 0o755, false);
+  const name = encoder.encode("new.txt");
+  const ptr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, ptr);
+  expect(canonicalExports.memfs_create_file(canonicalExports.fileIno("/work"), ptr, name.length)).toBeGreaterThan(1);
+
+  const originalDecision = canonicalExports.supervisor_fs_metadata_sync_decision;
+  canonicalExports.supervisor_fs_metadata_sync_decision = () => (
+    canonicalExports.supervisor_fs_metadata_sync_action_none?.() ?? 0
+  );
+
+  expect(fsState.syncMetadataMutation(canonicalExports, "/work/new.txt")).toBe(false);
+  expect(readInodeRecord(sabPageCache, canonicalExports.fileIno("/work/new.txt"))).toBeNull();
+  expect(memberExports.fileIno("/work/new.txt")).toBe(0);
+
+  canonicalExports.supervisor_fs_metadata_sync_decision = originalDecision;
 });
 
 test("kernel-worker syncMetadataMutation updates existing published file size", () => {
@@ -1182,6 +1949,31 @@ test("kernel-worker syncFileDataMutation externalizes matching published residen
   expect(memberExports.opLog).toContain(`external:/work/out.txt:${size}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
+});
+
+test("kernel-worker backing publication follows supervisor object identity", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  const selected = {
+    fileObjectId: 444,
+    generation: 17,
+  };
+  const backingOps: number[] = [];
+  canonicalExports.supervisor_fs_backing_object_decision = (op) => {
+    backingOps.push(op);
+    return 0;
+  };
+  canonicalExports.supervisor_fs_backing_object_file_object_id = () => BigInt(selected.fileObjectId);
+  canonicalExports.supervisor_fs_backing_object_generation = () => BigInt(selected.generation);
+
+  const data = encoder.encode("supervised-backing-object\n");
+  fsState.writeFile("/work/object.txt", data, 0o644, false);
+
+  const ino = canonicalExports.fileIno("/work/object.txt");
+  const record = readInodeRecord(sabPageCache, ino);
+  expect(backingOps).toContain(canonicalExports.supervisor_fs_backing_object_op_replace?.());
+  expect(record?.fileObjectId).toBe(selected.fileObjectId);
+  expect(record?.generation).toBe(selected.generation);
+  expectBytesEqual(fsState.readFile("/work/object.txt"), data);
 });
 
 test("kernel-worker metadata sync preserves dirty resident file data", () => {

@@ -3,8 +3,9 @@ import {
   applyThreadFdEntries,
   snapshotProcessFdEntriesForThread,
 } from "../../../../src/worker/ownership/fd-table.js";
-import type { KernelRuntimeState } from "../../../../src/abi.js";
+import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 function makeHandle(options: {
   ownerPid: number;
@@ -33,6 +34,13 @@ function makeHandle(options: {
         return vmPtr === 0x1234 ? options.ownerFd9Ofd : options.threadFd9Ofd;
       },
       process_fd_flags: (_vmPtr: number, fd: number) => (fd === 9 ? 1 : 0),
+      supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+        const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+        return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+      },
+      supervisor_process_fd_flags_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+        return fd >= 0 && fd < this.abi_max_fds() ? this.process_fd_flags(vmPtr, fd) : 0;
+      },
     },
   } as unknown as ProcessHandle;
 }
@@ -107,41 +115,52 @@ test("applyThreadFdEntries preserves epoll watched pipe and eventfd fds on non-c
     [11, 12],
     [13, 14],
   ]);
+  let kernel: Partial<KernelExports>;
+  kernel = {
+    ...makeSupervisorAbiStubs({
+      memory,
+      currentExports: () => kernel,
+    }),
+    abi_max_fds: () => 32,
+    abi_max_threads: () => 4,
+    abi_fd_type_epoll: () => 7,
+    abi_fd_type_pipe: () => 6,
+    abi_fd_type_eventfd: () => 9,
+    abi_fd_type_file: () => 3,
+    abi_sys_close: () => 57n,
+    abi_sys_close_range: () => 436n,
+    abi_sys_execve: () => 221n,
+    kernel_epoll_table_ptr: () => kernelState.epollTablePtr,
+    kernel_epoll_table_bytes: () => 64 * 4,
+    kernel_epoll_instance_bytes: () => 64 * 16 + 4,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
+    process_fd_flags: () => 0,
+    process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+      fdMap.set(fd, ofdId);
+    },
+    process_thread_vm_ptr: () => 0,
+    thread_blocked_ofd_id: () => 0,
+    kernel_ofd_fd_type: (ofdId: number) => {
+      if (ofdId === 10) {
+        return 7;
+      }
+      if (ofdId === 12) {
+        return 6;
+      }
+      if (ofdId === 14) {
+        return 9;
+      }
+      return 0;
+    },
+    kernel_ofd_ino: (ofdId: number) => (ofdId === 10 ? 0 : 0),
+  };
   const handle = {
     pid: 1,
     vmPtr: 0x1234,
     memory,
     kernelState,
-    blockedWorkers: new Map(),
-    kernel: {
-      abi_max_fds: () => 32,
-      abi_max_threads: () => 4,
-      abi_fd_type_epoll: () => 7,
-      abi_fd_type_pipe: () => 6,
-      abi_fd_type_eventfd: () => 9,
-      kernel_epoll_table_bytes: () => 64 * 4,
-      kernel_epoll_instance_bytes: () => 64 * 16 + 4,
-      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
-      process_fd_flags: () => 0,
-      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
-        fdMap.set(fd, ofdId);
-      },
-      process_thread_vm_ptr: () => 0,
-      thread_blocked_ofd_id: () => 0,
-      kernel_ofd_fd_type: (ofdId: number) => {
-        if (ofdId === 10) {
-          return 7;
-        }
-        if (ofdId === 12) {
-          return 6;
-        }
-        if (ofdId === 14) {
-          return 9;
-        }
-        return 0;
-      },
-      kernel_ofd_ino: (ofdId: number) => (ofdId === 10 ? 0 : 0),
-    },
+    hostBlockedWorkers: new Map(),
+    kernel,
   } as unknown as ProcessHandle;
 
   applyThreadFdEntries(handle, 0x1234, [{ fd: 11, ofdId: 0, fdFlags: 0 }], {

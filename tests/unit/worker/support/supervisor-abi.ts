@@ -1,0 +1,3587 @@
+import {
+  requiredSupervisorRuntimeExportNames,
+  type KernelExports,
+} from "../../../../src/abi.js";
+import {
+  FS_OP_CLOSE,
+  FS_OP_EXECVE,
+  FS_OP_MKDIR,
+  FS_OP_MMAP,
+  FS_OP_OPENAT,
+  FS_OP_RENAME,
+  FS_OP_UNLINK,
+} from "../../../../src/layout/fs-ring.js";
+
+const DEFAULT_RESIDENT_PAGE_SIZE = 4096;
+
+const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
+  supervisor_abi_version: 1,
+  supervisor_debug_snapshot_bytes: 112,
+  supervisor_thread_event_record_bytes: 80,
+  supervisor_thread_event_record_magic: 0x5645_5354,
+  supervisor_thread_event_kind_blocked: 1,
+  supervisor_thread_event_kind_ready: 2,
+  supervisor_thread_event_kind_faulted: 3,
+  supervisor_thread_event_kind_exited: 4,
+  supervisor_thread_event_kind_host_completion_arrived: 5,
+  supervisor_thread_event_kind_timer_fired: 6,
+  supervisor_thread_event_kind_network_readable: 7,
+  supervisor_thread_event_kind_backing_store_ready: 8,
+  supervisor_thread_state_snapshot_bytes: 32,
+  supervisor_thread_state_snapshot_magic: 0x4854_5354,
+  supervisor_resume_record_bytes: 48,
+  supervisor_resume_record_magic: 0x5255_5354,
+  supervisor_host_completion_record_bytes: 64,
+  supervisor_host_completion_record_magic: 0x4348_5354,
+  supervisor_host_completion_outcome_success: 1,
+  supervisor_host_completion_outcome_failure: 2,
+  supervisor_host_op_record_bytes: 64,
+  supervisor_host_op_record_magic: 0x4f48_5354,
+  supervisor_host_op_kind_spawn_thread_worker: 1,
+  supervisor_host_op_kind_create_process_memory: 3,
+  supervisor_host_op_kind_copy_memory_ranges: 4,
+  supervisor_host_op_kind_retry_blocked_worker: 15,
+  supervisor_process_host_op_record_bytes: 96,
+  supervisor_process_host_op_record_magic: 0x4850_5354,
+  supervisor_process_status_is_lifecycle_handoff: 0,
+  supervisor_process_status_is_execve_spawn: 0,
+  supervisor_process_status_is_clone_spawn: 0,
+  supervisor_process_status_is_vfork_wait: 0,
+  supervisor_process_status_allows_pid_mismatch: 0,
+  supervisor_process_status_defers_kernel_state_adoption: 0,
+  supervisor_process_status_route_action_none: 0,
+  supervisor_process_status_route_action_apply_status_fd_state: 1,
+  supervisor_process_status_route_action_adopt_thread_kernel_state: 2,
+  supervisor_process_status_route_action_apply_fs_memory_writes: 4,
+  supervisor_process_status_route_action_skip_fs_ring_writes: 8,
+  supervisor_process_status_route_action_defer_local_pipe_drain: 16,
+  supervisor_process_status_route_flag_status_state_belongs_to_handle: 1,
+  supervisor_process_status_route_flag_kernel_worker_available: 2,
+  supervisor_vfork_child_owner_mismatch: 0,
+  supervisor_process_owner_matches: 0,
+  supervisor_process_owner_mismatch: 0,
+  supervisor_process_owner_absent: 0,
+  supervisor_process_owner_live_matches: 0,
+  supervisor_process_owner_missing_or_invalid: 0,
+  supervisor_process_identity_matches: 0,
+  supervisor_fault_exit_decision_bytes: 88,
+  supervisor_fault_exit_decision_magic: 0x5846_5354,
+  supervisor_fault_exit_kind_thread_exit: 1,
+  supervisor_fault_exit_kind_process_exit: 2,
+  supervisor_fd_control_record_bytes: 96,
+  supervisor_fd_control_record_magic: 0x4446_5354,
+  supervisor_fd_entry_restore_action_apply: 1,
+  supervisor_fd_entry_restore_action_skip: 2,
+  supervisor_fd_entry_restore_flag_preserve_live_regular_file: 1,
+  supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: 2,
+  supervisor_ofd_slot_restore_flag_referenced_by_fd_entry: 1,
+  supervisor_ofd_slot_restore_flag_trust_regular_file_offset: 2,
+  supervisor_fork_shared_peer_flag_compatible: 1,
+  supervisor_fork_shared_peer_flag_incompatible: 1 << 1,
+  supervisor_fork_shared_peer_flag_pipe_peer: 1 << 2,
+  supervisor_fork_shared_held_ofd_track_flag_shared: 1,
+  supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe: 1 << 1,
+  supervisor_fork_shared_held_ofd_track_flag_stdio_fd: 1 << 2,
+  supervisor_fork_shared_held_ofd_track_flag_fd_entry_source: 1 << 3,
+  supervisor_fork_shared_sync_target_action_reject: 0,
+  supervisor_fork_shared_sync_target_action_defer: 1,
+  supervisor_fork_shared_sync_target_action_use: 2,
+  supervisor_fork_shared_ofd_action_include: 1,
+  supervisor_fork_shared_ofd_action_add_shared: 1 << 1,
+  supervisor_fork_shared_ofd_action_rehydrate: 1 << 2,
+  supervisor_fork_shared_held_ofd_track_action: 0,
+  supervisor_fork_shared_effect_sync_action: 0,
+  supervisor_pipe_slot_mode_read: 1,
+  supervisor_pipe_slot_mode_write: 2,
+  supervisor_pipe_slot_mode_control: 4,
+  supervisor_pipe_slot_snapshot_context_shared_state: 1,
+  supervisor_pipe_slot_snapshot_context_thread_step: 2,
+  supervisor_pipe_slot_snapshot_context_kernel_worker_apply: 3,
+  supervisor_pipe_slot_snapshot_context_kernel_worker_process: 4,
+  supervisor_pipe_slot_snapshot_context_kernel_worker_canonical: 5,
+  supervisor_pipe_slot_snapshot_action_skip: 1,
+  supervisor_pipe_slot_snapshot_action_apply_slot: 2,
+  supervisor_pipe_slot_snapshot_action_apply_control: 4,
+  supervisor_pipe_slot_snapshot_action_set_head_to_source: 8,
+  supervisor_pipe_slot_snapshot_action_set_tail_to_source: 16,
+  supervisor_pipe_slot_snapshot_action_set_head_zero: 32,
+  supervisor_pipe_slot_snapshot_action_copy_full: 64,
+  supervisor_pipe_slot_snapshot_action_copy_tail_delta: 128,
+  supervisor_pipe_slot_snapshot_action_sync_generation: 256,
+  supervisor_pipe_slot_snapshot_action_stop: 512,
+  supervisor_fs_control_record_bytes: 112,
+  supervisor_fs_control_record_magic: 0x5346_5354,
+  supervisor_signal_control_record_bytes: 120,
+  supervisor_signal_control_record_magic: 0x4753_5354,
+  supervisor_fs_response_flag_adopt_kernel_state: 1,
+  supervisor_fs_response_flag_apply_guest_memory_writes: 2,
+  supervisor_fs_response_flag_queue_thread_worker_writes: 4,
+  supervisor_fs_response_flag_apply_local_metadata: 8,
+  supervisor_fs_response_flag_clear_tombstones: 16,
+  supervisor_fs_response_flag_fd_response_may_clear_live_fds: 32,
+  supervisor_fs_response_flag_store_pending_kernel_state: 64,
+  supervisor_fs_response_flag_resolved_to_execve_spawn: 128,
+  supervisor_fs_response_flag_process_owner_matches: 256,
+  supervisor_fs_pipe_refresh_action_none: 0,
+  supervisor_fs_pipe_refresh_action_request_sync: 1,
+  supervisor_fs_pipe_refresh_flag_kernel_worker_available: 1,
+  supervisor_fs_resident_page_evict_not_found: 0,
+  supervisor_fs_resident_page_evict_dirty_pinned: 1,
+  supervisor_fs_resident_page_evict_evicted: 2,
+  supervisor_resume_kind_futex_wake: 1,
+  supervisor_resume_kind_runnable_thread: 2,
+  supervisor_resume_flag_timeout_expired: 1,
+  supervisor_blocked_resume_delegation_direct: 0,
+  supervisor_blocked_resume_delegation_kernel_worker: 1,
+  supervisor_blocked_resume_delegation_wait4_kernel_worker: 2,
+  supervisor_blocked_resume_delegation_unsupported: 3,
+  supervisor_blocked_resume_delegation_epoll_direct: 4,
+  supervisor_blocked_resume_delegation_flag_kernel_worker_available: 1,
+  supervisor_blocked_status_is_host_wait: 0,
+  supervisor_blocked_status_is_connect_wait: 0,
+  supervisor_blocked_status_is_epoll_wait: 0,
+  supervisor_blocked_status_is_pipe_wait: 0,
+  supervisor_blocked_status_is_wait4: 0,
+  supervisor_blocked_status_is_socket_wait: 0,
+  supervisor_blocked_status_needs_network_sidecar_restore: 0,
+  supervisor_blocked_status_syncs_socket_after_resume: 0,
+  supervisor_blocked_status_uses_fork_shared_state_sync: 0,
+  supervisor_blocked_epoll_wait_timeout_ms: -1,
+  supervisor_blocked_poll_wait_timeout_ms: -1,
+  supervisor_blocked_poll_wait_has_socket: 0,
+  supervisor_blocked_pipe_wait_has_ready_events: 0,
+  supervisor_blocked_wait_may_depend_on_network: 0,
+  supervisor_blocked_wait_should_pump_network: 0,
+  supervisor_blocked_pipe_sync_before_retry_action_none: 0,
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync: 1,
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output: 2,
+  supervisor_blocked_pipe_sync_before_retry_action_schedule_retry: 3,
+  supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available: 1,
+  supervisor_blocked_pipe_sync_before_retry_completion_action_none: 0,
+  supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe: 1,
+  supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry: 2,
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output: 1,
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available: 2,
+  supervisor_blocked_status_transition_action_block: 0,
+  supervisor_blocked_status_transition_action_sync_socket: 1,
+  supervisor_blocked_status_transition_action_sync_pipe: 2,
+  supervisor_blocked_status_transition_action_sync_fork_shared: 3,
+  supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared: 4,
+  supervisor_blocked_status_transition_action_sync_socket_and_fork_shared: 5,
+  supervisor_blocked_status_transition_flag_kernel_worker_available: 1,
+  supervisor_blocked_status_transition_flag_network_connections_available: 2,
+  supervisor_blocked_wait_network_pump_action_skip: 0,
+  supervisor_blocked_wait_network_pump_action_pump: 1,
+  supervisor_state_sync_kind_pipe: 1,
+  supervisor_state_sync_kind_epoll: 2,
+  supervisor_state_sync_kind_socket: 3,
+  supervisor_state_sync_request_flag_wake_waiters: 1,
+  supervisor_state_sync_run_flag_run: 1,
+  supervisor_state_sync_run_flag_wake_waiters: 2,
+  supervisor_state_sync_start_action_skip: 0,
+  supervisor_state_sync_start_action_request_sync: 1,
+  supervisor_state_sync_start_action_retry_waiters: 2,
+  supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch: 1,
+  supervisor_state_sync_start_flag_kernel_worker_available: 2,
+  supervisor_state_sync_start_flag_epoll_state_kernel_owns: 4,
+  supervisor_state_sync_start_flag_held_epoll_ofd: 8,
+  supervisor_state_sync_start_flag_wake_waiters: 16,
+  supervisor_owned_state_sync_action_none: 0,
+  supervisor_owned_state_sync_action_mark_process_memfs_dirty: 1,
+  supervisor_owned_state_sync_action_sync_fork_shared: 2,
+  supervisor_owned_state_sync_action_sync_epoll_dependent_ofds: 4,
+  supervisor_owned_state_sync_action_sync_socket: 8,
+  supervisor_owned_state_sync_action_wake_socket_waiters: 16,
+  supervisor_owned_state_sync_action_sync_process_memfs: 32,
+  supervisor_owned_state_sync_action_sync_epoll: 64,
+  supervisor_owned_state_sync_action_retry_epoll_waiters: 128,
+  supervisor_owned_state_sync_flag_running_worker: 1,
+  supervisor_owned_state_sync_flag_worker_owns_authoritative_state: 2,
+  supervisor_owned_state_sync_flag_kernel_worker_available: 4,
+  supervisor_owned_state_sync_flag_epoll_state_kernel_owns: 8,
+  supervisor_owned_state_sync_flag_fork_shared_effect_requested: 16,
+  supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch: 32,
+  supervisor_owned_state_sync_flag_process_memfs_dirty: 64,
+  supervisor_owned_state_sync_flag_held_epoll_ofd: 128,
+  supervisor_owned_state_sync_flag_wrote_or_drained_pipe: 256,
+  supervisor_blocked_wait_retry_reason_default: 0,
+  supervisor_blocked_wait_retry_reason_immediate: 1,
+  supervisor_blocked_wait_retry_reason_standard_defer: 2,
+  supervisor_blocked_wait_retry_reason_active_child: 3,
+  supervisor_blocked_wait_retry_reason_passive_wait: 4,
+  supervisor_blocked_wait_retry_reason_process_gate: 5,
+  supervisor_blocked_wait_retry_flag_host_progress: 1,
+  supervisor_blocked_wait_retry_flag_active_child: 2,
+  supervisor_blocked_wait_retry_flag_passive_wait: 4,
+  supervisor_blocked_wait_retry_flag_process_gate: 8,
+  supervisor_blocked_wait_retry_flag_thread_init_pending: 16,
+  supervisor_blocked_retry_action_flag_supervisor_timer_armed: 1,
+  supervisor_blocked_retry_action_flag_rpc_pending: 2,
+  supervisor_blocked_retry_action_flag_owner_async: 4,
+  supervisor_blocked_retry_action_flag_thread_init_pending: 8,
+  supervisor_blocked_retry_action_flag_fork_shared_sync_pending: 16,
+  supervisor_blocked_retry_action_flag_running_worker: 32,
+  supervisor_blocked_retry_action_flag_kernel_worker_available: 64,
+  supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns: 128,
+  supervisor_blocked_retry_action_flag_network_connections_available: 256,
+  supervisor_blocked_retry_action_flag_wait_timer_already_checked: 512,
+  supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available: 1,
+  supervisor_blocked_retry_host_cleanup_action_none: 0,
+  supervisor_blocked_retry_host_cleanup_action_flush_stdin: 1,
+  supervisor_blocked_retry_host_cleanup_action_drain_local_pipe: 2,
+  supervisor_blocked_retry_action_defer_supervisor_timer: 0,
+  supervisor_blocked_retry_action_defer_rpc_pending: 1,
+  supervisor_blocked_retry_action_defer_owner_async: 2,
+  supervisor_blocked_retry_action_defer_thread_init_pending: 3,
+  supervisor_blocked_retry_action_arm_wait_timer: 4,
+  supervisor_blocked_retry_action_park_active_child: 5,
+  supervisor_blocked_retry_action_resume_wait4: 6,
+  supervisor_blocked_retry_action_defer_fork_shared_sync: 7,
+  supervisor_blocked_retry_action_defer_running_worker: 8,
+  supervisor_blocked_retry_action_defer_process_gate: 9,
+  supervisor_blocked_retry_action_pump_network: 10,
+  supervisor_blocked_retry_action_epoll_kernel_worker: 11,
+  supervisor_blocked_retry_action_request_pipe_sync: 12,
+  supervisor_blocked_retry_action_request_pipe_sync_and_drain_output: 13,
+  supervisor_blocked_retry_action_schedule_pipe_sync_retry: 14,
+  supervisor_blocked_retry_action_resume_fs: 15,
+  supervisor_blocked_retry_action_defer_passive_wait: 16,
+  supervisor_blocked_retry_action_resume_kernel_worker: 17,
+  supervisor_blocked_retry_action_resume_wait4_kernel_worker: 18,
+  supervisor_blocked_retry_action_resume_epoll_direct: 19,
+  supervisor_blocked_retry_action_resume_direct: 20,
+  supervisor_blocked_retry_action_unsupported: 21,
+  supervisor_blocked_initial_action_none: 0,
+  supervisor_blocked_initial_action_defer_supervisor_timer: 1,
+  supervisor_blocked_initial_action_defer_rpc_pending: 2,
+  supervisor_blocked_initial_action_arm_wait_timer: 3,
+  supervisor_blocked_initial_action_retry_now: 4,
+  supervisor_blocked_initial_action_schedule_retry: 5,
+  supervisor_blocked_retry_result_action_none: 0,
+  supervisor_blocked_retry_result_action_arm_wait_timer: 1,
+  supervisor_blocked_retry_result_action_schedule_retry: 2,
+  supervisor_blocked_retry_result_action_schedule_retry_and_pump: 3,
+  supervisor_blocked_retry_result_action_park_futex: 4,
+  supervisor_blocked_retry_status_action_none: 0,
+  supervisor_blocked_retry_status_action_pipe_retry_diagnostics: 1,
+  supervisor_blocked_retry_status_action_pump_blocked_outcome: 2,
+  supervisor_blocked_retry_status_action_active_child_pipe: 4,
+  supervisor_blocked_retry_status_action_active_child_wait4: 8,
+  supervisor_blocked_retry_status_action_success_log_epoll_ready: 16,
+  supervisor_blocked_retry_status_action_success_log_wait4_resumed: 32,
+  supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running: 64,
+  supervisor_blocked_post_network_pump_action_schedule_retry: 22,
+  supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress: 23,
+  supervisor_blocked_stale_retry_result_action_none: 0,
+  supervisor_blocked_stale_retry_result_action_handle_current_result: 1,
+  supervisor_blocked_stale_retry_result_action_handle_current_result_wait4: 2,
+  supervisor_blocked_rpc_pipe_sync_action_not_pipe: 0,
+  supervisor_blocked_rpc_pipe_sync_action_none: 1,
+  supervisor_blocked_rpc_pipe_sync_action_sync_socket: 2,
+  supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available: 1,
+  supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch: 2,
+  supervisor_blocked_rpc_post_resume_sync_action_none: 0,
+  supervisor_blocked_rpc_post_resume_sync_action_fork_shared: 1,
+  supervisor_blocked_rpc_post_resume_sync_action_socket: 2,
+  supervisor_blocked_wait_wake_source_pipe_sync: 1,
+  supervisor_blocked_wait_wake_source_epoll_sync: 2,
+  supervisor_blocked_wait_wake_source_socket_sync: 3,
+  supervisor_blocked_wait_wake_source_pipe_and_epoll_sync: 4,
+  supervisor_blocked_wait_wake_target_pipe_wait: 1,
+  supervisor_blocked_wait_wake_target_epoll_wait: 2,
+  supervisor_blocked_wait_wake_target_socket_recv: 4,
+  supervisor_blocked_wait_wake_target_socket_send: 8,
+  supervisor_blocked_wait_wake_flag_rpc_pending: 1,
+  supervisor_blocked_wait_wake_action_skip: 0,
+  supervisor_blocked_wait_wake_action_retry: 1,
+  supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry: 2,
+  supervisor_blocked_wait_wake_action_log_epoll_and_retry: 3,
+  supervisor_wait_in_worker_status_action_none: 0,
+  supervisor_wait_in_worker_status_action_block_epoll_timeout: 1,
+  supervisor_wait_in_worker_status_action_park_futex: 2,
+  supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe: 4,
+  supervisor_wait_in_worker_status_action_sync_socket: 8,
+  supervisor_wait_in_worker_status_action_sync_epoll: 16,
+  supervisor_wait_in_worker_status_action_sync_pipe: 32,
+  supervisor_wait_in_worker_status_action_drain_local_pipe: 64,
+  supervisor_wait_in_worker_status_action_flag_running_worker: 1,
+  supervisor_wait_in_worker_status_action_flag_kernel_worker_available: 2,
+  supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns: 4,
+  supervisor_wait4_child_exit_blocked_parent_action_none: 0,
+  supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc: 1,
+  supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry: 2,
+  supervisor_wait4_rpc_local_status_action_skip: 0,
+  supervisor_wait4_rpc_local_status_action_start: 1,
+  supervisor_scheduler_clear_blocked_action_none: 0,
+  supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry: 1,
+  supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry: 1,
+  supervisor_scheduler_block_worker_action_record_blocked: 0,
+  supervisor_scheduler_block_worker_action_park_futex: 1,
+  supervisor_scheduler_futex_waiter_action_not_waiter: 0,
+  supervisor_scheduler_futex_waiter_action_waiter: 1,
+  supervisor_worker_status_transition_action_enqueue: 0,
+  supervisor_worker_status_transition_action_connect_wait: 1,
+  supervisor_worker_status_transition_action_park_futex: 2,
+  supervisor_worker_status_transition_action_host_wait: 3,
+  supervisor_worker_status_sync_action_none: 0,
+  supervisor_worker_status_sync_action_sync_pipe: 1,
+  supervisor_worker_status_sync_action_sync_socket: 2,
+  supervisor_worker_status_sync_action_sync_lifecycle: 4,
+  supervisor_worker_status_sync_action_wake_signal_waiters: 8,
+  supervisor_worker_status_sync_flag_wrote_or_drained_pipe: 1,
+  supervisor_worker_sleep_status_action_none: 0,
+  supervisor_worker_sleep_status_action_yield: 1,
+  supervisor_worker_sleep_status_action_arm_host_timer: 2,
+  supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear: 4,
+  supervisor_stdio_output_settle_kind_visible: 1,
+  supervisor_stdio_output_settle_kind_inherited_child: 2,
+  supervisor_stdio_pipe_read_progress_action_none: 0,
+  supervisor_stdio_pipe_read_progress_action_snapshot: 1,
+  supervisor_blocked_wait_timer_required: 0,
+  supervisor_vfork_execve_handoff_failure_wait_status: 127 << 8,
+  supervisor_host_op_kind_arm_host_timer: 12,
+  supervisor_futex_wait_completion_woken: 1,
+  supervisor_futex_wait_completion_not_equal: 2,
+  supervisor_futex_wait_completion_invalid_address: 4,
+  supervisor_futex_wait_completion_signal_check: 5,
+  supervisor_fs_metadata_full_sync_action_none: 0,
+  supervisor_fs_metadata_full_sync_action_required: 1,
+  supervisor_fs_local_metadata_action_none: 0,
+  supervisor_fs_local_metadata_action_tombstone_primary: 1,
+  supervisor_fs_local_metadata_action_forget_primary: 2,
+  supervisor_fs_local_metadata_action_forget_secondary: 4,
+};
+
+export interface SupervisorRunnableResumeRecordFixture {
+  vmPtr: number;
+  tid?: number;
+  processPtr?: number;
+  status?: number;
+  seq?: bigint;
+  detail0?: bigint;
+}
+
+export interface SupervisorArmHostTimerHostOpFixture {
+  vmPtr: number;
+  delayMs: bigint;
+  seq?: bigint;
+  tid?: number;
+  processPtr?: number;
+  status?: number;
+  deadlineTicks?: bigint;
+}
+
+export interface SupervisorBlockedRetryHostOpFixture {
+  vmPtr: number;
+  delayMs: bigint;
+  reason: bigint;
+  seq?: bigint;
+  tid?: number;
+  processPtr?: number;
+  status?: number;
+}
+
+export interface SupervisorFaultExitDecisionRecordFixture {
+  kind?: number;
+  seq?: bigint;
+  vmPtr: number;
+  exitVmPtr?: number;
+  tid?: number;
+  processPtr?: number;
+  remainingThreads?: number;
+  liveThreads?: number;
+  exitCode?: number;
+  termSignal?: number;
+  status?: number;
+  faultSignal?: number;
+  faultKind?: number;
+  faultPc?: bigint;
+  faultAddr?: bigint;
+}
+
+type SupervisorAbiStubOverrides = Partial<KernelExports> & {
+  cloneSpawnParentVmPtr?: () => number;
+  currentExports?: () => Partial<KernelExports> | undefined;
+};
+
+export function makeSupervisorAbiStubs(
+  overrides: SupervisorAbiStubOverrides = {},
+): Partial<KernelExports> {
+  const cloneSpawnHostOpChildVmPtrs = new Map<number, number>();
+  const networkPumpBackoffs = new Set<number>();
+  const stateSyncRequests = new Map<string, { queuedRunFlags: number; inFlight: boolean }>();
+  const ofdRestoreOffsetFloors = new Map<number, { hostFd: number; ino: number; offset: bigint }>();
+  const currentExports = (receiver: KernelExports | undefined): Partial<KernelExports> =>
+    receiver ?? overrides.currentExports?.() ?? overrides;
+  const callNumber = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): number => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    const value = fn?.(...args);
+    return typeof value === "bigint" ? Number(value) : Number(value ?? 0);
+  };
+  const callOptionalNumber = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): number | undefined => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    if (fn === undefined) {
+      return undefined;
+    }
+    const value = fn(...args);
+    return typeof value === "bigint" ? Number(value) : Number(value);
+  };
+  const callBigInt = (receiver: Partial<KernelExports>, name: keyof KernelExports, ...args: unknown[]): bigint => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    const value = fn?.(...args);
+    return typeof value === "bigint" ? value : BigInt(Math.trunc(Number(value ?? 0)));
+  };
+  const callOptionalBigInt = (
+    receiver: Partial<KernelExports>,
+    name: keyof KernelExports,
+    ...args: unknown[]
+  ): bigint | undefined => {
+    const fn = (receiver[name] ?? overrides[name]) as ((...params: unknown[]) => unknown) | undefined;
+    if (fn === undefined) {
+      return undefined;
+    }
+    const value = fn(...args);
+    return typeof value === "bigint" ? value : BigInt(Math.trunc(Number(value)));
+  };
+  const statusFor = (receiver: Partial<KernelExports>, vmPtr: number): number =>
+    callNumber(receiver, "thread_status", vmPtr);
+  const blockedWaitTimerRequired = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
+    const explicit = callOptionalNumber(receiver, "supervisor_blocked_wait_timer_required", vmPtr);
+    if (explicit !== undefined && explicit !== 0) {
+      return true;
+    }
+    const status = statusFor(receiver, vmPtr);
+    if (status === callNumber(receiver, "abi_status_epoll_wait")) {
+      const timeout = callOptionalBigInt(receiver, "thread_epoll_wait_timeout", vmPtr);
+      if (timeout !== undefined && timeout >= 0n) {
+        return true;
+      }
+      return (callOptionalBigInt(receiver, "thread_epoll_timerfd_deadline_ticks", vmPtr) ?? 0n) !== 0n;
+    }
+    if (status === callNumber(receiver, "abi_status_pipe_wait")) {
+      const timeout = callOptionalBigInt(receiver, "thread_poll_wait_timeout", vmPtr);
+      return timeout !== undefined
+        && timeout >= 0n
+        && callNumber(receiver, "thread_poll_wait_ready_count", vmPtr) <= 0;
+    }
+    if (
+      status === callNumber(receiver, "abi_status_connect")
+      || status === callNumber(receiver, "abi_status_socket_recv")
+      || status === callNumber(receiver, "abi_status_socket_send")
+    ) {
+      const timeout = callOptionalBigInt(receiver, "thread_socket_wait_timeout", vmPtr);
+      return timeout !== undefined && timeout >= 0n;
+    }
+    return false;
+  };
+  const pipeWaitStatusFor = (receiver: Partial<KernelExports>): number =>
+    callNumber(receiver, "abi_status_pipe_wait");
+  const pollWaitIsPollLike = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
+    const syscallNr = callNumber(receiver, "thread_blocked_syscall_nr", vmPtr);
+    return syscallNr !== 0
+      && (
+        syscallNr === callNumber(receiver, "abi_sys_ppoll")
+        || syscallNr === callNumber(receiver, "abi_sys_pselect6")
+      );
+  };
+  const supervisorPollWaitTimeoutMs = (receiver: Partial<KernelExports>, vmPtr: number): number => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (statusFor(receiver, vmPtr) !== pipeWaitStatusFor(receiver) || !pollWaitIsPollLike(receiver, vmPtr)) {
+      return -1;
+    }
+    return callOptionalNumber(receiver, "thread_poll_wait_timeout", vmPtr) ?? -1;
+  };
+  const supervisorEpollWaitTimeoutMs = (receiver: Partial<KernelExports>, vmPtr: number): number => {
+    if (vmPtr === 0) {
+      return -14;
+    }
+    if (statusFor(receiver, vmPtr) !== callNumber(receiver, "abi_status_epoll_wait")) {
+      return -1;
+    }
+    return callNumber(receiver, "thread_epoll_wait_timeout", vmPtr);
+  };
+  const statusMatchesAny = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    names: Array<keyof KernelExports>,
+  ): boolean =>
+    names.some((name) => callOptionalNumber(receiver, name) === status);
+  const supervisorStatusIsHostWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_wait4",
+      "abi_status_pipe_wait",
+      "abi_status_epoll_wait",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+      "abi_status_flock_wait",
+      "abi_status_connect",
+    ]);
+  const supervisorStatusIsConnectWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_connect"]);
+  const supervisorStatusIsEpollWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_epoll_wait"]);
+  const supervisorStatusIsPipeWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_pipe_wait"]);
+  const supervisorStatusIsWait4 = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, ["abi_status_wait4"]);
+  const supervisorStatusIsSocketWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+    ]);
+  const supervisorStatusNeedsNetworkSidecarRestore = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_connect",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+      "abi_status_pipe_wait",
+      "abi_status_epoll_wait",
+    ]);
+  const supervisorStatusSyncsSocketAfterResume = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_connect",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+    ]);
+  const supervisorStatusUsesForkSharedStateSync = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_pipe_wait",
+      "abi_status_socket_recv",
+      "abi_status_socket_send",
+      "abi_status_flock_wait",
+    ]);
+  const supervisorProcessStatusIsLifecycleHandoff = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_vfork_wait",
+      "abi_status_execve_spawn",
+      "abi_status_clone_spawn",
+    ]);
+  const supervisorProcessStatusIsExecveSpawn = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_execve_spawn",
+    ]);
+  const supervisorProcessStatusIsCloneSpawn = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_clone_spawn",
+    ]);
+  const supervisorProcessStatusIsVforkWait = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_vfork_wait",
+    ]);
+  const supervisorProcessStatusAllowsPidMismatch = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_vfork_wait",
+      "abi_status_execve_spawn",
+    ]);
+  const supervisorProcessStatusDefersKernelStateAdoption = (receiver: Partial<KernelExports>, status: number): boolean =>
+    statusMatchesAny(receiver, status, [
+      "abi_status_clone_spawn",
+    ]);
+  const supervisorProcessStatusRouteAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    flags: number,
+  ): number => {
+    const statusStateBelongsToHandle = (
+      flags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_flag_status_state_belongs_to_handle
+    ) !== 0;
+    const kernelWorkerAvailable = (
+      flags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_flag_kernel_worker_available
+    ) !== 0;
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_none;
+    if (statusStateBelongsToHandle) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_apply_status_fd_state;
+    }
+    if (statusStateBelongsToHandle && !supervisorProcessStatusDefersKernelStateAdoption(receiver, status)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_adopt_thread_kernel_state;
+    } else if (status === callOptionalNumber(receiver, "abi_status_fs")) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_apply_fs_memory_writes;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_fs")) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_skip_fs_ring_writes;
+    }
+    if (kernelWorkerAvailable) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_process_status_route_action_defer_local_pipe_drain;
+    }
+    return action;
+  };
+  const supervisorWaitWakeMaskForSync = (source: number): number => {
+    switch (source) {
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait;
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_epoll_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_socket_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_recv
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_send;
+      case DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_source_pipe_and_epoll_sync:
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+      default:
+        return -22;
+    }
+  };
+  const supervisorWaitWakeTargetForStatus = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (callOptionalNumber(receiver, "abi_status_pipe_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_pipe_wait;
+    }
+    if (callOptionalNumber(receiver, "abi_status_epoll_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_epoll_wait;
+    }
+    if (callOptionalNumber(receiver, "abi_status_socket_recv") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_recv;
+    }
+    if (callOptionalNumber(receiver, "abi_status_socket_send") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_target_socket_send;
+    }
+    return 0;
+  };
+  const supervisorWaitStatusMatchesWakeSource = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    source: number,
+  ): number => {
+    const mask = supervisorWaitWakeMaskForSync(source);
+    if (mask < 0) {
+      return mask;
+    }
+    const target = supervisorWaitWakeTargetForStatus(receiver, status);
+    return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+  };
+  const supervisorBlockedRetryStatusAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (callOptionalNumber(receiver, "abi_status_pipe_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_pipe_retry_diagnostics
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_pump_blocked_outcome
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_active_child_pipe;
+    }
+    if (callOptionalNumber(receiver, "abi_status_epoll_wait") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_success_log_epoll_ready
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running;
+    }
+    if (callOptionalNumber(receiver, "abi_status_wait4") === status) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_active_child_wait4
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_success_log_wait4_resumed;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_status_action_none;
+  };
+  const supervisorWaitWakeAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    source: number,
+    flags: number,
+  ): number => {
+    const matches = supervisorWaitStatusMatchesWakeSource(receiver, status, source);
+    if (matches < 0) {
+      return matches;
+    }
+    if (matches === 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip;
+    }
+    const rpcPending =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_flag_rpc_pending) !== 0;
+    if (status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      return rpcPending
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
+      return rpcPending
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_log_epoll_and_retry;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_retry;
+  };
+  const supervisorWaitInWorkerStatusAction = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    status: number,
+    flags: number,
+  ): number => {
+    const runningWorker =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_running_worker) !== 0;
+    const kernelWorkerAvailable =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_kernel_worker_available) !== 0;
+    const epollStateKernelOwns =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns) !== 0;
+    let actions = DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_none;
+    if (!kernelWorkerAvailable) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_drain_local_pipe;
+    }
+
+    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
+      const timeoutMs = supervisorEpollWaitTimeoutMs(receiver, vmPtr);
+      if (timeoutMs < -1) {
+        return timeoutMs;
+      }
+      if (timeoutMs === 0) {
+        return actions | DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_epoll_timeout;
+      }
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_futex_wait")) {
+      return actions | DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_park_futex;
+    }
+
+    if (kernelWorkerAvailable && status === callOptionalNumber(receiver, "abi_status_wait4")) {
+      return actions | DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe;
+    }
+    if (!runningWorker) {
+      return actions;
+    }
+
+    if (
+      kernelWorkerAvailable
+      && (
+        status === callOptionalNumber(receiver, "abi_status_socket_recv")
+        || status === callOptionalNumber(receiver, "abi_status_socket_send")
+      )
+    ) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_socket;
+    }
+    if (
+      epollStateKernelOwns
+      && (
+        status === callOptionalNumber(receiver, "abi_status_epoll_wait")
+        || status === callOptionalNumber(receiver, "abi_status_socket_recv")
+        || status === callOptionalNumber(receiver, "abi_status_socket_send")
+      )
+    ) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_epoll;
+    }
+    if (kernelWorkerAvailable && status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      actions |= DEFAULT_NUMERIC_EXPORTS.supervisor_wait_in_worker_status_action_sync_pipe;
+    }
+    return actions;
+  };
+  const supervisorStateSyncStartAction = (kind: number, flags: number): number => {
+    if (
+      ![
+        DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_pipe,
+        DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_epoll,
+        DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_socket,
+      ].includes(kind)
+    ) {
+      return -22;
+    }
+    if (
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch) !== 0
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+    }
+    if (
+      kind === DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_pipe
+      || kind === DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_kind_socket
+    ) {
+      return (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_kernel_worker_available) !== 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_request_sync
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+    }
+    if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_epoll_state_kernel_owns) === 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+    }
+    if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_held_epoll_ofd) !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_request_sync;
+    }
+    return (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_flag_wake_waiters) !== 0
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_retry_waiters
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_start_action_skip;
+  };
+  const supervisorOwnedStateSyncAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    completedSyncEffects: number,
+    flags: number,
+  ): number => {
+    const syncEffectPipeState = 1 << 0;
+    const syncEffectSocketState = 1 << 1;
+    const syncEffectEpollState = 1 << 2;
+    const syncEffectEpollDependentOfdState = 1 << 3;
+    const syncEffectProcessMemfs = 1 << 7;
+    const runningWorker =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_running_worker) !== 0;
+    const workerOwnsAuthoritativeState =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_worker_owns_authoritative_state) !== 0;
+    const kernelWorkerAvailable =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_kernel_worker_available) !== 0;
+    const epollStateKernelOwns =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_epoll_state_kernel_owns) !== 0;
+    const forkSharedEffectRequested =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_fork_shared_effect_requested) !== 0;
+    const activeVforkChildOwnerMismatch =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch) !== 0;
+    const processMemfsDirty =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_process_memfs_dirty) !== 0;
+    const heldEpollOfd =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_held_epoll_ofd) !== 0;
+    const wroteOrDrainedPipe =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_flag_wrote_or_drained_pipe) !== 0;
+    const hasPipeEffect = (completedSyncEffects & syncEffectPipeState) !== 0;
+    const hasSocketEffect = (completedSyncEffects & syncEffectSocketState) !== 0;
+    const hasEpollEffect = (completedSyncEffects & syncEffectEpollState) !== 0;
+    const hasEpollDependentOfdEffect = (completedSyncEffects & syncEffectEpollDependentOfdState) !== 0;
+    const hasProcessMemfsEffect = (completedSyncEffects & syncEffectProcessMemfs) !== 0;
+
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_none;
+    const markProcessMemfsDirty = runningWorker && hasProcessMemfsEffect;
+    if (markProcessMemfsDirty) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_mark_process_memfs_dirty;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_ok") && hasSocketEffect) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_wake_socket_waiters;
+    }
+    if (
+      activeVforkChildOwnerMismatch
+      || supervisorProcessStatusIsLifecycleHandoff(receiver, status)
+    ) {
+      return action;
+    }
+
+    const shouldSyncForkShared = workerOwnsAuthoritativeState
+      && kernelWorkerAvailable
+      && forkSharedEffectRequested
+      && status === callOptionalNumber(receiver, "abi_status_ok");
+    if (shouldSyncForkShared) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_fork_shared;
+    }
+    if (runningWorker && epollStateKernelOwns && hasEpollDependentOfdEffect) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_epoll_dependent_ofds;
+    }
+    if (shouldSyncForkShared && runningWorker && kernelWorkerAvailable && hasSocketEffect) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_socket;
+    }
+    if (
+      runningWorker
+      && kernelWorkerAvailable
+      && (processMemfsDirty || markProcessMemfsDirty)
+      && (status !== callOptionalNumber(receiver, "abi_status_ok") || hasPipeEffect)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_process_memfs;
+    }
+    if (runningWorker && epollStateKernelOwns && hasEpollEffect && heldEpollOfd) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_epoll;
+      if (!wroteOrDrainedPipe) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_retry_epoll_waiters;
+      }
+    }
+    return action;
+  };
+  const supervisorWait4ChildExitBlockedParentAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (status === callOptionalNumber(receiver, "abi_status_wait4")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_none;
+  };
+  const supervisorWait4RpcLocalStatusAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number =>
+    status === callOptionalNumber(receiver, "abi_status_wait4")
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_rpc_local_status_action_start
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_rpc_local_status_action_skip;
+  const supervisorSchedulerClearBlockedAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    flags: number,
+  ): number => {
+    const clearPipeSyncBeforeRetry =
+      (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry) !== 0;
+    if (clearPipeSyncBeforeRetry && status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_clear_blocked_action_none;
+  };
+  const supervisorSchedulerBlockWorkerAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number =>
+    status === callOptionalNumber(receiver, "abi_status_futex_wait")
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_block_worker_action_park_futex
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_block_worker_action_record_blocked;
+  const supervisorSchedulerFutexWaiterAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number =>
+    status === callOptionalNumber(receiver, "abi_status_futex_wait")
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_futex_waiter_action_waiter
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_scheduler_futex_waiter_action_not_waiter;
+  const supervisorWorkerStatusTransitionAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+  ): number => {
+    if (status === callOptionalNumber(receiver, "abi_status_connect")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_connect_wait;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_futex_wait")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_park_futex;
+    }
+    if (supervisorStatusIsHostWait(receiver, status)) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_host_wait;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_transition_action_enqueue;
+  };
+  const supervisorWorkerStatusSyncAction = (
+    receiver: Partial<KernelExports>,
+    status: number,
+    completedSyncEffects: number,
+    flags: number,
+  ): number => {
+    const syncEffectPipeState = 1 << 0;
+    const syncEffectSocketState = 1 << 1;
+    const syncEffectProcessLifecycle = 1 << 4;
+    const syncEffectSignalWaiters = 1 << 5;
+    const wroteOrDrainedPipe =
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_flag_wrote_or_drained_pipe) !== 0;
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_none;
+    if (
+      status !== callOptionalNumber(receiver, "abi_status_fs")
+      && (wroteOrDrainedPipe || (completedSyncEffects & syncEffectPipeState) !== 0)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_sync_pipe;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_ok")) {
+      if ((completedSyncEffects & syncEffectSocketState) !== 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_sync_socket;
+      }
+      if ((completedSyncEffects & syncEffectProcessLifecycle) !== 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_sync_lifecycle;
+      }
+      if ((completedSyncEffects & syncEffectSignalWaiters) !== 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_status_sync_action_wake_signal_waiters;
+      }
+    }
+    return action;
+  };
+  const supervisorWorkerSleepStatusAction = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    status: number,
+    completedSyncEffects: number,
+  ): number => {
+    if (status !== callOptionalNumber(receiver, "abi_status_sleep")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_none;
+    }
+    if (vmPtr === 0) {
+      return -14;
+    }
+    const seconds = callOptionalBigInt(receiver, "thread_sleep_seconds", vmPtr) ?? 0n;
+    const nanoseconds = callOptionalBigInt(receiver, "thread_sleep_nanoseconds", vmPtr) ?? 0n;
+    if (seconds !== 0n || nanoseconds !== 0n) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_arm_host_timer;
+    }
+    let action = DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_yield;
+    if ((completedSyncEffects & (1 << 0)) !== 0) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear;
+    }
+    return action;
+  };
+  const supervisorPollWaitHasSocket = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
+    vmPtr !== 0
+    && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
+    && callNumber(receiver, "thread_poll_wait_has_socket", vmPtr) === 1;
+  const supervisorPipeWaitHasReadyEvents = (receiver: Partial<KernelExports>, vmPtr: number): boolean =>
+    vmPtr !== 0
+    && statusFor(receiver, vmPtr) === pipeWaitStatusFor(receiver)
+    && callNumber(receiver, "thread_poll_wait_ready_count", vmPtr) > 0;
+  const supervisorWaitMayDependOnNetwork = (receiver: Partial<KernelExports>, vmPtr: number): boolean => {
+    const status = statusFor(receiver, vmPtr);
+    if (status === pipeWaitStatusFor(receiver)) {
+      if (supervisorPollWaitTimeoutMs(receiver, vmPtr) >= 0 && supervisorPollWaitHasSocket(receiver, vmPtr)) {
+        return true;
+      }
+      if (supervisorPipeWaitHasReadyEvents(receiver, vmPtr)) {
+        return false;
+      }
+      return false;
+    }
+    return status === callNumber(receiver, "abi_status_socket_recv")
+      || status === callNumber(receiver, "abi_status_socket_send")
+      || status === callNumber(receiver, "abi_status_connect");
+  };
+  const addRange = (ranges: Array<{ start: number; end: number }>, start: number, end: number, limit: number): void => {
+    const boundedStart = Math.max(0, Math.min(start, limit));
+    const boundedEnd = Math.max(boundedStart, Math.min(end, limit));
+    if (boundedEnd > boundedStart) {
+      ranges.push({ start: boundedStart, end: boundedEnd });
+    }
+  };
+  const coalesceRanges = (ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> => {
+    const sorted = ranges
+      .filter((range) => range.end > range.start)
+      .sort((left, right) => left.start - right.start || left.end - right.end);
+    const coalesced: Array<{ start: number; end: number }> = [];
+    for (const range of sorted) {
+      const last = coalesced[coalesced.length - 1];
+      if (last && range.start <= last.end) {
+        last.end = Math.max(last.end, range.end);
+      } else {
+        coalesced.push({ ...range });
+      }
+    }
+    return coalesced;
+  };
+  const processGuestBase = (receiver: Partial<KernelExports>): number => {
+    const addressProfile = callNumber(receiver, "thread_spawn_address_profile" as keyof KernelExports, 0)
+      || callNumber(receiver, "abi_guest_address_profile_target" as keyof KernelExports);
+    const base = callNumber(receiver, "process_guest_base_for_address_profile", addressProfile);
+    return base || 0x1000000;
+  };
+  const processMemoryRanges = (
+    receiver: Partial<KernelExports>,
+    memory: WebAssembly.Memory,
+    vmPtr: number,
+  ): Array<{ start: number; end: number }> => {
+    const limit = memory.buffer.byteLength;
+    const ranges: Array<{ start: number; end: number }> = [];
+    const spawnKind = callNumber(receiver, "thread_spawn_kind", vmPtr);
+    const execveKind = callNumber(receiver, "abi_spawn_kind_execve");
+    const fullMemfs = spawnKind === execveKind;
+    const heapPtr = callNumber(receiver, "kernel_heap_ptr");
+    addRange(ranges, 0, heapPtr, limit);
+    addRange(ranges, callNumber(receiver, "kernel_ofd_table_ptr"), callNumber(receiver, "kernel_ofd_table_ptr") + callNumber(receiver, "kernel_ofd_table_bytes"), limit);
+    addRange(
+      ranges,
+      callNumber(receiver, "kernel_memfs_ptr"),
+      callNumber(receiver, "kernel_memfs_ptr")
+        + callNumber(receiver, "kernel_memfs_header_bytes")
+        + callNumber(receiver, "kernel_memfs_inodes_bytes")
+        + callNumber(receiver, "kernel_memfs_first_child_bytes")
+        + callNumber(receiver, "kernel_memfs_dir_entries_bytes")
+        + (fullMemfs ? callNumber(receiver, "kernel_memfs_data_bytes") : 0),
+      limit,
+    );
+    addRange(ranges, callNumber(receiver, "kernel_memfs_data_ptr"), callNumber(receiver, "kernel_memfs_data_ptr") + callNumber(receiver, "kernel_memfs_data_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_epoll_table_ptr"), callNumber(receiver, "kernel_epoll_table_ptr") + callNumber(receiver, "kernel_epoll_table_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_socket_table_ptr"), callNumber(receiver, "kernel_socket_table_ptr") + callNumber(receiver, "kernel_socket_table_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_pipe_base"), callNumber(receiver, "kernel_pipe_base") + callNumber(receiver, "kernel_pipe_region_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_net_buf_base"), callNumber(receiver, "kernel_net_buf_base") + callNumber(receiver, "kernel_net_buf_pool_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_sig_slots_ptr"), callNumber(receiver, "kernel_sig_slots_ptr") + callNumber(receiver, "kernel_sig_slots_bytes") + callNumber(receiver, "kernel_signal_action_table_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_process_pending_ptr"), callNumber(receiver, "kernel_process_pending_ptr") + callNumber(receiver, "kernel_process_pending_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_process_runtime_state_ptr"), callNumber(receiver, "kernel_process_runtime_state_ptr") + callNumber(receiver, "kernel_process_runtime_state_bytes"), limit);
+    addRange(ranges, callNumber(receiver, "kernel_time_state_ptr"), callNumber(receiver, "kernel_time_state_ptr") + callNumber(receiver, "kernel_time_state_bytes"), limit);
+    if (spawnKind !== execveKind) {
+      const guestBase = processGuestBase(receiver);
+      const processPtr = callNumber(receiver, "thread_process_ptr", vmPtr);
+      const processStateBytes = callNumber(receiver, "process_state_bytes") || 4096;
+      addRange(ranges, guestBase, guestBase + processPtr + processStateBytes, limit);
+      const spRaw = receiver.thread_sp?.(vmPtr) ?? overrides.thread_sp?.(vmPtr) ?? 0n;
+      const sp = typeof spRaw === "bigint" ? Number(spRaw) : Number(spRaw);
+      if (Number.isFinite(sp) && sp > 0) {
+        const stackStartGuest = Math.max(0, Math.floor(sp / 65536) * 65536 - 1024 * 1024);
+        addRange(ranges, guestBase + stackStartGuest, guestBase + stackStartGuest + 8 * 1024 * 1024, limit);
+      }
+    }
+    return coalesceRanges(ranges);
+  };
+  const processMemoryInitialBytes = (
+    receiver: Partial<KernelExports>,
+    ranges: Array<{ start: number; end: number }>,
+    vmPtr: number,
+  ): number => {
+    const spawnKind = callNumber(receiver, "thread_spawn_kind", vmPtr);
+    const execveKind = callNumber(receiver, "abi_spawn_kind_execve");
+    const guestBase = processGuestBase(receiver);
+    if (spawnKind === execveKind) {
+      const spRaw = receiver.thread_sp?.(vmPtr) ?? overrides.thread_sp?.(vmPtr) ?? 0n;
+      const sp = typeof spRaw === "bigint" ? Number(spRaw) : Number(spRaw);
+      const liveStackEnd = Number.isFinite(sp) && sp > 0 ? guestBase + sp + 8 * 1024 * 1024 : 0;
+      return Math.max(64 * 1024 * 1024, callNumber(receiver, "kernel_heap_ptr"), guestBase + 0x10000, liveStackEnd);
+    }
+    const copyEnd = ranges.reduce((end, range) => Math.max(end, range.end), 0);
+    return Math.max(copyEnd + 16 * 1024 * 1024, guestBase);
+  };
+  const processMemoryMaxPages = (
+    receiver: Partial<KernelExports>,
+    initialBytes: number,
+    vmPtr: number,
+  ): number => {
+    return callNumber(receiver, "thread_spawn_process_max_memory_pages", vmPtr)
+      || callNumber(receiver, "thread_process_max_memory_pages", vmPtr)
+      || Math.ceil(initialBytes / 65536)
+      || 1;
+  };
+  const processHeldOfdRefcount = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    targetOfdId: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (targetOfdId <= 0 || targetOfdId >= maxFds) {
+      return 0;
+    }
+    let count = 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (callNumber(receiver, "process_fd_ofd_id", vmPtr, fd) === targetOfdId) {
+        count += 1;
+      }
+    }
+    const maxThreads = callNumber(receiver, "abi_max_threads");
+    for (let slot = 0; slot < maxThreads; slot += 1) {
+      const threadVmPtr = callNumber(receiver, "process_thread_vm_ptr", vmPtr, slot);
+      if (threadVmPtr === 0) {
+        continue;
+      }
+      if (callNumber(receiver, "thread_blocked_ofd_id", threadVmPtr) === targetOfdId) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+  const processHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    const ofdIds: number[] = [];
+    for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+      if (processHeldOfdRefcount(receiver, vmPtr, ofdId) > 0) {
+        ofdIds.push(ofdId);
+      }
+    }
+    return ofdIds;
+  };
+  const forkSharedOfdIdentityKey = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+  ): bigint => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0n;
+    }
+    const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (fdType <= 0) {
+      return 0n;
+    }
+    const ino = callNumber(receiver, "kernel_ofd_ino", ofdId);
+    const hostFd = callNumber(receiver, "kernel_ofd_host_fd", ofdId);
+    const pipeType = callNumber(receiver, "abi_fd_type_pipe");
+    const socketType = callOptionalNumber(receiver, "abi_fd_type_socket");
+    const endpointToken = fdType === pipeType
+      ? (hostFd >= 0 ? 1n : 2n)
+      : socketType !== undefined && fdType === socketType
+        ? BigInt.asUintN(64, BigInt(hostFd))
+        : 0n;
+    let hash = 0xcbf29ce484222325n;
+    for (const value of [BigInt(fdType), BigInt(ino), endpointToken]) {
+      hash ^= BigInt.asUintN(64, value);
+      hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    }
+    return hash === 0n ? 0xcbf29ce484222325n : hash;
+  };
+  const forkSharedOfdPublishAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    peerFlags: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0;
+    }
+    const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (
+      fdType <= 0
+      || (peerFlags & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_peer_flag_incompatible) !== 0
+    ) {
+      return 0;
+    }
+    const compatiblePeer = (peerFlags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_peer_flag_compatible) !== 0;
+    const pipePeer = (peerFlags & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_peer_flag_pipe_peer) !== 0;
+    if (fdType === callNumber(receiver, "abi_fd_type_file")) {
+      return compatiblePeer ? 1 : 0;
+    }
+    if (fdType === callNumber(receiver, "abi_fd_type_pipe")) {
+      return compatiblePeer || pipePeer ? 1 : 0;
+    }
+    return 1;
+  };
+  const forkSharedEffectSyncAction = (
+    hasEffect: number,
+    hasTrackedState: number,
+    sourceHoldsRegularFile: number,
+    regularFileHasPeer: number,
+  ): number => {
+    if (hasEffect === 0 || hasTrackedState === 0) {
+      return 0;
+    }
+    return sourceHoldsRegularFile !== 0 && regularFileHasPeer === 0 ? 0 : 1;
+  };
+  const forkSharedSyncTargetAction = (
+    invalidPid: number,
+    runningWorker: number,
+    vforkReadyWorker: number,
+    hasHostBlockedWorker: number,
+    rpcPending: number,
+    processExit: number,
+    registeredProcessExit: number,
+    registeredMismatch: number,
+    incompatibleOfd: number,
+    requireHostBlocked: number,
+    includeMemfs: number,
+    runtimeNetworkState: number,
+  ): number => {
+    if (
+      invalidPid !== 0
+      || processExit !== 0
+      || registeredProcessExit !== 0
+      || registeredMismatch !== 0
+      || incompatibleOfd !== 0
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_reject;
+    }
+    if (includeMemfs !== 0 && runtimeNetworkState !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_reject;
+    }
+    if (runningWorker !== 0 || vforkReadyWorker !== 0 || rpcPending !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_defer;
+    }
+    if (requireHostBlocked !== 0 && hasHostBlockedWorker === 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_defer;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_use;
+  };
+  const forkSharedSyncableOfdAction = (
+    syncable: number,
+    sourceConflicting: number,
+    allowed: number,
+    regularFile: number,
+    sourcePublished: number,
+    runtimeNetworkSocket: number,
+  ): number => {
+    if (
+      syncable === 0
+      || sourceConflicting !== 0
+      || allowed === 0
+      || runtimeNetworkSocket !== 0
+    ) {
+      return 0;
+    }
+    if (regularFile !== 0 && sourcePublished === 0) {
+      return 0;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+  };
+  const forkSharedDeltaSourceOfdAction = (
+    allowed: number,
+    sourcePublished: number,
+    sourceHeld: number,
+    pipePeer: number,
+  ): number => {
+    if (allowed === 0) {
+      return 0;
+    }
+    if (sourcePublished !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+    }
+    if (sourceHeld !== 0 && pipePeer !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_add_shared;
+    }
+    return 0;
+  };
+  const forkSharedTrackedSourceOfdAction = (
+    kernelShared: number,
+    sourceFdEntry: number,
+    syncable: number,
+    typeNone: number,
+    incompatiblePeer: number,
+  ): number => {
+    if (syncable === 0 || typeNone !== 0) {
+      return 0;
+    }
+    if (kernelShared === 0 && sourceFdEntry === 0) {
+      return 0;
+    }
+    if (sourceFdEntry === 0 && incompatiblePeer !== 0) {
+      return 0;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+  };
+  const forkSharedPipePeerOfdAction = (stale: number, syncable: number): number => (
+    stale !== 0 || syncable === 0
+      ? 0
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_add_shared
+  );
+  const forkSharedRehydrateOfdAction = (active: number, sourceHeld: number, allowed: number): number => (
+    active !== 0 && sourceHeld === 0 && allowed !== 0
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_rehydrate
+      : 0
+  );
+  const fdTypeIsPipeLike = (receiver: Partial<KernelExports>, fdType: number): boolean =>
+    fdType === callNumber(receiver, "abi_fd_type_pipe")
+    || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_master")
+    || fdType === callOptionalNumber(receiver, "abi_fd_type_pty_slave");
+  const processPipeSlotForFd = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    fd: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (fd < 0 || fd >= maxFds) {
+      return 0;
+    }
+    const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return 0;
+    }
+    const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (fdType === callNumber(receiver, "abi_fd_type_pipe")) {
+      return callNumber(receiver, "kernel_ofd_ino", ofdId);
+    }
+    const ptySlaveType = callOptionalNumber(receiver, "abi_fd_type_pty_slave");
+    const ptyMasterType = callOptionalNumber(receiver, "abi_fd_type_pty_master");
+    if (fdType !== ptySlaveType && fdType !== ptyMasterType) {
+      return 0;
+    }
+    const ptyIdx = callNumber(receiver, "kernel_ofd_ino", ofdId);
+    const statusFlags = callOptionalNumber(receiver, "kernel_ofd_status_flags", ofdId) ?? 0;
+    const oWronly = callOptionalNumber(receiver, "abi_o_wronly") ?? 1;
+    const oRdwr = callOptionalNumber(receiver, "abi_o_rdwr") ?? 2;
+    const fdWritesToStdioOutput = fd === 1 || fd === 2 || statusFlags === oWronly || statusFlags === oRdwr;
+    if (fdType === ptySlaveType) {
+      return fdWritesToStdioOutput
+        ? (callOptionalNumber(receiver, "kernel_pty_output_pipe", ptyIdx) ?? 0)
+        : (callOptionalNumber(receiver, "kernel_pty_input_pipe", ptyIdx) ?? 0);
+    }
+    return fdWritesToStdioOutput
+      ? (callOptionalNumber(receiver, "kernel_pty_input_pipe", ptyIdx) ?? 0)
+      : (callOptionalNumber(receiver, "kernel_pty_output_pipe", ptyIdx) ?? 0);
+  };
+  const processPipeOfdForFd = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    fd: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    const ofdId = fd >= 0 && fd < maxFds
+      ? callNumber(receiver, "process_fd_ofd_id", vmPtr, fd)
+      : 0;
+    return ofdId > 0 && ofdId < maxFds && processPipeSlotForFd(receiver, vmPtr, fd) !== 0
+      ? ofdId
+      : 0;
+  };
+  const processPipeOpenCount = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    pipeSlot: number,
+    write: boolean,
+  ): number => {
+    if (vmPtr === 0 || pipeSlot <= 0) {
+      return 0;
+    }
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    let count = 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (processPipeSlotForFd(receiver, vmPtr, fd) !== pipeSlot) {
+        continue;
+      }
+      const ofdId = processPipeOfdForFd(receiver, vmPtr, fd);
+      if (ofdId === 0) {
+        continue;
+      }
+      const hostFd = callNumber(receiver, "kernel_ofd_host_fd", ofdId);
+      if ((write && hostFd < 0) || (!write && hostFd >= 0)) {
+        count += 1;
+      }
+    }
+    return count;
+  };
+  const reconcilePipeControl = (
+    receiver: Partial<KernelExports>,
+    pipeSlot: number,
+    readOpen: number,
+    writeOpen: number,
+  ): number => {
+    const maxPipes = callNumber(receiver, "abi_max_pipes");
+    if (pipeSlot <= 0 || pipeSlot >= maxPipes || readOpen < 0 || writeOpen < 0) {
+      return 0;
+    }
+    const slotBytes = callNumber(receiver, "kernel_pipe_region_bytes") / maxPipes;
+    if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+      return 0;
+    }
+    const slotOffset = callNumber(receiver, "kernel_pipe_base") + pipeSlot * slotBytes;
+    const view = new DataView(receiver.memory!.buffer);
+    view.setInt32(slotOffset + 8, Math.trunc(readOpen), true);
+    view.setInt32(slotOffset + 12, Math.trunc(writeOpen), true);
+    return 1;
+  };
+  const pipeCounterAhead = (sourceValue: number, targetValue: number): boolean =>
+    sourceValue > targetValue
+    || (
+      sourceValue < targetValue
+      && targetValue > 65_536 / 2
+      && sourceValue < 65_536 / 2
+    );
+  const pipeGenerationAhead = (sourceValue: number, targetValue: number): boolean =>
+    targetValue === 0
+    || sourceValue > targetValue
+    || (
+      sourceValue < targetValue
+      && targetValue > 0x80000000
+      && sourceValue < 0x80000000
+    );
+  const pipeSlotSnapshotMergeAction = (
+    context: number,
+    mode: number,
+    freshFlag: number,
+    sourceHead: number,
+    sourceTail: number,
+    sourceReadOpen: number,
+    sourceWriteOpen: number,
+    sourceGeneration: number,
+    targetHeadInput: number,
+    targetTailInput: number,
+    targetReadOpen: number,
+    targetWriteOpen: number,
+    targetGeneration: number,
+  ): number => {
+    const readMode = (mode & DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_mode_read) !== 0;
+    const writeMode = (mode & DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_mode_write) !== 0;
+    const controlMode = (mode & DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_mode_control) !== 0;
+    const fresh = freshFlag !== 0;
+    const sharedState = context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_shared_state;
+    const threadStep = context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_thread_step;
+    const kernelWorkerApply =
+      context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_apply;
+    const kernelWorkerProcess =
+      context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_process;
+    const kernelWorkerCanonical =
+      context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_canonical;
+    const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
+    let targetHead = targetHeadInput;
+    let targetTail = targetTailInput;
+    if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
+      if (
+        sourceHead === 0
+        && sourceTail === 0
+        && !pipeGenerationAhead(sourceGeneration, targetGeneration)
+      ) {
+        if (kernelWorkerCanonical) {
+          if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
+            return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
+              | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+          }
+        } else if (targetHead !== targetTail && !fresh) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+        }
+      }
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+      if (
+        fresh
+        || pipeGenerationAhead(sourceGeneration, targetGeneration)
+        || (targetReadOpen <= 0 && targetWriteOpen <= 0)
+      ) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+      } else if (syncGenerationWithoutApply) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+      }
+      return action;
+    }
+    if (
+      (
+        fresh
+        || ((kernelWorkerProcess || kernelWorkerCanonical) && targetReadOpen <= 0 && targetWriteOpen <= 0)
+      )
+      && sourceHead === 0
+      && sourceTail === 0
+      && targetHead === targetTail
+      && sourceReadOpen > 0
+      && sourceWriteOpen > 0
+      && readMode
+      && writeMode
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
+    if (
+      kernelWorkerProcess
+      && sourceHead === 0
+      && sourceTail === 0
+      && (targetHead !== 0 || targetTail !== 0)
+    ) {
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+      if (targetReadOpen <= 0 && targetWriteOpen <= 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot;
+      }
+      return action;
+    }
+    if (
+      kernelWorkerApply
+      && sourceHead === 0
+      && sourceTail === 0
+      && (targetHead !== 0 || targetTail !== 0)
+      && targetReadOpen <= 0
+      && targetWriteOpen <= 0
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
+    if (
+      (threadStep || kernelWorkerApply)
+      && targetReadOpen <= 0
+      && targetWriteOpen <= 0
+      && targetHead === targetTail
+      && (sourceReadOpen > 0 || sourceWriteOpen > 0)
+      && (writeMode || controlMode)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
+    let action = 0;
+    if (controlMode && (sharedState || threadStep || kernelWorkerApply)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_control;
+    }
+    if (
+      readMode
+      && (!writeMode || kernelWorkerProcess)
+      && sourceHead !== 0
+      && sourceHead === sourceTail
+      && targetTail !== sourceTail
+      && pipeCounterAhead(sourceTail, targetTail)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source;
+      targetHead = sourceHead;
+      targetTail = sourceTail;
+    }
+    if (
+      writeMode
+      && !readMode
+      && sourceHead === 0
+      && sourceTail !== 0
+      && targetHead !== 0
+      && (targetHead === targetTail || targetTail === 0)
+      && pipeCounterAhead(sourceTail, targetTail)
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_zero;
+      targetHead = 0;
+    }
+    if (sharedState) {
+      let readHeadAdvanced = false;
+      if (readMode) {
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+          targetHead = sourceHead;
+          readHeadAdvanced = true;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail) || (readHeadAdvanced && sourceHead !== sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+          targetTail = sourceTail;
+        } else if (
+          sourceTail === targetTail
+          && sourceHead !== sourceTail
+          && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+        ) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      if (writeMode) {
+        if (pipeCounterAhead(sourceTail, targetTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        } else if (
+          sourceTail === targetTail
+          && sourceHead !== sourceTail
+          && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+        ) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+    }
+    if (kernelWorkerProcess) {
+      if (
+        readMode
+        && pipeCounterAhead(sourceHead, targetHead)
+        && (sourceHead !== sourceTail || targetTail === sourceTail)
+      ) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+      }
+      if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+      } else if (writeMode && sourceTail === targetTail && sourceHead !== sourceTail) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+      }
+      return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+    }
+    if (kernelWorkerCanonical) {
+      if (readMode) {
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+          targetHead = sourceHead;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      if (writeMode) {
+        let repairedHead = false;
+        if (pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+          repairedHead = true;
+        }
+        if (pipeCounterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
+          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+        }
+      }
+      return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+    }
+    if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
+    }
+    if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_tail_delta;
+    } else if (
+      writeMode
+      && sourceTail === targetTail
+      && sourceHead !== sourceTail
+      && !(readMode && pipeCounterAhead(targetHead, sourceHead))
+    ) {
+      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
+    }
+    return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
+  };
+  const regularFileOfdsShareIdentity = (
+    receiver: Partial<KernelExports>,
+    currentOfdId: number,
+    candidateOfdId: number,
+  ): boolean =>
+    callNumber(receiver, "kernel_ofd_fd_type", currentOfdId) === callNumber(receiver, "abi_fd_type_file")
+    && callNumber(receiver, "kernel_ofd_fd_type", candidateOfdId) === callNumber(receiver, "abi_fd_type_file")
+    && callNumber(receiver, "kernel_ofd_host_fd", currentOfdId) === callNumber(receiver, "kernel_ofd_host_fd", candidateOfdId)
+    && callNumber(receiver, "kernel_ofd_ino", currentOfdId) === callNumber(receiver, "kernel_ofd_ino", candidateOfdId);
+  const supervisorFdEntryGuestWriteAction = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+    fd: number,
+    candidateOfdId: number,
+    explicitOfdId: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (fd < 0 || fd >= maxFds || candidateOfdId < 0 || candidateOfdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const currentOfdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+    if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === candidateOfdId) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const currentType = callNumber(receiver, "kernel_ofd_fd_type", currentOfdId);
+    if (explicitOfdId === currentOfdId && fdTypeIsPipeLike(receiver, currentType)) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    if (
+      candidateOfdId > 0
+      && candidateOfdId < maxFds
+      && callNumber(receiver, "kernel_ofd_refcount", currentOfdId) > 0
+      && regularFileOfdsShareIdentity(receiver, currentOfdId, candidateOfdId)
+      && callBigInt(receiver, "kernel_ofd_offset", candidateOfdId) < callBigInt(receiver, "kernel_ofd_offset", currentOfdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+  };
+  const supervisorOfdSlotWriteAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const currentType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (currentType === 0 || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    if (candidateType === 0 || candidateType !== currentType) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    if (
+      candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+      || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
+    if (
+      currentType === callNumber(receiver, "abi_fd_type_file")
+      && candidate < callBigInt(receiver, "kernel_ofd_offset", ofdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+  };
+  const supervisorOfdSlotRestoreAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+    syscallNr: bigint | number,
+    flags: number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const currentType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+    if (currentType === 0 || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const referencedByFdEntry = (flags
+      & DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_referenced_by_fd_entry) !== 0;
+    if (!referencedByFdEntry) {
+      if (candidateType === 0 || candidateType !== currentType) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (
+        candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+        || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+    }
+    if (
+      (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_trust_regular_file_offset) !== 0
+      || currentType !== callNumber(receiver, "abi_fd_type_file")
+      || candidateType !== callNumber(receiver, "abi_fd_type_file")
+      || candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+      || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const currentOffset = callBigInt(receiver, "kernel_ofd_offset", ofdId);
+    const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
+    const floor = ofdRestoreOffsetFloors.get(ofdId);
+    const maxSeen = floor?.hostFd === candidateHostFd && floor.ino === candidateIno
+      ? floor.offset
+      : currentOffset;
+    const nextMax = candidate > currentOffset ? candidate : currentOffset;
+    if (nextMax > maxSeen) {
+      ofdRestoreOffsetFloors.set(ofdId, { hostFd: candidateHostFd, ino: candidateIno, offset: nextMax });
+    }
+    if (candidate < maxSeen) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    if (candidate >= currentOffset) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    }
+    const syscall = typeof syscallNr === "bigint" ? syscallNr : BigInt(Math.trunc(syscallNr));
+    return syscall === BigInt(callNumber(receiver, "abi_sys_lseek"))
+      ? DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply
+      : DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+  };
+  const supervisorRegularFileOffsetRestoreAction = (
+    receiver: Partial<KernelExports>,
+    ofdId: number,
+    snapshotHostFd: number,
+    snapshotIno: number,
+    snapshotOffset: bigint | number,
+  ): number => {
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    if (ofdId <= 0 || ofdId >= maxFds) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    const snapshot = typeof snapshotOffset === "bigint" ? snapshotOffset : BigInt(Math.trunc(snapshotOffset));
+    if (
+      callNumber(receiver, "kernel_ofd_fd_type", ofdId) !== callNumber(receiver, "abi_fd_type_file")
+      || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0
+      || callNumber(receiver, "kernel_ofd_host_fd", ofdId) !== snapshotHostFd
+      || callNumber(receiver, "kernel_ofd_ino", ofdId) !== snapshotIno
+      || callBigInt(receiver, "kernel_ofd_offset", ofdId) >= snapshot
+    ) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
+    return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+  };
+  const processEpollHeldOfdIds = (receiver: Partial<KernelExports>, vmPtr: number): number[] => {
+    const epollType = callNumber(receiver, "abi_fd_type_epoll");
+    return processHeldOfdIds(receiver, vmPtr)
+      .filter((ofdId) => callNumber(receiver, "kernel_ofd_fd_type", ofdId) === epollType);
+  };
+  const processEpollDependentOfdIds = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+  ): number[] => {
+    const memory = receiver.memory ?? overrides.memory;
+    if (memory === undefined) {
+      return [];
+    }
+    const maxFds = callNumber(receiver, "abi_max_fds");
+    const tableBytes = callNumber(receiver, "kernel_epoll_table_bytes");
+    const instanceBytes = callNumber(receiver, "kernel_epoll_instance_bytes");
+    const tablePtr = callNumber(receiver, "kernel_epoll_table_ptr");
+    const tablePointerBytes = tableBytes % 8 === 0
+      && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
+      ? 8
+      : 4;
+    const tableEntries = Math.floor(tableBytes / tablePointerBytes);
+    const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
+    const countOffset = entryStride * tableEntries;
+    const view = new DataView(memory.buffer);
+    if (
+      tableEntries <= 0
+      || entryStride < 8
+      || tablePtr < 0
+      || tablePtr + tableBytes > view.byteLength
+    ) {
+      return [];
+    }
+    const dependentOfdIds = new Set<number>();
+    for (const epollOfdId of processEpollHeldOfdIds(receiver, vmPtr)) {
+      const epollIdx = callNumber(receiver, "kernel_ofd_ino", epollOfdId);
+      if (epollIdx < 0 || epollIdx >= tableEntries) {
+        continue;
+      }
+      const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
+      if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
+        continue;
+      }
+      const count = Math.min(view.getUint32(instancePtr + countOffset, true), tableEntries);
+      for (let i = 0; i < count; i += 1) {
+        const ofdId = view.getUint32(instancePtr + i * entryStride + 4, true);
+        if (ofdId > 0 && ofdId < maxFds) {
+          dependentOfdIds.add(ofdId);
+        }
+      }
+    }
+    return [...dependentOfdIds];
+  };
+  const processSyncDependentOfdIds = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+  ): number[] => {
+    const eventfdType = callNumber(receiver, "abi_fd_type_eventfd");
+    const timerfdType = callNumber(receiver, "abi_fd_type_timerfd");
+    return processHeldOfdIds(receiver, vmPtr)
+      .filter((ofdId) => {
+        const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+        return fdType === eventfdType || fdType === timerfdType;
+      });
+  };
+  const processEpollDependentSyncOfdIds = (
+    receiver: Partial<KernelExports>,
+    vmPtr: number,
+  ): number[] => {
+    const eventfdType = callNumber(receiver, "abi_fd_type_eventfd");
+    const timerfdType = callNumber(receiver, "abi_fd_type_timerfd");
+    return processEpollDependentOfdIds(receiver, vmPtr)
+      .filter((ofdId) => {
+        const fdType = callNumber(receiver, "kernel_ofd_fd_type", ofdId);
+        return fdType === eventfdType || fdType === timerfdType;
+      });
+  };
+  const syscallMayClearFdEntries = (
+    receiver: Partial<KernelExports>,
+    syscallNr: bigint | number,
+  ): boolean => {
+    const value = typeof syscallNr === "bigint" ? syscallNr : BigInt(Math.trunc(syscallNr));
+    return value === BigInt(callNumber(receiver, "abi_sys_close"))
+      || value === BigInt(callNumber(receiver, "abi_sys_close_range"))
+      || value === BigInt(callNumber(receiver, "abi_sys_execve"));
+  };
+  let latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
+  const stubs = Object.fromEntries(
+    requiredSupervisorRuntimeExportNames().map((name) => [
+      name,
+      () => DEFAULT_NUMERIC_EXPORTS[name] ?? 0,
+    ]),
+  );
+  return {
+    ...stubs,
+    supervisor_blocked_poll_wait_timeout_ms(this: KernelExports | undefined, vmPtr: number) {
+      return supervisorPollWaitTimeoutMs(currentExports(this), vmPtr);
+    },
+    supervisor_blocked_epoll_wait_timeout_ms(this: KernelExports | undefined, vmPtr: number) {
+      return supervisorEpollWaitTimeoutMs(currentExports(this), vmPtr);
+    },
+    supervisor_blocked_status_is_host_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsHostWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_connect_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsConnectWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_epoll_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsEpollWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_pipe_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsPipeWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_wait4(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsWait4(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_is_socket_wait(this: KernelExports | undefined, status: number) {
+      return supervisorStatusIsSocketWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_needs_network_sidecar_restore(this: KernelExports | undefined, status: number) {
+      return supervisorStatusNeedsNetworkSidecarRestore(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_syncs_socket_after_resume(this: KernelExports | undefined, status: number) {
+      return supervisorStatusSyncsSocketAfterResume(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_blocked_status_uses_fork_shared_state_sync(this: KernelExports | undefined, status: number) {
+      return supervisorStatusUsesForkSharedStateSync(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_is_lifecycle_handoff(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsLifecycleHandoff(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_is_execve_spawn(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsExecveSpawn(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_is_clone_spawn(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsCloneSpawn(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_is_vfork_wait(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusIsVforkWait(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_allows_pid_mismatch(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusAllowsPidMismatch(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_defers_kernel_state_adoption(this: KernelExports | undefined, status: number) {
+      return supervisorProcessStatusDefersKernelStateAdoption(currentExports(this), status) ? 1 : 0;
+    },
+    supervisor_process_status_route_action(this: KernelExports | undefined, status: number, flags: number) {
+      return supervisorProcessStatusRouteAction(currentExports(this), status, flags);
+    },
+    supervisor_vfork_child_owner_mismatch(vmPtr: number, runtimePid: number) {
+      const result = overrides.supervisor_vfork_child_owner_mismatch?.(vmPtr, runtimePid) ?? 0;
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_matches(this: KernelExports | undefined, vmPtr: number, runtimePid: number) {
+      const result = overrides.supervisor_process_owner_matches?.(vmPtr, runtimePid)
+        ?? (callOptionalNumber(currentExports(this), "process_current_pid", vmPtr) === runtimePid ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_mismatch(this: KernelExports | undefined, vmPtr: number, runtimePid: number) {
+      const currentPid = callOptionalNumber(currentExports(this), "process_current_pid", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_mismatch?.(vmPtr, runtimePid)
+        ?? (currentPid > 0 && currentPid !== runtimePid ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_absent(this: KernelExports | undefined, vmPtr: number) {
+      const receiver = currentExports(this);
+      const currentPid = callOptionalNumber(receiver, "process_current_pid", vmPtr) ?? 0;
+      const threadCount = callOptionalNumber(receiver, "thread_process_thread_count", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_absent?.(vmPtr)
+        ?? (currentPid === 0 && threadCount === 0 ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_live_matches(this: KernelExports | undefined, vmPtr: number, runtimePid: number) {
+      const receiver = currentExports(this);
+      const currentPid = callOptionalNumber(receiver, "process_current_pid", vmPtr) ?? 0;
+      const threadCount = callOptionalNumber(receiver, "thread_process_thread_count", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_live_matches?.(vmPtr, runtimePid)
+        ?? (currentPid === runtimePid && threadCount > 0 ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_owner_missing_or_invalid(this: KernelExports | undefined, vmPtr: number) {
+      const currentPid = callOptionalNumber(currentExports(this), "process_current_pid", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_owner_missing_or_invalid?.(vmPtr)
+        ?? (currentPid === 0 || currentPid > 0xffff ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_process_identity_matches(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      runtimePid: number,
+      processPtr: number,
+    ) {
+      const receiver = currentExports(this);
+      const currentPid = callOptionalNumber(receiver, "process_current_pid", vmPtr) ?? 0;
+      const currentProcessPtr = callOptionalNumber(receiver, "thread_process_ptr", vmPtr) ?? 0;
+      const result = overrides.supervisor_process_identity_matches?.(vmPtr, runtimePid, processPtr)
+        ?? (currentPid === runtimePid && currentProcessPtr === processPtr ? 1 : 0);
+      return typeof result === "bigint" ? Number(result) : result;
+    },
+    supervisor_blocked_poll_wait_has_socket(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorPollWaitHasSocket(currentExports(this), vmPtr) ? 1 : 0;
+    },
+    supervisor_blocked_pipe_wait_has_ready_events(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorPipeWaitHasReadyEvents(currentExports(this), vmPtr) ? 1 : 0;
+    },
+    supervisor_blocked_wait_may_depend_on_network(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorWaitMayDependOnNetwork(currentExports(this), vmPtr) ? 1 : 0;
+    },
+    supervisor_blocked_wait_should_pump_network(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const status = statusFor(receiver, vmPtr);
+      if (status === pipeWaitStatusFor(receiver)) {
+        return supervisorWaitMayDependOnNetwork(receiver, vmPtr)
+          || !supervisorPipeWaitHasReadyEvents(receiver, vmPtr)
+          ? 1
+          : 0;
+      }
+      return status === callNumber(receiver, "abi_status_socket_recv")
+        || status === callNumber(receiver, "abi_status_socket_send")
+        || status === callNumber(receiver, "abi_status_connect")
+        ? 1
+        : 0;
+    },
+    supervisor_blocked_epoll_wait_retry_required(this: KernelExports | undefined, vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const status = statusFor(receiver, vmPtr);
+      return status === callNumber(receiver, "abi_status_epoll_wait")
+        && callNumber(receiver, "thread_process_thread_count", vmPtr) > 1
+        ? 1
+        : 0;
+    },
+    supervisor_blocked_resume_delegation(this: KernelExports | undefined, vmPtr: number, flags: number) {
+      const kernelWorkerAvailable = (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_flag_kernel_worker_available) !== 0;
+      const receiver = currentExports(this);
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      if (!kernelWorkerAvailable) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_direct;
+      }
+      if (vmPtr === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_unsupported;
+      }
+      if (status === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_wait4_kernel_worker;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker;
+    },
+    supervisor_blocked_pipe_sync_before_retry_action(_vmPtr: number, flags: number) {
+      if ((flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_request_sync;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_none;
+    },
+    supervisor_blocked_pipe_sync_before_retry_requested() {
+      return 0;
+    },
+    supervisor_blocked_pipe_sync_before_retry_clear() {
+      return 0;
+    },
+    supervisor_blocked_pipe_sync_before_retry_completion_action(_flags: number) {
+      const flags = Number(_flags);
+      const requestedDrain =
+        (flags
+          & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output)
+        !== 0;
+      const kernelWorkerAvailable =
+        (flags
+          & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available)
+        !== 0;
+      let action =
+        DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry;
+      if (requestedDrain || !kernelWorkerAvailable) {
+        action |=
+          DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe;
+      }
+      return action;
+    },
+    supervisor_blocked_initial_action(this: KernelExports | undefined, vmPtr: number, blockedStatus: number, flags: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_supervisor_timer_armed) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_defer_supervisor_timer;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_rpc_pending) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_defer_rpc_pending;
+      }
+      if (blockedWaitTimerRequired(receiver, vmPtr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_arm_wait_timer;
+      }
+      if (blockedStatus === callNumber(receiver, "abi_status_epoll_wait")) {
+        return callNumber(receiver, "thread_process_thread_count", vmPtr) > 1
+          ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry
+          : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_none;
+      }
+      if (blockedStatus === callNumber(receiver, "abi_status_wait4")) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_retry_now;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_initial_action_schedule_retry;
+    },
+    supervisor_blocked_retry_host_cleanup_action(_flags: number) {
+      const flags = Number(_flags);
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_host_cleanup_action_flush_stdin;
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available) === 0) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_host_cleanup_action_drain_local_pipe;
+      }
+      return action;
+    },
+    supervisor_blocked_retry_result_action(this: KernelExports | undefined, vmPtr: number, resultStatus: number) {
+      const receiver = currentExports(this);
+      if (resultStatus === callNumber(receiver, "abi_status_futex_wait")) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_park_futex;
+      }
+      if (vmPtr === 0) {
+        return -14;
+      }
+      if (blockedWaitTimerRequired(receiver, vmPtr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_arm_wait_timer;
+      }
+      if (resultStatus === callNumber(receiver, "abi_status_epoll_wait")) {
+        return callNumber(receiver, "thread_process_thread_count", vmPtr) > 1
+          ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_schedule_retry_and_pump
+          : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_none;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_result_action_schedule_retry;
+    },
+    supervisor_blocked_post_network_pump_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      changed: number,
+      flags: number,
+    ) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      if (changed === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress;
+      }
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      if (
+        !supervisorStatusIsPipeWait(receiver, status)
+        || !supervisorPollWaitHasSocket(receiver, vmPtr)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_post_network_pump_action_schedule_retry;
+      }
+      return receiver?.supervisor_blocked_retry_action?.(
+        vmPtr,
+        flags | DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_wait_timer_already_checked,
+      ) ?? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_direct;
+    },
+    supervisor_blocked_stale_retry_result_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      blockedStatus: number,
+    ) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const currentStatus = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      if (currentStatus === blockedStatus) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_none;
+      }
+      const okStatus = Number(receiver?.abi_status_ok?.() ?? overrides.abi_status_ok?.() ?? 0);
+      const faultStatus = Number(receiver?.abi_status_fault?.() ?? overrides.abi_status_fault?.() ?? -1);
+      if (currentStatus !== okStatus && currentStatus !== faultStatus) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_none;
+      }
+      if (blockedStatus === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_handle_current_result_wait4;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_stale_retry_result_action_handle_current_result;
+    },
+    supervisor_blocked_rpc_pipe_sync_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      blockedStatus: number,
+    ) {
+      const receiver = currentExports(this);
+      if (!supervisorStatusIsPipeWait(receiver, blockedStatus)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_pipe_sync_action_not_pipe;
+      }
+      if (vmPtr === 0) {
+        return -14;
+      }
+      return supervisorPollWaitHasSocket(receiver, vmPtr)
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_pipe_sync_action_sync_socket
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_pipe_sync_action_none;
+    },
+    supervisor_blocked_rpc_preserve_canonical_eof(this: KernelExports | undefined, blockedStatus: number) {
+      return supervisorStatusIsPipeWait(currentExports(this), blockedStatus) ? 1 : 0;
+    },
+    supervisor_blocked_rpc_post_resume_sync_action(
+      this: KernelExports | undefined,
+      blockedStatus: number,
+      flags: number,
+    ) {
+      if ((flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_post_resume_sync_action_none;
+      }
+      const receiver = currentExports(this);
+      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_post_resume_sync_action_none;
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available) !== 0
+        && !supervisorStatusIsEpollWait(receiver, blockedStatus)
+      ) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_post_resume_sync_action_fork_shared;
+      }
+      if (supervisorStatusSyncsSocketAfterResume(receiver, blockedStatus)) {
+        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_rpc_post_resume_sync_action_socket;
+      }
+      return action;
+    },
+    supervisor_blocked_status_transition_action(this: KernelExports | undefined, vmPtr: number, status: number, flags: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      const receiver = currentExports(this);
+      const kernelWorkerAvailable = (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_flag_kernel_worker_available) !== 0;
+      if (!kernelWorkerAvailable) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_block;
+      }
+      const pipeWaitStatus = supervisorStatusIsPipeWait(receiver, status);
+      const networkConnectionsAvailable = (flags
+        & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_flag_network_connections_available) !== 0;
+      if (
+        pipeWaitStatus
+        && networkConnectionsAvailable
+        && supervisorPollWaitHasSocket(receiver, vmPtr)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_socket;
+      }
+      if (supervisorStatusIsWait4(receiver, status)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_pipe;
+      }
+      const finitePollTimeout = pipeWaitStatus && supervisorPollWaitTimeoutMs(receiver, vmPtr) >= 0;
+      if (!supervisorStatusUsesForkSharedStateSync(receiver, status) || finitePollTimeout) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_block;
+      }
+      if (pipeWaitStatus) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared;
+      }
+      if (supervisorStatusIsSocketWait(receiver, status)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_socket_and_fork_shared;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_status_transition_action_sync_fork_shared;
+    },
+    supervisor_blocked_wait_network_pump_action(vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      if (!networkPumpBackoffs.has(vmPtr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_network_pump_action_pump;
+      }
+      networkPumpBackoffs.delete(vmPtr);
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_network_pump_action_skip;
+    },
+    supervisor_complete_blocked_wait_network_pump(vmPtr: number, changed: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      if (changed === 0) {
+        networkPumpBackoffs.add(vmPtr);
+      } else {
+        networkPumpBackoffs.delete(vmPtr);
+      }
+      return 0;
+    },
+    supervisor_clear_blocked_wait_network_pump(vmPtr: number) {
+      if (vmPtr === 0) {
+        return -14;
+      }
+      networkPumpBackoffs.delete(vmPtr);
+      return 0;
+    },
+    supervisor_state_sync_start_action(kind: number, flags: number) {
+      return supervisorStateSyncStartAction(kind, flags);
+    },
+    supervisor_state_sync_request(_vmPtr: number, kind: number, flags: number) {
+      const key = `${_vmPtr}:${kind}`;
+      const request = stateSyncRequests.get(key) ?? { queuedRunFlags: 0, inFlight: false };
+      request.queuedRunFlags |= DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_run_flag_run;
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_request_flag_wake_waiters) !== 0) {
+        request.queuedRunFlags |= DEFAULT_NUMERIC_EXPORTS.supervisor_state_sync_run_flag_wake_waiters;
+      }
+      const shouldStart = !request.inFlight;
+      request.inFlight = true;
+      stateSyncRequests.set(key, request);
+      return shouldStart ? 1 : 0;
+    },
+    supervisor_state_sync_next_run_flags(_vmPtr: number, kind: number) {
+      const key = `${_vmPtr}:${kind}`;
+      const request = stateSyncRequests.get(key);
+      if (!request) {
+        return 0;
+      }
+      const flags = request.queuedRunFlags;
+      request.queuedRunFlags = 0;
+      return flags;
+    },
+    supervisor_state_sync_complete(_vmPtr: number, kind: number) {
+      const key = `${_vmPtr}:${kind}`;
+      const request = stateSyncRequests.get(key);
+      if (!request) {
+        return 0;
+      }
+      if (request.queuedRunFlags !== 0) {
+        return 1;
+      }
+      stateSyncRequests.delete(key);
+      return 0;
+    },
+    supervisor_state_sync_clear(_vmPtr: number, kind: number) {
+      stateSyncRequests.delete(`${_vmPtr}:${kind}`);
+      return 0;
+    },
+    supervisor_owned_state_sync_action(
+      this: KernelExports | undefined,
+      status: number,
+      completedSyncEffects: number,
+      flags: number,
+    ) {
+      return supervisorOwnedStateSyncAction(
+        currentExports(this),
+        status,
+        completedSyncEffects,
+        flags,
+      );
+    },
+    supervisor_process_held_ofd_refcount(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      ofdId: number,
+    ) {
+      return processHeldOfdRefcount(currentExports(this), vmPtr, ofdId);
+    },
+    supervisor_process_holds_regular_file_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      ofdId: number,
+    ) {
+      const receiver = currentExports(this);
+      return processHeldOfdRefcount(receiver, vmPtr, ofdId) > 0
+        && callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
+        ? 1
+        : 0;
+    },
+    supervisor_process_fd_is_open(this: KernelExports | undefined, vmPtr: number, fd: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return 0;
+      }
+      const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+      return ofdId > 0 && ofdId < maxFds ? 1 : 0;
+    },
+    supervisor_process_ofd_for_fd(this: KernelExports | undefined, vmPtr: number, fd: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return 0;
+      }
+      const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+      return ofdId > 0 && ofdId < maxFds ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd(this: KernelExports | undefined, vmPtr: number, fd: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return 0;
+      }
+      return callNumber(receiver, "process_fd_flags", vmPtr, fd);
+    },
+    supervisor_ofd_fd_type(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_fd_type", ofdId) ?? 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return -1;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_host_fd", ofdId) ?? -1;
+    },
+    supervisor_ofd_status_flags(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_status_flags", ofdId) ?? 0;
+    },
+    supervisor_ofd_ino(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_ino", ofdId) ?? 0;
+    },
+    supervisor_ofd_refcount(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? 0;
+    },
+    supervisor_ofd_reconcile_refcount(
+      this: KernelExports | undefined,
+      ofdId: number,
+      expectedRefcount: number,
+    ) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      let currentRefcount = callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? 0;
+      const expected = Math.trunc(expectedRefcount);
+      if (expected < 0) {
+        return currentRefcount;
+      }
+      const retain = (receiver.kernel_retain_ofd ?? overrides.kernel_retain_ofd) as
+        | ((targetOfdId: number) => void)
+        | undefined;
+      const release = (receiver.kernel_release_ofd ?? overrides.kernel_release_ofd) as
+        | ((targetOfdId: number) => void)
+        | undefined;
+      while (currentRefcount < expected) {
+        retain?.(ofdId);
+        currentRefcount += 1;
+      }
+      while (currentRefcount > expected) {
+        release?.(ofdId);
+        currentRefcount -= 1;
+      }
+      return callOptionalNumber(receiver, "kernel_ofd_refcount", ofdId) ?? currentRefcount;
+    },
+    supervisor_ofd_offset(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0n;
+      }
+      return callOptionalBigInt(receiver, "kernel_ofd_offset", ofdId) ?? 0n;
+    },
+    supervisor_ofd_is_regular_file(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      return ofdId > 0
+        && ofdId < callNumber(receiver, "abi_max_fds")
+        && callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
+        ? 1
+        : 0;
+    },
+    supervisor_pipe_sync_ofd_candidate(this: KernelExports | undefined, ofdId: number) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      return fdTypeIsPipeLike(receiver, callNumber(receiver, "kernel_ofd_fd_type", ofdId)) ? 1 : 0;
+    },
+    supervisor_process_pipe_slot_for_fd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+    ) {
+      return processPipeSlotForFd(currentExports(this), vmPtr, fd);
+    },
+    supervisor_process_pipe_ofd_for_fd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+    ) {
+      return processPipeOfdForFd(currentExports(this), vmPtr, fd);
+    },
+    supervisor_process_pipe_host_fd_for_fd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+    ) {
+      const receiver = currentExports(this);
+      const ofdId = processPipeOfdForFd(receiver, vmPtr, fd);
+      return ofdId > 0 ? callNumber(receiver, "kernel_ofd_host_fd", ofdId) : -1;
+    },
+    supervisor_process_pipe_read_open_count(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      pipeSlot: number,
+    ) {
+      return processPipeOpenCount(currentExports(this), vmPtr, pipeSlot, false);
+    },
+    supervisor_process_pipe_write_open_count(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      pipeSlot: number,
+    ) {
+      return processPipeOpenCount(currentExports(this), vmPtr, pipeSlot, true);
+    },
+    supervisor_pipe_reconcile_control(
+      this: KernelExports | undefined,
+      pipeSlot: number,
+      readOpen: number,
+      writeOpen: number,
+    ) {
+      return reconcilePipeControl(currentExports(this), pipeSlot, readOpen, writeOpen);
+    },
+    supervisor_pipe_slot_snapshot_merge_action(
+      this: KernelExports | undefined,
+      context: number,
+      mode: number,
+      fresh: number,
+      sourceHead: number,
+      sourceTail: number,
+      sourceReadOpen: number,
+      sourceWriteOpen: number,
+      sourceGeneration: number,
+      targetHead: number,
+      targetTail: number,
+      targetReadOpen: number,
+      targetWriteOpen: number,
+      targetGeneration: number,
+    ) {
+      return pipeSlotSnapshotMergeAction(
+        context,
+        mode,
+        fresh,
+        sourceHead,
+        sourceTail,
+        sourceReadOpen,
+        sourceWriteOpen,
+        sourceGeneration,
+        targetHead,
+        targetTail,
+        targetReadOpen,
+        targetWriteOpen,
+        targetGeneration,
+      );
+    },
+    supervisor_fork_shared_held_ofd_track_flag_shared() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared;
+    },
+    supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe;
+    },
+    supervisor_fork_shared_held_ofd_track_flag_stdio_fd() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_stdio_fd;
+    },
+    supervisor_fork_shared_held_ofd_track_flag_fd_entry_source() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source;
+    },
+    supervisor_fork_shared_sync_target_action_reject() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_reject;
+    },
+    supervisor_fork_shared_sync_target_action_defer() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_defer;
+    },
+    supervisor_fork_shared_sync_target_action_use() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_sync_target_action_use;
+    },
+    supervisor_fork_shared_ofd_action_include() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_include;
+    },
+    supervisor_fork_shared_ofd_action_add_shared() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_add_shared;
+    },
+    supervisor_fork_shared_ofd_action_rehydrate() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_ofd_action_rehydrate;
+    },
+    supervisor_fork_shared_held_ofd_track_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      flags: number,
+    ) {
+      const receiver = currentExports(this);
+      if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
+        return 0;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe) !== 0) {
+        return 0;
+      }
+      if (
+        (flags & (
+          DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_shared
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_stdio_fd
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source
+        )) !== 0
+      ) {
+        return 1;
+      }
+      return callNumber(receiver, "kernel_ofd_fd_type", ofdId) === callNumber(receiver, "abi_fd_type_file")
+        ? 0
+        : 1;
+    },
+    supervisor_fork_shared_ofd_identity_key(this: KernelExports | undefined, ofdId: number) {
+      return forkSharedOfdIdentityKey(currentExports(this), ofdId);
+    },
+    supervisor_fork_shared_ofd_publish_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      peerFlags: number,
+    ) {
+      return forkSharedOfdPublishAction(currentExports(this), ofdId, peerFlags);
+    },
+    supervisor_fork_shared_effect_sync_action(
+      _hasEffect: number,
+      _hasTrackedState: number,
+      _sourceHoldsRegularFile: number,
+      _regularFileHasPeer: number,
+    ) {
+      return forkSharedEffectSyncAction(
+        _hasEffect,
+        _hasTrackedState,
+        _sourceHoldsRegularFile,
+        _regularFileHasPeer,
+      );
+    },
+    supervisor_fork_shared_sync_target_action(
+      invalidPid: number,
+      runningWorker: number,
+      vforkReadyWorker: number,
+      hasHostBlockedWorker: number,
+      rpcPending: number,
+      processExit: number,
+      registeredProcessExit: number,
+      registeredMismatch: number,
+      incompatibleOfd: number,
+      requireHostBlocked: number,
+      includeMemfs: number,
+      runtimeNetworkState: number,
+    ) {
+      return forkSharedSyncTargetAction(
+        invalidPid,
+        runningWorker,
+        vforkReadyWorker,
+        hasHostBlockedWorker,
+        rpcPending,
+        processExit,
+        registeredProcessExit,
+        registeredMismatch,
+        incompatibleOfd,
+        requireHostBlocked,
+        includeMemfs,
+        runtimeNetworkState,
+      );
+    },
+    supervisor_fork_shared_syncable_ofd_action(
+      syncable: number,
+      sourceConflicting: number,
+      allowed: number,
+      regularFile: number,
+      sourcePublished: number,
+      runtimeNetworkSocket: number,
+    ) {
+      return forkSharedSyncableOfdAction(
+        syncable,
+        sourceConflicting,
+        allowed,
+        regularFile,
+        sourcePublished,
+        runtimeNetworkSocket,
+      );
+    },
+    supervisor_fork_shared_delta_source_ofd_action(
+      allowed: number,
+      sourcePublished: number,
+      sourceHeld: number,
+      pipePeer: number,
+    ) {
+      return forkSharedDeltaSourceOfdAction(allowed, sourcePublished, sourceHeld, pipePeer);
+    },
+    supervisor_fork_shared_tracked_source_ofd_action(
+      kernelShared: number,
+      sourceFdEntry: number,
+      syncable: number,
+      typeNone: number,
+      incompatiblePeer: number,
+    ) {
+      return forkSharedTrackedSourceOfdAction(
+        kernelShared,
+        sourceFdEntry,
+        syncable,
+        typeNone,
+        incompatiblePeer,
+      );
+    },
+    supervisor_fork_shared_pipe_peer_ofd_action(stale: number, syncable: number) {
+      return forkSharedPipePeerOfdAction(stale, syncable);
+    },
+    supervisor_fork_shared_rehydrate_ofd_action(
+      active: number,
+      sourceHeld: number,
+      allowed: number,
+    ) {
+      return forkSharedRehydrateOfdAction(active, sourceHeld, allowed);
+    },
+    supervisor_fd_entry_restore_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+      snapshotOfdId: number,
+      syscallNr: bigint | number,
+      flags: number,
+    ) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      if (fd < 0 || fd >= maxFds) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (syscallMayClearFdEntries(receiver, syscallNr)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+      }
+      const currentOfdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+      if (currentOfdId <= 0 || currentOfdId >= maxFds || currentOfdId === snapshotOfdId) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_flag_preserve_live_regular_file) !== 0
+        && callNumber(receiver, "kernel_ofd_fd_type", currentOfdId) === callNumber(receiver, "abi_fd_type_file")
+        && callNumber(receiver, "kernel_ofd_refcount", currentOfdId) > 0
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent) !== 0
+        && processEpollDependentOfdIds(receiver, vmPtr).includes(currentOfdId)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+    },
+    supervisor_fd_entry_guest_write_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      fd: number,
+      candidateOfdId: number,
+      explicitOfdId: number,
+    ) {
+      return supervisorFdEntryGuestWriteAction(
+        currentExports(this),
+        vmPtr,
+        fd,
+        candidateOfdId,
+        explicitOfdId,
+      );
+    },
+    supervisor_ofd_slot_write_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+    ) {
+      return supervisorOfdSlotWriteAction(
+        currentExports(this),
+        ofdId,
+        candidateType,
+        candidateHostFd,
+        candidateIno,
+        candidateOffset,
+      );
+    },
+    supervisor_ofd_slot_restore_flag_referenced_by_fd_entry() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_referenced_by_fd_entry;
+    },
+    supervisor_ofd_slot_restore_flag_trust_regular_file_offset() {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_trust_regular_file_offset;
+    },
+    supervisor_ofd_slot_restore_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+      syscallNr: bigint | number,
+      flags: number,
+    ) {
+      return supervisorOfdSlotRestoreAction(
+        currentExports(this),
+        ofdId,
+        candidateType,
+        candidateHostFd,
+        candidateIno,
+        candidateOffset,
+        syscallNr,
+        flags,
+      );
+    },
+    supervisor_regular_file_offset_restore_action(
+      this: KernelExports | undefined,
+      ofdId: number,
+      snapshotHostFd: number,
+      snapshotIno: number,
+      snapshotOffset: bigint | number,
+    ) {
+      return supervisorRegularFileOffsetRestoreAction(
+        currentExports(this),
+        ofdId,
+        snapshotHostFd,
+        snapshotIno,
+        snapshotOffset,
+      );
+    },
+    supervisor_process_epoll_held_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollHeldOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_epoll_dependent_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_sync_dependent_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processSyncDependentOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_epoll_dependent_sync_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollDependentSyncOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_process_epoll_depends_on_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      ofdId: number,
+    ) {
+      return processEpollDependentOfdIds(currentExports(this), vmPtr).includes(ofdId) ? 1 : 0;
+    },
+    supervisor_blocked_epoll_dependent_sync_ofd(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      index: number,
+    ) {
+      return processEpollDependentSyncOfdIds(currentExports(this), vmPtr)[index] ?? 0;
+    },
+    supervisor_blocked_wait_wake_mask_for_sync(_source: number) {
+      return supervisorWaitWakeMaskForSync(_source);
+    },
+    supervisor_blocked_wait_status_matches_wake_source(
+      this: KernelExports | undefined,
+      status: number,
+      source: number,
+    ) {
+      return supervisorWaitStatusMatchesWakeSource(currentExports(this), status, source);
+    },
+    supervisor_blocked_retry_status_action(this: KernelExports | undefined, status: number) {
+      return supervisorBlockedRetryStatusAction(currentExports(this), status);
+    },
+    supervisor_blocked_wait_wake_action(
+      this: KernelExports | undefined,
+      status: number,
+      source: number,
+      flags: number,
+    ) {
+      return supervisorWaitWakeAction(currentExports(this), status, source, flags);
+    },
+    supervisor_wait_in_worker_status_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      status: number,
+      flags: number,
+    ) {
+      return supervisorWaitInWorkerStatusAction(currentExports(this), vmPtr, status, flags);
+    },
+    supervisor_wait4_child_exit_blocked_parent_action(this: KernelExports | undefined, status: number) {
+      return supervisorWait4ChildExitBlockedParentAction(currentExports(this), status);
+    },
+    supervisor_wait4_rpc_local_status_action(this: KernelExports | undefined, status: number) {
+      return supervisorWait4RpcLocalStatusAction(currentExports(this), status);
+    },
+    supervisor_scheduler_clear_blocked_action(
+      this: KernelExports | undefined,
+      status: number,
+      flags: number,
+    ) {
+      return supervisorSchedulerClearBlockedAction(currentExports(this), status, flags);
+    },
+    supervisor_scheduler_block_worker_action(this: KernelExports | undefined, status: number) {
+      return supervisorSchedulerBlockWorkerAction(currentExports(this), status);
+    },
+    supervisor_scheduler_futex_waiter_action(this: KernelExports | undefined, status: number) {
+      return supervisorSchedulerFutexWaiterAction(currentExports(this), status);
+    },
+    supervisor_worker_status_transition_action(this: KernelExports | undefined, status: number) {
+      return supervisorWorkerStatusTransitionAction(currentExports(this), status);
+    },
+    supervisor_worker_status_sync_action(
+      this: KernelExports | undefined,
+      status: number,
+      completedSyncEffects: number,
+      flags: number,
+    ) {
+      return supervisorWorkerStatusSyncAction(currentExports(this), status, completedSyncEffects, flags);
+    },
+    supervisor_worker_sleep_status_action(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      status: number,
+      completedSyncEffects: number,
+    ) {
+      return supervisorWorkerSleepStatusAction(currentExports(this), vmPtr, status, completedSyncEffects);
+    },
+    supervisor_stdio_output_settle_max_passes(kind: number) {
+      switch (kind) {
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_visible:
+          return 4;
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_inherited_child:
+          return 6;
+        default:
+          return -22;
+      }
+    },
+    supervisor_stdio_output_settle_stable_passes(kind: number) {
+      switch (kind) {
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_visible:
+        case DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_output_settle_kind_inherited_child:
+          return 2;
+        default:
+          return -22;
+      }
+    },
+    supervisor_stdio_pipe_read_progress_action(_vmPtr: number, _pipeSlot: number, drained: number) {
+      return drained === 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_pipe_read_progress_action_none
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_stdio_pipe_read_progress_action_snapshot;
+    },
+    supervisor_fs_response_disposition(
+      this: KernelExports | undefined,
+      vmPtr: number,
+      runtimePid: number,
+      opcode: number,
+      result: bigint | number,
+      ownerAsyncStatus: number,
+      lastStatus: number,
+    ) {
+      const receiver = currentExports(this);
+      const currentPid = callNumber(receiver, "process_current_pid", vmPtr) || runtimePid;
+      const processOwnerMatches = currentPid <= 0 || runtimePid <= 0 || currentPid === runtimePid;
+      const numericResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      const failedExecveChildOwner = opcode === FS_OP_EXECVE && numericResult < 0 && !processOwnerMatches;
+      const execveSpawn = callNumber(receiver, "abi_status_execve_spawn");
+      const resolvedToExecveSpawn = opcode === FS_OP_EXECVE
+        && execveSpawn !== 0
+        && (
+          callNumber(receiver, "thread_status", vmPtr) === execveSpawn
+          || ownerAsyncStatus === execveSpawn
+          || lastStatus === execveSpawn
+        );
+      let disposition = 0;
+      if (processOwnerMatches) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_process_owner_matches;
+      }
+      if (failedExecveChildOwner) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_store_pending_kernel_state;
+      } else {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_adopt_kernel_state;
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_apply_guest_memory_writes;
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_clear_tombstones;
+      }
+      if (!failedExecveChildOwner && processOwnerMatches) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_apply_local_metadata;
+      }
+      if (!failedExecveChildOwner && opcode !== FS_OP_MMAP) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_queue_thread_worker_writes;
+      }
+      if (opcode === FS_OP_CLOSE || opcode === FS_OP_EXECVE) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_fd_response_may_clear_live_fds;
+      }
+      if (resolvedToExecveSpawn) {
+        disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_resolved_to_execve_spawn;
+      }
+      return disposition;
+    },
+    supervisor_fs_backing_fill_span_decision(
+      _opcode: number,
+      offsetRaw: bigint | number,
+      lengthRaw: bigint | number,
+      expectedSizeRaw: bigint | number,
+    ) {
+      const offset = Number(offsetRaw);
+      const length = Number(lengthRaw);
+      const expectedSize = Number(expectedSizeRaw);
+      latestBackingFillSpan = { offset: 0, end: 0, length: 0 };
+      if (
+        !Number.isSafeInteger(offset)
+        || !Number.isSafeInteger(length)
+        || !Number.isSafeInteger(expectedSize)
+        || offset < 0
+        || length <= 0
+        || expectedSize <= 0
+        || offset >= expectedSize
+      ) {
+        return -22;
+      }
+      const alignedOffset = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
+      const requestedEnd = offset + length;
+      const alignedEnd = Math.min(
+        expectedSize,
+        Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+      );
+      if (alignedEnd <= alignedOffset) {
+        return -22;
+      }
+      latestBackingFillSpan = {
+        offset: alignedOffset,
+        end: alignedEnd,
+        length: alignedEnd - alignedOffset,
+      };
+      return 0;
+    },
+    supervisor_fs_backing_fill_span_offset() {
+      return latestBackingFillSpan.offset;
+    },
+    supervisor_fs_backing_fill_span_end() {
+      return latestBackingFillSpan.end;
+    },
+    supervisor_fs_backing_fill_span_length() {
+      return latestBackingFillSpan.length;
+    },
+    supervisor_fs_metadata_full_sync_decision(treeMutated: number, handledMetadataMutation: number) {
+      return treeMutated !== 0 && handledMetadataMutation === 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_fs_metadata_full_sync_action_required
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_fs_metadata_full_sync_action_none;
+    },
+    supervisor_fs_local_metadata_action(
+      opcode: number,
+      effects: number,
+      result: bigint | number,
+      hasPrimaryPath: number,
+      hasSecondaryPath: number,
+    ) {
+      const signedResult = Number(BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)));
+      if (signedResult < 0 || hasPrimaryPath === 0 || (effects & 1) === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_none;
+      }
+      if (opcode === FS_OP_UNLINK) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_tombstone_primary;
+      }
+      if (opcode === FS_OP_OPENAT || opcode === FS_OP_MKDIR) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_forget_primary;
+      }
+      if (opcode === FS_OP_RENAME && hasSecondaryPath !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_forget_secondary;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_local_metadata_action_none;
+    },
+    supervisor_fs_pending_mmap_guest_write_ptr() {
+      return 0;
+    },
+    supervisor_fs_pending_mmap_guest_write_len() {
+      return 0;
+    },
+    supervisor_fs_pending_mmap_guest_write_snapshot_len() {
+      return 0;
+    },
+    supervisor_fs_resident_page_slot_decision(_existingSlot: number, _emptySlot: number, _cleanEvictSlot: number) {
+      if (_existingSlot >= 0) {
+        return _existingSlot;
+      }
+      if (_emptySlot >= 0) {
+        return _emptySlot;
+      }
+      if (_cleanEvictSlot >= 0) {
+        return _cleanEvictSlot;
+      }
+      return -1;
+    },
+    supervisor_fs_resident_page_evict_status(_recordFound: number, _dirty: number) {
+      if (_recordFound === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_resident_page_evict_not_found;
+      }
+      if (_dirty !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_resident_page_evict_dirty_pinned;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fs_resident_page_evict_evicted;
+    },
+    supervisor_blocked_wait_retry_delay_ms: () => 0,
+    supervisor_blocked_wait_active_child_pid(this: KernelExports | undefined, vmPtr: number) {
+      const receiver = currentExports(this);
+      const currentPid = Number(receiver?.process_current_pid?.(vmPtr) ?? overrides.process_current_pid?.(vmPtr) ?? 0);
+      return Number(receiver?.process_active_child_pid?.(currentPid) ?? overrides.process_active_child_pid?.(currentPid) ?? 0);
+    },
+    supervisor_blocked_wait_retry_reason(this: KernelExports | undefined, vmPtr: number, flags: number) {
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_process_gate) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_process_gate;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_active_child) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_active_child;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_passive_wait) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_passive_wait;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_host_progress) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_immediate;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_flag_thread_init_pending) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_standard_defer;
+      }
+      const activeChildPid = Number(this?.supervisor_blocked_wait_active_child_pid?.(vmPtr) ?? 0);
+      if (activeChildPid > 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_active_child;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_default;
+    },
+    supervisor_blocked_retry_action(this: KernelExports | undefined, vmPtr: number, flags: number) {
+      const receiver = currentExports(this);
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_supervisor_timer_armed) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_supervisor_timer;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_rpc_pending) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_rpc_pending;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_owner_async) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_owner_async;
+      }
+
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      const kernelWorkerAvailable =
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_kernel_worker_available) !== 0;
+      if (
+        status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)
+        && (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_thread_init_pending) !== 0
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_thread_init_pending;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_wait_timer_already_checked) === 0
+        && blockedWaitTimerRequired(receiver, vmPtr)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_arm_wait_timer;
+      }
+      if (Number(receiver?.supervisor_blocked_wait_active_child_pid?.(vmPtr) ?? 0) > 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_park_active_child;
+      }
+      if (status === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
+        return kernelWorkerAvailable
+          ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4_kernel_worker
+          : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_fork_shared_sync_pending) !== 0
+        && Number(receiver?.supervisor_blocked_poll_wait_timeout_ms?.(vmPtr) ?? -1) < 0
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_fork_shared_sync;
+      }
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_running_worker) !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_running_worker;
+      }
+
+      const retryReason = Number(receiver?.supervisor_blocked_wait_retry_reason?.(vmPtr, 0) ?? 0);
+      if (retryReason === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_process_gate) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_process_gate;
+      }
+      if (
+        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_network_connections_available) !== 0
+        && Number(receiver?.supervisor_blocked_wait_should_pump_network?.(vmPtr) ?? 0) !== 0
+        && Number(receiver?.supervisor_blocked_wait_network_pump_action?.(vmPtr) ?? 0)
+          === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_network_pump_action_pump
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_pump_network;
+      }
+      if (
+        status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)
+        && kernelWorkerAvailable
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_epoll_kernel_worker;
+      }
+      if (status === Number(receiver?.abi_status_pipe_wait?.() ?? overrides.abi_status_pipe_wait?.() ?? -1)) {
+        const pipeFlags =
+          (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns) !== 0
+            ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available
+            : 0;
+        const pipeAction = Number(receiver?.supervisor_blocked_pipe_sync_before_retry_action?.(vmPtr, pipeFlags) ?? 0);
+        if (pipeAction === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_request_sync) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_request_pipe_sync;
+        }
+        if (
+          pipeAction
+            === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output
+        ) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_request_pipe_sync_and_drain_output;
+        }
+        if (pipeAction === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_pipe_sync_before_retry_action_schedule_retry) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_schedule_pipe_sync_retry;
+        }
+      }
+      if (status === Number(receiver?.abi_status_fs?.() ?? overrides.abi_status_fs?.() ?? -1)) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_fs;
+      }
+      if (retryReason === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_retry_reason_passive_wait) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_defer_passive_wait;
+      }
+
+      const delegationFlags = kernelWorkerAvailable
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_flag_kernel_worker_available
+        : 0;
+      const delegation = Number(receiver?.supervisor_blocked_resume_delegation?.(vmPtr, delegationFlags) ?? 0);
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_kernel_worker) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_kernel_worker;
+      }
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_wait4_kernel_worker) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_wait4_kernel_worker;
+      }
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_epoll_direct) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_epoll_direct;
+      }
+      if (delegation === DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_resume_delegation_unsupported) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_unsupported;
+      }
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_retry_action_resume_direct;
+    },
+    supervisor_vfork_execve_rollback(this: KernelExports | undefined, vmPtr: number, childPid: number) {
+      const receiver = currentExports(this);
+      const waitStatus = Number(
+        receiver?.supervisor_vfork_execve_handoff_failure_wait_status?.()
+          ?? overrides.supervisor_vfork_execve_handoff_failure_wait_status?.()
+          ?? DEFAULT_NUMERIC_EXPORTS.supervisor_vfork_execve_handoff_failure_wait_status,
+      );
+      receiver?.process_record_child_exit?.(childPid, waitStatus);
+      receiver?.thread_restore_vfork_parent_without_cleanup?.(vmPtr, childPid);
+      receiver?.thread_clear_vfork_runtime_state?.();
+      return waitStatus;
+    },
+    supervisor_process_resume(this: KernelExports | undefined, vmPtr: number, outPtr: number, outLen: number) {
+      const recordBytes = DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_bytes;
+      if (outLen < recordBytes) {
+        return -1;
+      }
+      const receiver = currentExports(this);
+      const memory = receiver?.memory ?? overrides.memory;
+      if (!memory) {
+        return -1;
+      }
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      const okStatus = Number(receiver?.abi_status_ok?.() ?? overrides.abi_status_ok?.() ?? 0);
+      if (status !== okStatus) {
+        return 0;
+      }
+      return writeSupervisorRunnableResumeRecord(memory, outPtr, {
+        vmPtr,
+        tid: Number(receiver?.thread_tid?.(vmPtr) ?? overrides.thread_tid?.(vmPtr) ?? 1),
+        processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
+        status,
+      });
+    },
+    supervisor_process_memory_host_op(this: KernelExports | undefined, vmPtr: number, index: number, outPtr: number, outLen: number) {
+      const recordBytes = DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+      const receiver = currentExports(this);
+      const memory = receiver?.memory ?? overrides.memory;
+      if (!memory) {
+        return -1;
+      }
+      if (outLen < recordBytes) {
+        return -1;
+      }
+      const ranges = processMemoryRanges(receiver, memory, vmPtr);
+      if (index === 0) {
+        const initialBytes = processMemoryInitialBytes(receiver, ranges, vmPtr);
+        return writeSupervisorSpawnThreadHostOpRecord(memory, outPtr, {
+          vmPtr,
+          childVmPtr: 0,
+          kind: DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_create_process_memory,
+          tid: Number(receiver?.thread_spawn_child_pid?.(vmPtr) ?? overrides.thread_spawn_child_pid?.(vmPtr) ?? 1),
+          processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
+          status: Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0),
+          flags: BigInt(initialBytes),
+          childTidPtr: BigInt(processMemoryMaxPages(receiver, initialBytes, vmPtr)),
+        });
+      }
+      const range = ranges[index - 1];
+      if (range !== undefined) {
+        return writeSupervisorSpawnThreadHostOpRecord(memory, outPtr, {
+          vmPtr,
+          childVmPtr: 0,
+          kind: DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_copy_memory_ranges,
+          tid: Number(receiver?.thread_spawn_child_pid?.(vmPtr) ?? overrides.thread_spawn_child_pid?.(vmPtr) ?? 1),
+          processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
+          status: Number(receiver?.thread_spawn_kind?.(vmPtr) ?? overrides.thread_spawn_kind?.(vmPtr) ?? 0),
+          flags: BigInt(range.start),
+          childTidPtr: BigInt(range.end),
+        });
+      }
+      return 0;
+    },
+    supervisor_next_host_op_kind(this: KernelExports | undefined, kind: number, outPtr: number, outLen: number) {
+      const receiver = currentExports(this);
+      const spawnThreadKind = Number(
+        receiver?.supervisor_host_op_kind_spawn_thread_worker?.()
+          ?? overrides.supervisor_host_op_kind_spawn_thread_worker?.()
+          ?? DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_spawn_thread_worker,
+      );
+      if (kind !== spawnThreadKind) {
+        return 0;
+      }
+      const parentVmPtr = overrides.cloneSpawnParentVmPtr?.();
+      if (parentVmPtr === undefined) {
+        return 0;
+      }
+      const cloneSpawnStatus = Number(
+        receiver?.abi_status_clone_spawn?.() ?? overrides.abi_status_clone_spawn?.() ?? -1,
+      );
+      const currentStatus = Number(receiver?.thread_status?.(parentVmPtr) ?? overrides.thread_status?.(parentVmPtr) ?? 0);
+      if (currentStatus !== cloneSpawnStatus) {
+        return 0;
+      }
+      const memory = receiver?.memory ?? overrides.memory;
+      if (!memory) {
+        return -1;
+      }
+      const recordBytes = DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+      if (outLen < recordBytes) {
+        return -1;
+      }
+      let childVmPtr = cloneSpawnHostOpChildVmPtrs.get(parentVmPtr);
+      if (childVmPtr === undefined) {
+        childVmPtr = Number(receiver?.thread_spawn_from_clone?.(parentVmPtr) ?? overrides.thread_spawn_from_clone?.(parentVmPtr) ?? 0);
+        if (childVmPtr === 0) {
+          return 0;
+        }
+        cloneSpawnHostOpChildVmPtrs.set(parentVmPtr, childVmPtr);
+      }
+      return writeSupervisorSpawnThreadHostOpRecord(memory, outPtr, {
+        vmPtr: parentVmPtr,
+        childVmPtr,
+        kind: spawnThreadKind,
+        tid: Number(receiver?.thread_tid?.(childVmPtr) ?? overrides.thread_tid?.(childVmPtr) ?? 1),
+        processPtr: Number(receiver?.thread_process_ptr?.(parentVmPtr) ?? overrides.thread_process_ptr?.(parentVmPtr) ?? 0),
+        status: Number(receiver?.abi_status_ok?.() ?? overrides.abi_status_ok?.() ?? 0),
+      });
+    },
+    supervisor_resume_blocked_syscall(this: KernelExports | undefined, vmPtr: number, flags: number) {
+      const receiver = currentExports(this);
+      const status = Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0);
+      const timeoutFlag = Number(
+        receiver?.supervisor_resume_flag_timeout_expired?.()
+          ?? overrides.supervisor_resume_flag_timeout_expired?.()
+          ?? DEFAULT_NUMERIC_EXPORTS.supervisor_resume_flag_timeout_expired,
+      );
+      const timeoutExpired = (flags & timeoutFlag) !== 0;
+      if (status === Number(receiver?.abi_status_wait4?.() ?? overrides.abi_status_wait4?.() ?? -1)) {
+        return receiver?.thread_resume_wait4?.(vmPtr) ?? overrides.thread_resume_wait4?.(vmPtr) ?? 0n;
+      }
+      if (
+        timeoutExpired
+        && (
+          status === Number(receiver?.abi_status_connect?.() ?? overrides.abi_status_connect?.() ?? -1)
+          || status === Number(receiver?.abi_status_socket_recv?.() ?? overrides.abi_status_socket_recv?.() ?? -1)
+          || status === Number(receiver?.abi_status_socket_send?.() ?? overrides.abi_status_socket_send?.() ?? -1)
+        )
+      ) {
+        receiver?.thread_resume_socket_wait_timeout?.(vmPtr);
+        return 0n;
+      }
+      if (timeoutExpired && status === Number(receiver?.abi_status_epoll_wait?.() ?? overrides.abi_status_epoll_wait?.() ?? -1)) {
+        receiver?.thread_resume_epoll_wait_timeout?.(vmPtr);
+        return 0n;
+      }
+      if (timeoutExpired && status === Number(receiver?.abi_status_pipe_wait?.() ?? overrides.abi_status_pipe_wait?.() ?? -1)) {
+        receiver?.thread_resume_poll_wait_timeout?.(vmPtr);
+        return 0n;
+      }
+      return receiver?.thread_resume_blocked_syscall?.(vmPtr) ?? overrides.thread_resume_blocked_syscall?.(vmPtr) ?? 0n;
+    },
+    supervisor_fault_exit_decision(this: KernelExports | undefined, vmPtr: number, outPtr: number, outLen: number) {
+      const recordBytes = DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_bytes;
+      if (outLen < recordBytes) {
+        return -1;
+      }
+      const receiver = currentExports(this);
+      const memory = receiver?.memory ?? overrides.memory;
+      if (!memory) {
+        return -1;
+      }
+      const remainingThreads = Number(receiver?.thread_process_thread_count?.(vmPtr) ?? 0);
+      const liveThreads = remainingThreads;
+      const kind = remainingThreads === 0 || liveThreads === 0
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_kind_process_exit
+        : DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_kind_thread_exit;
+      return writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+        kind,
+        vmPtr,
+        exitVmPtr: vmPtr,
+        processPtr: Number(receiver?.thread_process_ptr?.(vmPtr) ?? overrides.thread_process_ptr?.(vmPtr) ?? 0),
+        remainingThreads,
+        liveThreads,
+        exitCode: Number(receiver?.thread_exit_code?.(vmPtr) ?? overrides.thread_exit_code?.(vmPtr) ?? 0),
+        termSignal: Number(receiver?.thread_term_signal?.(vmPtr) ?? overrides.thread_term_signal?.(vmPtr) ?? 0),
+        status: Number(receiver?.thread_status?.(vmPtr) ?? overrides.thread_status?.(vmPtr) ?? 0),
+      });
+    },
+    ...overrides,
+  } as Partial<KernelExports>;
+}
+
+export function writeSupervisorFaultExitDecisionRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorFaultExitDecisionRecordFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_magic, true);
+  view.setUint32(outPtr + 4, 1, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_bytes, true);
+  view.setUint32(
+    outPtr + 12,
+    record.kind ?? DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_kind_process_exit,
+    true,
+  );
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, record.exitVmPtr ?? record.vmPtr, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.remainingThreads ?? 0, true);
+  view.setUint32(outPtr + 44, record.liveThreads ?? 0, true);
+  view.setInt32(outPtr + 48, record.exitCode ?? 0, true);
+  view.setInt32(outPtr + 52, record.termSignal ?? 0, true);
+  view.setUint32(outPtr + 56, record.status ?? 0, true);
+  view.setUint32(outPtr + 60, record.faultSignal ?? 0, true);
+  view.setUint32(outPtr + 64, record.faultKind ?? 0, true);
+  view.setUint32(outPtr + 68, 0, true);
+  view.setBigUint64(outPtr + 72, record.faultPc ?? 0n, true);
+  view.setBigUint64(outPtr + 80, record.faultAddr ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_fault_exit_decision_bytes;
+}
+
+export function writeSupervisorRunnableResumeRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorRunnableResumeRecordFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_magic, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_bytes, true);
+  view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_resume_kind_runnable_thread, true);
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, record.tid ?? 1, true);
+  view.setUint32(outPtr + 32, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 36, record.status ?? 0, true);
+  view.setBigUint64(outPtr + 40, record.detail0 ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_resume_record_bytes;
+}
+
+export interface SupervisorSpawnThreadHostOpFixture {
+  vmPtr: number;
+  childVmPtr: number;
+  kind?: number;
+  seq?: bigint;
+  tid?: number;
+  processPtr?: number;
+  status?: number;
+  flags?: bigint;
+  childTidPtr?: bigint;
+}
+
+export function writeSupervisorSpawnThreadHostOpRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorSpawnThreadHostOpFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_magic, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
+  view.setUint32(outPtr + 12, record.kind ?? DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_spawn_thread_worker, true);
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, record.childVmPtr, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.status ?? 0, true);
+  view.setUint32(outPtr + 44, 0, true);
+  view.setBigUint64(outPtr + 48, record.flags ?? 0n, true);
+  view.setBigUint64(outPtr + 56, record.childTidPtr ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+}
+
+export function writeSupervisorArmHostTimerHostOpRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorArmHostTimerHostOpFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_magic, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
+  view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_arm_host_timer, true);
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, 0, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.status ?? 0, true);
+  view.setUint32(outPtr + 44, 0, true);
+  view.setBigUint64(outPtr + 48, record.delayMs, true);
+  view.setBigUint64(outPtr + 56, record.deadlineTicks ?? 0n, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+}
+
+export function writeSupervisorBlockedRetryHostOpRecord(
+  memory: WebAssembly.Memory,
+  outPtr: number,
+  record: SupervisorBlockedRetryHostOpFixture,
+): number {
+  const view = new DataView(memory.buffer);
+  view.setUint32(outPtr, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_magic, true);
+  view.setUint32(outPtr + 4, DEFAULT_NUMERIC_EXPORTS.supervisor_abi_version, true);
+  view.setUint32(outPtr + 8, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes, true);
+  view.setUint32(outPtr + 12, DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_kind_retry_blocked_worker, true);
+  view.setBigUint64(outPtr + 16, record.seq ?? 1n, true);
+  view.setUint32(outPtr + 24, record.vmPtr, true);
+  view.setUint32(outPtr + 28, 0, true);
+  view.setUint32(outPtr + 32, record.tid ?? 1, true);
+  view.setUint32(outPtr + 36, record.processPtr ?? 0, true);
+  view.setUint32(outPtr + 40, record.status ?? 0, true);
+  view.setUint32(outPtr + 44, 0, true);
+  view.setBigUint64(outPtr + 48, record.delayMs, true);
+  view.setBigUint64(outPtr + 56, record.reason, true);
+  return DEFAULT_NUMERIC_EXPORTS.supervisor_host_op_record_bytes;
+}

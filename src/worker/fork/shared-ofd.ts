@@ -4,6 +4,19 @@ import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import {
   collectProcessHeldOfds,
 } from "../ownership/ofd-table.js";
+import {
+  addKernelShareSharedOfdId,
+  deleteKernelShareSharedOfdId,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+} from "../kernel-share.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+} from "../ownership/ofd-metadata.js";
+import { supervisorOfdPipeGenerationSlot } from "../ownership/pipe-slot.js";
 import type { ProcessHandle } from "./types.js";
 
 function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number | null {
@@ -23,11 +36,12 @@ function currentPipeGeneration(handle: ProcessHandle, pipeSlot: number): number 
 }
 
 function pipeOfdGenerationDiffers(handle: ProcessHandle, ofdId: number): boolean {
-  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+  const pipeSlot = supervisorOfdPipeGenerationSlot(handle, ofdId);
+  if (pipeSlot === 0) {
     return false;
   }
-  const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
-  return pipeGeneration !== null && handle.kernel.kernel_ofd_offset(ofdId) !== BigInt(pipeGeneration);
+  const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
+  return pipeGeneration !== null && supervisorOfdOffset(handle, ofdId) !== BigInt(pipeGeneration);
 }
 
 function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: number, slot: Uint8Array): boolean {
@@ -39,15 +53,15 @@ function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: number, slo
   if (preservedType === 0) {
     return false;
   }
-  const currentType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  const currentType = supervisorOfdFdType(handle, ofdId);
   if (currentType === 0 || currentType !== preservedType) {
     return true;
   }
   if (pipeOfdGenerationDiffers(handle, ofdId)) {
     return true;
   }
-  return handle.kernel.kernel_ofd_host_fd(ofdId) !== view.getInt32(4, true)
-    || handle.kernel.kernel_ofd_ino(ofdId) !== view.getUint32(24, true);
+  return supervisorOfdHostFd(handle, ofdId) !== view.getInt32(4, true)
+    || supervisorOfdIno(handle, ofdId) !== view.getUint32(24, true);
 }
 
 export function snapshotLocalOfdSlots(
@@ -65,7 +79,7 @@ export function snapshotLocalOfdSlots(
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
     }
-    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const fdType = supervisorOfdFdType(handle, ofdId);
     if (fdType <= 0 || fdType > 64) {
       continue;
     }
@@ -96,10 +110,9 @@ export function restoreIncompatibleLocalOfdSlots(
     }
     const ofdSlotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
     bytes.set(slot, ofdSlotOffset);
-    if (
-      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-    ) {
-      const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+    const pipeSlot = supervisorOfdPipeGenerationSlot(handle, ofdId);
+    if (pipeSlot !== 0) {
+      const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
       if (pipeGeneration !== null) {
         view.setBigInt64(ofdSlotOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
       }
@@ -148,15 +161,15 @@ export function alignPipeOfdGenerationOffsets(
 
   const view = new DataView(handle.memory.buffer);
   for (const ofdId of ofdIds) {
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
+    if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
-    if (pipeGeneration === null || handle.kernel.kernel_ofd_offset(ofdId) === BigInt(pipeGeneration)) {
+    const pipeSlot = supervisorOfdPipeGenerationSlot(handle, ofdId);
+    if (pipeSlot === 0) {
+      continue;
+    }
+    const pipeGeneration = currentPipeGeneration(handle, pipeSlot);
+    if (pipeGeneration === null || supervisorOfdOffset(handle, ofdId) === BigInt(pipeGeneration)) {
       continue;
     }
     view.setBigInt64(
@@ -172,16 +185,16 @@ export function reconcileInheritedSharedOfdsAfterVforkExecve(
   inheritedSharedOfdIds: Iterable<number>,
 ): void {
   const heldByExistingMembers = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       heldByExistingMembers.add(ofdId);
     }
   }
   for (const ofdId of inheritedSharedOfdIds) {
     if (heldByExistingMembers.has(ofdId)) {
-      handle.kernelShare.sharedOfdIds.add(ofdId);
+      addKernelShareSharedOfdId(handle, ofdId);
     } else {
-      handle.kernelShare.sharedOfdIds.delete(ofdId);
+      deleteKernelShareSharedOfdId(handle, ofdId);
     }
   }
 }
@@ -195,14 +208,14 @@ export function trackVforkExecveChildSharedOfds(
       .map((entry) => entry.ofdId)
       .filter((ofdId) => ofdId > 0 && ofdId < childHandle.kernel.abi_max_fds()),
   );
-  for (const ofdId of childHandle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(childHandle)) {
     if (!execOfdIds.has(ofdId)) {
-      childHandle.kernelShare.sharedOfdIds.delete(ofdId);
+      deleteKernelShareSharedOfdId(childHandle, ofdId);
     }
   }
   for (const entry of childExecFdEntries) {
     if (entry.ofdId > 0 && entry.ofdId < childHandle.kernel.abi_max_fds()) {
-      childHandle.kernelShare.sharedOfdIds.add(entry.ofdId);
+      addKernelShareSharedOfdId(childHandle, entry.ofdId);
     }
   }
 }

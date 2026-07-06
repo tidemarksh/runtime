@@ -1,4 +1,4 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate shared-state bridge behavior during supervisor migration.
 import { expect, test } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";
@@ -92,6 +92,30 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_fd_ofd_id: (_vmPtr: number, _fd: number) => 0,
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
     thread_blocked_ofd_id: (_vmPtr: number) => 0,
+    supervisor_process_held_ofd_refcount(this: KernelExports, vmPtr: number, ofdId: number) {
+      let refcount = 0;
+      for (let fd = 0; fd < this.abi_max_fds(); fd += 1) {
+        if (this.process_fd_ofd_id(vmPtr, fd) === ofdId) {
+          refcount += 1;
+        }
+      }
+      return refcount;
+    },
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_fd_type(ofdId) : 0;
+    },
+    supervisor_ofd_ino(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_ino(ofdId) : 0;
+    },
+    supervisor_ofd_host_fd(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_host_fd(ofdId) : -1;
+    },
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
+    supervisor_ofd_offset(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_offset(ofdId) : 0n;
+    },
     kernel_ofd_fd_type: (ofdId: number) => new DataView(memory.buffer)
       .getInt32(runtimeState.ofdTablePtr + ofdId * 32, true),
     kernel_ofd_ino: (ofdId: number) => new DataView(memory.buffer)
@@ -163,6 +187,25 @@ function makeSharedStateSync(parentExports: KernelExports, childExports: KernelE
     restoreProcSelfExe: () => {},
   });
 }
+
+test("kernel-worker epoll primitive uses supervisor held epoll list", () => {
+  const memory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(memory);
+  const processExports = {
+    ...makeKernelExports(memory),
+    supervisor_process_epoll_held_ofd: (_vmPtr: number, index: number) => (
+      index === 0 ? 7 : index === 1 ? 9 : 0
+    ),
+  } as KernelExports;
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => canonicalExports,
+    processKernels: new Map([[1, processExports]]),
+    canonicalProcesses: new Map([[1, { ppid: 0 }]]),
+    getCanonicalProcessVmPtr: () => 0x1234,
+  });
+
+  expect(primitives.collectProcessHeldEpollOfdIds(processExports, 0x1234)).toEqual([7, 9]);
+});
 
 test("kernel-worker epoll sync keeps private epoll instances process-local", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });

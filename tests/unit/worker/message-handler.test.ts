@@ -1,16 +1,55 @@
 import { expect, test, vi } from "vite-plus/test";
-import { createWorkerMessageHandler } from "../../../src/worker/message-handler.js";
+import { createWorkerMessageHandler as createRawWorkerMessageHandler } from "../../../src/worker/message-handler.js";
 import type { ThreadWorkerOutbound } from "../../../src/messages.js";
+import type { KernelExports } from "../../../src/abi.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
+import {
+  getThreadOwnerPid,
+  getThreadOwnerAsyncStatus,
+  setThreadHostIdentity,
+  setThreadInitialized,
+  setThreadOwnerAsyncStatus,
+  setThreadReinitCount,
+  setThreadResumeWorkersOnReady,
+  setThreadWaitingInWorkerStatus,
+  snapshotThreadResumeWorkersOnReady,
+} from "../../../src/worker/thread-host-state.js";
 import { createWorkerMessageDebugStats } from "../../../src/worker/types.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../src/worker/types.js";
+import { workerMessageDebugStats } from "../../../src/worker/worker-debug-stats.js";
+import { writeSupervisorFaultExitDecisionRecord } from "./support/supervisor-abi.js";
+import { installSupervisorBlockedResumeStub } from "./support/supervisor-blocked-resume.js";
+import { seedProcessHandleStateFixture } from "./support/process-handle-state-fixture.js";
 
-function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWorkerState {
-  return {
+function createWorkerMessageHandler(
+  deps: Parameters<typeof createRawWorkerMessageHandler>[0],
+): ReturnType<typeof createRawWorkerMessageHandler> {
+  const handler = createRawWorkerMessageHandler(deps);
+  return ((...args: Parameters<ReturnType<typeof createRawWorkerMessageHandler>>) => {
+    seedProcessHandleStateFixture(args[0]);
+    return handler(...args);
+  }) as ReturnType<typeof createRawWorkerMessageHandler>;
+}
+
+function makeThreadState(overrides: Partial<ThreadWorkerState> & {
+  generation?: number;
+  initialized?: boolean;
+  ownerAsyncStatus?: number | null;
+  ownerPid?: number;
+  reinitCount?: number;
+  waitingInWorkerStatus?: number | null;
+} = {}): ThreadWorkerState {
+  const {
+    generation = 2,
+    initialized = true,
+    ownerAsyncStatus,
+    ownerPid = 3,
+    reinitCount = 0,
+    waitingInWorkerStatus,
+    ...rest
+  } = overrides;
+  const thread = {
     vmPtr: 0x1234,
-    ownerPid: 3,
-    generation: 2,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -30,15 +69,18 @@ function makeThreadState(overrides: Partial<ThreadWorkerState> = {}): ThreadWork
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
-    waitingInWorkerStatus: null,
-    ownerAsyncStatus: null,
-    resumeBlockedOnNextStep: false,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
-    resumeWorkersOnReady: [],
-    ...overrides,
-  };
+    ...rest,
+  } as ThreadWorkerState;
+  setThreadHostIdentity(thread, ownerPid, generation);
+  setThreadInitialized(thread, initialized);
+  setThreadReinitCount(thread, reinitCount);
+  if (typeof ownerAsyncStatus === "number") {
+    setThreadOwnerAsyncStatus(thread, ownerAsyncStatus);
+  }
+  if (typeof waitingInWorkerStatus === "number") {
+    setThreadWaitingInWorkerStatus(thread, waitingInWorkerStatus);
+  }
+  return thread;
 }
 
 function makeKernelState() {
@@ -65,6 +107,16 @@ function makeKernelState() {
     processRuntimeStatePtr: 0,
     timeStatePtr: 0,
   };
+}
+
+function makeSupervisorKernel<T extends Partial<KernelExports>>(kernel: T): T {
+  kernel.abi_status_ok ??= () => 0;
+  kernel.thread_pc ??= () => 0n;
+  kernel.thread_sp ??= () => 0n;
+  kernel.supervisor_fork_shared_effect_sync_action_none ??= () => 0;
+  kernel.supervisor_fork_shared_effect_sync_action_request ??= () => 1;
+  kernel.supervisor_fork_shared_effect_sync_action ??= () => 0;
+  return installSupervisorBlockedResumeStub(kernel);
 }
 
 function makeDeps(
@@ -106,7 +158,7 @@ function makeDeps(
     enqueueWorker: () => {},
     failProcess,
     handleExecveSpawn: async () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     pumpProcess: () => {},
     pruneDetachedProcessWorkers: () => {},
     pumpNetworkConnections: async () => false,
@@ -168,6 +220,7 @@ test("status from a removed process state is dropped as stale", () => {
   const appendWorkerDebugLog = vi.fn();
   const failProcess = vi.fn();
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const supervisorProcessOwnerAbsent = vi.fn(() => 1);
   const handle = {
     pid: 4,
     exitInProgress: false,
@@ -175,15 +228,16 @@ test("status from a removed process state is dropped as stale", () => {
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>(),
     vforkSnapshot: null,
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
+      supervisor_process_owner_absent: supervisorProcessOwnerAbsent,
       process_current_pid: () => 0,
       thread_process_thread_count: () => 0,
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(4, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -204,6 +258,7 @@ test("status from a removed process state is dropped as stale", () => {
     handle,
     "stale-process-status:0x1234:0:pid=4",
   );
+  expect(supervisorProcessOwnerAbsent).toHaveBeenCalledWith(0x1234);
 });
 
 test("ready from a rehydrating process state is accepted when worker debug still identifies the owner", () => {
@@ -215,6 +270,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const supervisorProcessOwnerAbsent = vi.fn(() => 1);
   const handle = {
     pid: 4,
     parentPid: 1,
@@ -223,8 +279,8 @@ test("ready from a rehydrating process state is accepted when worker debug still
     workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Set<Worker>(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Set<Worker>(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -236,10 +292,6 @@ test("ready from a rehydrating process state is accepted when worker debug still
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Set(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
@@ -268,18 +320,19 @@ test("ready from a rehydrating process state is accepted when worker debug still
       processRuntimeStatePtr: 0,
       timeStatePtr: 0,
     },
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
       abi_status_clone_spawn: () => 25,
+      supervisor_process_owner_absent: supervisorProcessOwnerAbsent,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 0,
       thread_process_thread_count: () => 0,
       thread_process_ptr: () => 0,
       process_current_ppid: () => 0,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(4, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -298,6 +351,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
     handle,
     "ready-rehydrate:0x1234:pid=4",
   );
+  expect(supervisorProcessOwnerAbsent).toHaveBeenCalledWith(0x1234);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -311,6 +365,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const supervisorProcessOwnerLiveMatches = vi.fn(() => 1);
   const handle = {
     pid: 3,
     parentPid: 1,
@@ -319,8 +374,8 @@ test("ready adopts transferred worker ownership when kernel process identity mat
     workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Set<Worker>(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Set<Worker>(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -332,28 +387,25 @@ test("ready adopts transferred worker ownership when kernel process identity mat
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Set(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
     },
     memory: new WebAssembly.Memory({ initial: 1 }),
     kernelState: makeKernelState(),
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
       abi_status_clone_spawn: () => 25,
+      supervisor_process_owner_live_matches: supervisorProcessOwnerLiveMatches,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 3,
       thread_process_thread_count: () => 1,
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(3, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -366,12 +418,13 @@ test("ready adopts transferred worker ownership when kernel process identity mat
     wasmFeatures: { bulkMemory: true },
   } as ThreadWorkerOutbound);
 
-  expect(thread.ownerPid).toBe(3);
+  expect(getThreadOwnerPid(thread)).toBe(3);
   expect(failProcess).not.toHaveBeenCalled();
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "ready-owner-adopt:0x1234:pid=3:previous=1",
   );
+  expect(supervisorProcessOwnerLiveMatches).toHaveBeenCalledWith(0x1234, 3);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -385,6 +438,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const supervisorProcessOwnerLiveMatches = vi.fn(() => 1);
   const parentHandle = {
     pid: 1,
     exitInProgress: false,
@@ -401,8 +455,8 @@ test("messages delivered through a stale handle are rerouted to the transferred 
     workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Set<Worker>(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Set<Worker>(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -414,28 +468,25 @@ test("messages delivered through a stale handle are rerouted to the transferred 
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Set(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
     },
     memory: new WebAssembly.Memory({ initial: 1 }),
     kernelState: makeKernelState(),
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_fault: () => 31,
       abi_status_vfork_wait: () => 11,
       abi_status_execve_spawn: () => 13,
       abi_status_clone_spawn: () => 25,
+      supervisor_process_owner_live_matches: supervisorProcessOwnerLiveMatches,
       kernel_attach_runtime_state: () => {},
       process_current_pid: () => 3,
       thread_process_thread_count: () => 1,
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(1, parentHandle);
   deps.processHandles.set(3, childHandle);
@@ -459,6 +510,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
     childHandle,
     "ready-pid-mismatch-stale-debug:0x1234:expected_pid=3:actual_pid=1:threads=1",
   );
+  expect(supervisorProcessOwnerLiveMatches).toHaveBeenCalledWith(0x1234, 3);
   expect(enqueueWorker).toHaveBeenCalledWith(childHandle, worker);
 });
 
@@ -474,8 +526,8 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     vmPtr: 0x2000,
     ownerPid: 4,
     initialized: false,
-    resumeWorkersOnReady: [parentWorker],
   });
+  setThreadResumeWorkersOnReady(childThread, [parentWorker]);
   threadWorkerStates.set(parentWorker, parentThread);
   threadWorkerStates.set(childWorker, childThread);
   const appendWorkerDebugLog = vi.fn();
@@ -490,8 +542,8 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([parentWorker, childWorker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     vforkWorker: null,
     stdinPipe: 0,
@@ -504,17 +556,13 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       stdoutPipe: 0,
       stderrPipe: 0,
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Set(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
     },
     memory: new WebAssembly.Memory({ initial: 1 }),
     kernelState: makeKernelState(),
-    kernel: {
+    kernel: makeSupervisorKernel({
       abi_status_clone_spawn: () => 25,
       kernel_attach_runtime_state: () => {},
       kernel_heap_base: () => 0,
@@ -543,7 +591,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       thread_process_ptr: () => 0x48000,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
-    },
+    }),
   } as unknown as ProcessHandle;
   deps.processHandles.set(4, handle);
   const handleWorkerMessage = createWorkerMessageHandler(deps);
@@ -556,8 +604,8 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     wasmFeatures: { bulkMemory: true },
   } as ThreadWorkerOutbound);
 
-  expect(parentThread.ownerAsyncStatus).toBeNull();
-  expect(childThread.resumeWorkersOnReady).toEqual([]);
+  expect(getThreadOwnerAsyncStatus(parentThread as never)).toBeNull();
+  expect(snapshotThreadResumeWorkersOnReady(childThread)).toEqual([]);
   expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
   expect(enqueueWorker).toHaveBeenNthCalledWith(2, handle, parentWorker);
 });
@@ -572,7 +620,9 @@ test("active vfork child fault remains routed through the parent handle", () => 
   const resumeVforkParentAfterChildExit = vi.fn(() => true);
   deps.resumeVforkParentAfterChildExit = resumeVforkParentAfterChildExit;
   const kernelState = makeKernelState();
-  const kernel = {
+  const memory = new WebAssembly.Memory({ initial: 4 });
+  const kernel = makeSupervisorKernel({
+    memory,
     abi_status_ok: () => 0,
     abi_status_fault: () => 31,
     abi_status_fs: () => 6,
@@ -584,6 +634,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
     abi_max_threads: () => 1,
     abi_max_fds: () => 0,
     kernel_attach_runtime_state: () => {},
+    kernel_heap_ptr: () => 0,
     process_current_pid: () => 3,
     process_current_ppid: () => 1,
     process_thread_vm_ptr: () => 0x1234,
@@ -593,7 +644,24 @@ test("active vfork child fault remains routed through the parent handle", () => 
     thread_sp: () => 0x2000n,
     thread_s11: () => 0x3000n,
     thread_status: () => 31,
-  };
+    supervisor_abi_version: () => 1,
+    supervisor_fault_exit_decision_bytes: () => 88,
+    supervisor_fault_exit_decision_magic: () => 0x5846_5354,
+    supervisor_fault_exit_kind_thread_exit: () => 1,
+    supervisor_fault_exit_kind_process_exit: () => 2,
+    supervisor_fault_exit_decision: vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+      expect(vmPtr).toBe(0x1234);
+      expect(outLen).toBe(88);
+      writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+        vmPtr,
+        processPtr: 0x48000,
+        exitCode: 12,
+        termSignal: 0,
+        status: 31,
+      });
+      return 88;
+    }),
+  });
   const parentHandle = {
     runtimeId: 1,
     pid: 1,
@@ -603,11 +671,8 @@ test("active vfork child fault remains routed through the parent handle", () => 
     workerDebugLog: [],
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map<Worker, unknown>(),
-    pendingChildSpawnRecords: 0,
-    pendingChildExitRecords: 0,
-    childExitSyncRecords: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map<Worker, unknown>(),
     stdinPipe: 0,
     stdoutPipe: 0,
     stderrPipe: 0,
@@ -619,10 +684,6 @@ test("active vfork child fault remains routed through the parent handle", () => 
       stderrPipe: 0,
       refCount: 1,
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
@@ -631,7 +692,7 @@ test("active vfork child fault remains routed through the parent handle", () => 
     kernel,
     kernelState,
     runningWorker: worker,
-    memory: new WebAssembly.Memory({ initial: 1 }),
+    memory,
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: 3,
@@ -680,6 +741,6 @@ test("active vfork child fault remains routed through the parent handle", () => 
     12,
     0,
   );
-  expect(parentHandle.workerMessageDebugStats.rerouted).toBe(0);
+  expect(workerMessageDebugStats(parentHandle).rerouted).toBe(0);
   expect(failProcess).not.toHaveBeenCalled();
 });

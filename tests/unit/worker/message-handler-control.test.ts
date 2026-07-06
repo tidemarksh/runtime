@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerControlMessageHandler } from "../../../src/worker/message-handler/control.js";
+import { processLastDebugMessage } from "../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handler/types.js";
 
@@ -27,7 +28,7 @@ function makeDeps(failProcess: ReturnType<typeof vi.fn>): WorkerMessageHandlerDe
     enqueueWorker: () => {},
     failProcess,
     handleExecveSpawn: async () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     pumpProcess: () => {},
     requestEpollDependentOfdStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -50,7 +51,7 @@ test("worker control error path degrades gracefully when thread debug access tra
   const handle = {
     pid: 7,
     runningWorker: worker,
-    blockedWorkers: new Map(),
+    hostBlockedWorkers: new Map(),
     workers: new Set<Worker>([worker]),
     kernel: {
       abi_max_threads: () => 8,
@@ -67,7 +68,7 @@ test("worker control error path degrades gracefully when thread debug access tra
     message: "worker boom",
   })).not.toThrow();
 
-  expect(handle.lastDebugMessage).toBe("worker boom");
+  expect(processLastDebugMessage(handle)).toBe("worker boom");
   expect(failProcess).toHaveBeenCalledTimes(1);
 
   const error = failProcess.mock.calls[0]?.[1];

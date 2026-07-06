@@ -1,4 +1,4 @@
-import { attachKernelRuntimeState } from "../../abi.js";
+import { attachKernelRuntimeState, supervisorPipeReconcileControl } from "../../abi.js";
 import {
   PIPE_BUFFER_BYTES,
   PIPE_DATA_OFFSET,
@@ -8,12 +8,28 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
+import { kernelShareMemberList } from "./common.js";
+import { processExitInProgress } from "../process-lifecycle-state.js";
+import {
+  supervisorOfdPipeSlotModeMap,
+  supervisorOfdPipeSlots,
+} from "../ownership/pipe-slot.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+} from "../ownership/ofd-metadata.js";
 
 const PIPE_CONTROL_START = PIPE_READ_OPEN_OFFSET;
 const PIPE_DATA_START = PIPE_DATA_OFFSET;
 const PIPE_OFF_READ_OPEN = PIPE_READ_OPEN_OFFSET;
 const PIPE_OFF_TAIL = PIPE_TAIL_OFFSET;
 const PIPE_OFF_WRITE_OPEN = PIPE_WRITE_OPEN_OFFSET;
+const PIPE_CONTROL_END = PIPE_OFF_WRITE_OPEN + 4;
 const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 function pipeDebugPreviewEnabled(): boolean {
@@ -99,31 +115,12 @@ function pipeDebugPreview(handle: ProcessHandle, base: number, head: number, tai
 }
 
 function collectLocalPipeSlotsForOfd(handle: ProcessHandle, ofdId: number): number[] {
-  const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  if (fdType === handle.kernel.abi_fd_type_pipe()) {
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    return pipeSlot > 0 ? [pipeSlot] : [];
-  }
+  return supervisorOfdPipeSlots(handle, ofdId);
+}
 
-  if (fdType === handle.kernel.abi_fd_type_pty_slave?.()) {
-    const ptyIdx = handle.kernel.kernel_ofd_ino(ofdId);
-    const accessMode = handle.kernel.kernel_ofd_status_flags(ofdId) & 0x3;
-    const pipeSlot = accessMode === handle.kernel.abi_o_wronly()
-      ? (handle.kernel.kernel_pty_output_pipe?.(ptyIdx) ?? 0)
-      : (handle.kernel.kernel_pty_input_pipe?.(ptyIdx) ?? 0);
-    return pipeSlot > 0 ? [pipeSlot] : [];
-  }
-
-  if (fdType === handle.kernel.abi_fd_type_pty_master?.()) {
-    const ptyIdx = handle.kernel.kernel_ofd_ino(ofdId);
-    const accessMode = handle.kernel.kernel_ofd_status_flags(ofdId) & 0x3;
-    const pipeSlot = accessMode === handle.kernel.abi_o_wronly()
-      ? (handle.kernel.kernel_pty_input_pipe?.(ptyIdx) ?? 0)
-      : (handle.kernel.kernel_pty_output_pipe?.(ptyIdx) ?? 0);
-    return pipeSlot > 0 ? [pipeSlot] : [];
-  }
-
-  return [];
+function copyPipeSlotWithoutOpenCounts(bytes: Uint8Array, slot: Uint8Array, slotOffset: number): void {
+  bytes.set(slot.subarray(0, PIPE_CONTROL_START), slotOffset);
+  bytes.set(slot.subarray(PIPE_CONTROL_END), slotOffset + PIPE_CONTROL_END);
 }
 
 export function snapshotLocalPipeSlots(
@@ -168,7 +165,14 @@ export function restoreLocalPipeSlots(
   for (const [pipeSlot, slot] of preservedPipeSlots) {
     const slotOffset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
     if (options.includeControl === true) {
-      bytes.set(slot, slotOffset);
+      const slotView = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+      const readOpen = slotView.getInt32(PIPE_OFF_READ_OPEN, true);
+      const writeOpen = slotView.getInt32(PIPE_OFF_WRITE_OPEN, true);
+      copyPipeSlotWithoutOpenCounts(bytes, slot, slotOffset);
+      const applied = supervisorPipeReconcileControl(handle.kernel, pipeSlot, readOpen, writeOpen);
+      if (applied === 0) {
+        throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+      }
       continue;
     }
     bytes.set(slot.subarray(0, PIPE_CONTROL_START), slotOffset);
@@ -176,125 +180,64 @@ export function restoreLocalPipeSlots(
   }
 }
 
-function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<number> {
-  const owner = handle.stdioOwner;
-  const slotsByFd = fd === 0
-    ? [
-        handle.stdinPipe,
-        handle.hostStdio.stdinPipe,
-        owner?.stdinPipe ?? 0,
-        owner?.hostStdio.stdinPipe ?? 0,
-      ]
-    : fd === 1
-      ? [
-          handle.stdoutPipe,
-          handle.hostStdio.stdoutPipe,
-          owner?.stdoutPipe ?? 0,
-          owner?.hostStdio.stdoutPipe ?? 0,
-        ]
-      : [
-          handle.stderrPipe,
-          handle.hostStdio.stderrPipe,
-          owner?.stderrPipe ?? 0,
-          owner?.hostStdio.stderrPipe ?? 0,
-        ];
-  return new Set(slotsByFd.filter((slot) => slot > 0));
+function supervisorMaskToBigInt(mask: bigint | number): bigint {
+  return typeof mask === "bigint" ? mask : BigInt(mask);
+}
+
+function addSupervisorPipeControlForMember(
+  member: ProcessHandle,
+  readOpen: Int32Array,
+  writeOpen: Int32Array,
+  maxPipes: number,
+): bigint {
+  const usedMask = member.kernel.supervisor_process_pipe_used_mask;
+  const readOpenCount = member.kernel.supervisor_process_pipe_read_open_count;
+  const writeOpenCount = member.kernel.supervisor_process_pipe_write_open_count;
+  if (!usedMask || !readOpenCount || !writeOpenCount) {
+    throw new Error("kernel supervisor ABI missing process pipe control exports");
+  }
+
+  for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+    const readCount = readOpenCount.call(member.kernel, member.vmPtr, pipeSlot);
+    const writeCount = writeOpenCount.call(member.kernel, member.vmPtr, pipeSlot);
+    if (readCount > 0) {
+      readOpen[pipeSlot] += readCount;
+    }
+    if (writeCount > 0) {
+      writeOpen[pipeSlot] += writeCount;
+    }
+  }
+  return supervisorMaskToBigInt(usedMask.call(member.kernel, member.vmPtr));
 }
 
 export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
-  const members = [...handle.kernelShare.members].filter((member) => !member.exitInProgress);
+  const members = kernelShareMemberList(handle).filter((member) => !processExitInProgress(member));
   if (members.length === 0) {
     return;
   }
   const maxPipes = handle.kernel.abi_max_pipes();
   const readOpen = new Int32Array(maxPipes);
   const writeOpen = new Int32Array(maxPipes);
-  const readKeys = new Set<string>();
-  const writeKeys = new Set<string>();
   let pipeUsed = 1n;
 
   for (const member of members) {
-    const maxFds = member.kernel.abi_max_fds();
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-      if (ofdId <= 0 || ofdId >= maxFds) {
-        continue;
-      }
-      if (member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()) {
-        continue;
-      }
-      if (
-        typeof member.kernel.kernel_ofd_refcount === "function"
-        && member.kernel.kernel_ofd_refcount(ofdId) <= 0
-      ) {
-        continue;
-      }
-      const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      pipeUsed |= 1n << BigInt(pipeSlot);
-      const hostFd = member.kernel.kernel_ofd_host_fd(ofdId);
-      const key = `${member.pid}:${pipeSlot}:${ofdId}`;
-      if (hostFd >= 0) {
-        readKeys.add(key);
-      } else {
-        writeKeys.add(key);
-      }
-    }
-    if ((member.hostStdio?.refCount ?? 0) > 0) {
-      const owner = member.stdioOwner ?? member;
-      for (const fd of [0, 1, 2] as const) {
-        const ofdId = member.kernel.process_fd_ofd_id(member.vmPtr, fd);
-        if (
-          ofdId <= 0
-          || ofdId >= maxFds
-          || member.kernel.kernel_ofd_fd_type(ofdId) !== member.kernel.abi_fd_type_pipe()
-        ) {
-          continue;
-        }
-        const pipeSlot = member.kernel.kernel_ofd_ino(ofdId);
-        if (
-          pipeSlot <= 0
-          || pipeSlot >= maxPipes
-          || !hostStdioPipeSlotsForFd(member, fd).has(pipeSlot)
-        ) {
-          continue;
-        }
-        pipeUsed |= 1n << BigInt(pipeSlot);
-        const key = `host:${pipeSlot}:${owner.pid}:${fd}`;
-        if (fd === 0) {
-          writeKeys.add(key);
-        } else {
-          readKeys.add(key);
-        }
-      }
-    }
+    pipeUsed |= addSupervisorPipeControlForMember(member, readOpen, writeOpen, maxPipes);
   }
 
-  for (const key of readKeys) {
-    const [, pipeSlot] = key.split(":");
-    readOpen[Number(pipeSlot)] += 1;
-  }
-  for (const key of writeKeys) {
-    const [, pipeSlot] = key.split(":");
-    writeOpen[Number(pipeSlot)] += 1;
-  }
-
-  const slotBytes = PIPE_SLOT_BYTES;
   for (const member of members) {
-    if (typeof member.kernel.kernel_pipe_base !== "function") {
-      continue;
-    }
-    const view = new DataView(member.memory.buffer);
-    const pipeBase = member.kernel.kernel_pipe_base();
     for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
       if ((pipeUsed & (1n << BigInt(pipeSlot))) === 0n) {
         continue;
       }
-      const slotOffset = pipeBase + pipeSlot * slotBytes;
-      view.setInt32(slotOffset + PIPE_OFF_READ_OPEN, readOpen[pipeSlot] ?? 0, true);
-      view.setInt32(slotOffset + PIPE_OFF_WRITE_OPEN, writeOpen[pipeSlot] ?? 0, true);
+      const applied = supervisorPipeReconcileControl(
+        member.kernel,
+        pipeSlot,
+        readOpen[pipeSlot] ?? 0,
+        writeOpen[pipeSlot] ?? 0,
+      );
+      if (applied === 0) {
+        throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+      }
     }
     member.kernelState = {
       ...member.kernelState,
@@ -305,27 +248,14 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
 }
 
 export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): string {
-  const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+  const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
   if (ofdId === 0) {
     return `${fd}:ofd=0`;
   }
-  const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
-  let pipeSlot = 0;
-  if (fdType === handle.kernel.abi_fd_type_pipe()) {
-    pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-  } else if (fdType === handle.kernel.abi_fd_type_pty_slave?.()) {
-    const ptyIdx = handle.kernel.kernel_ofd_ino(ofdId);
-    const accessMode = handle.kernel.kernel_ofd_status_flags(ofdId) & 0x3;
-    pipeSlot = accessMode === handle.kernel.abi_o_wronly()
-      ? (handle.kernel.kernel_pty_output_pipe?.(ptyIdx) ?? 0)
-      : (handle.kernel.kernel_pty_input_pipe?.(ptyIdx) ?? 0);
-  } else if (fdType === handle.kernel.abi_fd_type_pty_master?.()) {
-    const ptyIdx = handle.kernel.kernel_ofd_ino(ofdId);
-    const accessMode = handle.kernel.kernel_ofd_status_flags(ofdId) & 0x3;
-    pipeSlot = accessMode === handle.kernel.abi_o_wronly()
-      ? (handle.kernel.kernel_pty_input_pipe?.(ptyIdx) ?? 0)
-      : (handle.kernel.kernel_pty_output_pipe?.(ptyIdx) ?? 0);
-  }
+  const fdType = supervisorOfdFdType(handle, ofdId);
+  const firstPipeSlotMode = supervisorOfdPipeSlotModeMap(handle, ofdId).entries().next().value;
+  const pipeSlot = firstPipeSlotMode?.[0] ?? 0;
+  const mode = firstPipeSlotMode?.[1] ?? 0;
   if (pipeSlot === 0) {
     return `${fd}:ofd=${ofdId}:type=${fdType}:slot=0`;
   }
@@ -338,6 +268,7 @@ export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): strin
     `${fd}:ofd=${ofdId}`,
     `type=${fdType}`,
     `slot=${pipeSlot}`,
+    `mode=${mode}`,
     `ro=${Atomics.load(i32, (base + PIPE_OFF_READ_OPEN) >>> 2)}`,
     `wo=${Atomics.load(i32, (base + PIPE_OFF_WRITE_OPEN) >>> 2)}`,
     `head=${head}`,
@@ -348,10 +279,10 @@ export function formatPipeCounterDebug(handle: ProcessHandle, fd: number): strin
 
 export function formatOpenFdSummary(handle: ProcessHandle, limit = 16): string {
   return Array.from({ length: limit }, (_value, fd) => {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId === 0) {
       return null;
     }
-    return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}/${handle.kernel.kernel_ofd_host_fd(ofdId)}`;
+    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${supervisorOfdFdType(handle, ofdId)}/${supervisorOfdIno(handle, ofdId)}/${supervisorOfdHostFd(handle, ofdId)}`;
   }).filter(Boolean).join(" ");
 }

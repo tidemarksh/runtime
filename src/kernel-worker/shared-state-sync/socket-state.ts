@@ -1,5 +1,6 @@
 import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
 import type { KernelExports, KernelRuntimeState } from "../../abi.js";
+import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import type { KernelWorkerSocketStateSnapshot } from "../../messages.js";
 
 interface KernelWorkerSocketStateBridgeDeps {
@@ -19,7 +20,7 @@ export function createKernelWorkerSocketStateBridge(deps: KernelWorkerSocketStat
     const state = readKernelRuntimeState(processExports);
     const memory = new Uint8Array(processExports.memory.buffer);
     const netBufPoolBytes = processExports.kernel_net_buf_pool_bytes();
-    const maxBuffers = Math.max(1, Number(processExports.abi_max_sockets?.() ?? 32) * 2);
+    const maxBuffers = kernelNetBufferCount(processExports);
     const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
     memory.set(snapshot.socketTable, state.socketTablePtr);
     if (snapshot.netBufPool !== undefined) {
@@ -52,7 +53,7 @@ export function createKernelWorkerSocketStateBridge(deps: KernelWorkerSocketStat
     const state = readKernelRuntimeState(processExports);
     const memory = new Uint8Array(processExports.memory.buffer);
     const netBufPoolBytes = processExports.kernel_net_buf_pool_bytes();
-    const maxBuffers = Math.max(1, Number(processExports.abi_max_sockets?.() ?? 32) * 2);
+    const maxBuffers = kernelNetBufferCount(processExports);
     const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
     const netBufSlots: KernelWorkerSocketStateSnapshot["netBufSlots"] = [];
     if (netBufSlotBytes > 0) {

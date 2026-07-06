@@ -9,10 +9,6 @@ import { expect, test } from "vite-plus/test";
 import { readFileSync } from "node:fs";
 import {
   attachKernelRuntimeState,
-  kernelOfdStateBytes,
-  kernelOfdStatePtr,
-  kernelSocketStateBytes,
-  kernelSocketStatePtr,
   readKernelRuntimeState,
   readStatusCodes,
   type KernelExports,
@@ -21,7 +17,6 @@ import { createKernelEnv } from "../../../src/wasm/env.js";
 import { instantiateKernelWithSharedMemory } from "../../../src/wasm/kernel-memory.js";
 import { stageExecveGuestHandoff } from "../../../src/worker/fork/execve-handoff.js";
 import {
-  copyKernelPrivateRegion,
   ensureMemoryCapacity,
   writeKernelScratch,
 } from "../../../src/worker/kernel-scratch.js";
@@ -181,66 +176,16 @@ function cstr(value: string): Uint8Array {
   return encoder.encode(`${value}\0`);
 }
 
-function copyKernelRuntimeRegion(
+function copyCommittedMemoryPrefix(
   source: WebAssembly.Memory,
   target: WebAssembly.Memory,
-  start: number,
   byteLength: number,
 ): void {
-  if (start === 0 || byteLength <= 0) {
+  if (byteLength <= 0) {
     return;
   }
-  const end = start + byteLength;
-  ensureMemoryCapacity(target, end);
-  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, start, byteLength), start);
-}
-
-function copyExecveKernelRuntimeRegions(
-  source: KernelExports,
-  sourceMemory: WebAssembly.Memory,
-  targetMemory: WebAssembly.Memory,
-): void {
-  const state = readKernelRuntimeState(source);
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, kernelOfdStatePtr(state), kernelOfdStateBytes(source, state));
-  copyKernelRuntimeRegion(
-    sourceMemory,
-    targetMemory,
-    state.memfsPtr,
-    state.memfsHeaderBytes
-      + state.memfsInodesBytes
-      + state.memfsFirstChildBytes
-      + state.memfsDirEntriesBytes
-      + state.memfsDataBytes,
-  );
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.epollTablePtr, source.kernel_epoll_table_bytes());
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, kernelSocketStatePtr(state), kernelSocketStateBytes(source, state));
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.pipeBase, source.kernel_pipe_region_bytes());
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.netBufBase, source.kernel_net_buf_pool_bytes());
-  copyKernelRuntimeRegion(
-    sourceMemory,
-    targetMemory,
-    state.sigSlotsPtr,
-    source.kernel_sig_slots_bytes() + source.kernel_signal_action_table_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    sourceMemory,
-    targetMemory,
-    state.processPendingPtr,
-    source.kernel_process_pending_bytes(),
-  );
-  copyKernelRuntimeRegion(
-    sourceMemory,
-    targetMemory,
-    state.signalfdStatePtr ?? 0,
-    source.kernel_signalfd_state_bytes?.() ?? 0,
-  );
-  copyKernelRuntimeRegion(
-    sourceMemory,
-    targetMemory,
-    state.processRuntimeStatePtr,
-    source.kernel_process_runtime_state_bytes(),
-  );
-  copyKernelRuntimeRegion(sourceMemory, targetMemory, state.timeStatePtr, source.kernel_time_state_bytes());
+  ensureMemoryCapacity(target, byteLength);
+  new Uint8Array(target.buffer).set(new Uint8Array(source.buffer, 0, byteLength), 0);
 }
 
 function installExecutableFile(exports: KernelExports, name: string, data: Uint8Array): void {
@@ -451,8 +396,7 @@ test("detached kernel instance completes staged execve handoff", async () => {
   });
   const child = childInstance.exports as unknown as KernelExports;
 
-  copyKernelPrivateRegion(memory, childMemory, ownerState.heapPtr);
-  copyExecveKernelRuntimeRegions(owner, memory, childMemory);
+  copyCommittedMemoryPrefix(memory, childMemory, memory.buffer.byteLength);
   attachKernelRuntimeState(child, ownerState);
 
   const staged = stageExecveGuestHandoff(child, guestBase, {

@@ -3,6 +3,11 @@ import type {
   KernelWorkerOfdSlotSnapshot,
 } from "../../messages.js";
 import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../process-stdio-state.js";
+import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
@@ -10,132 +15,102 @@ import {
 } from "../../layout/ofd.js";
 import { PIPE_GENERATION_OFFSET } from "../../layout/pipe.js";
 import type { KernelSyncHandle, ProcessHandle } from "../types.js";
+import {
+  addKernelShareSharedOfdId,
+  kernelShareHasSharedOfdId,
+  kernelShareMemberList,
+  kernelShareSharedOfdIdList,
+} from "../kernel-share.js";
+import { regularFileOfdOffsetSnapshotEntries } from "../regular-file-ofd-offset-state.js";
+import { networkOfdSlotWatermarks } from "../network-socket-state.js";
+import { supervisorProcessOfdForFd } from "./fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdReconcileRefcount,
+  supervisorOfdRefcount,
+} from "./ofd-metadata.js";
+import {
+  supervisorProcessPipeOfdForFd,
+  supervisorProcessPipeSlotForFd,
+} from "./pipe-slot.js";
 
-export function boundedThreadSlotCount(handle: ProcessHandle): number {
-  const maxThreads = handle.kernel.abi_max_threads();
-  try {
-    const processThreadCount = handle.kernel.thread_process_thread_count?.(handle.vmPtr) ?? maxThreads;
-    if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
-      return 0;
-    }
-    // Kernel thread slots are sparse and keyed by tid-1, so thread_count is a
-    // population count, not a dense slot upper bound.
-    return maxThreads;
-  } catch {
-    return maxThreads;
+function requireSupervisorProcessHeldOfdRefcount(
+  handle: ProcessHandle,
+): (vmPtr: number, ofdId: number) => number {
+  const readSupervisorHeldOfdRefcount = handle.kernel.supervisor_process_held_ofd_refcount;
+  if (!readSupervisorHeldOfdRefcount) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_held_ofd_refcount");
   }
+  return readSupervisorHeldOfdRefcount.bind(handle.kernel);
 }
 
-export function plausibleThreadVmPtr(handle: ProcessHandle, vmPtr: number): boolean {
-  if (!Number.isInteger(vmPtr) || vmPtr <= 0) {
-    return false;
+function requireSupervisorRestoreActionApply(handle: ProcessHandle): number {
+  const apply = handle.kernel.supervisor_fd_entry_restore_action_apply;
+  if (!apply) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_apply");
   }
-  const byteLength = handle.memory.buffer.byteLength;
-  return vmPtr < byteLength;
+  return apply.call(handle.kernel);
+}
+
+function requireSupervisorRegularFileOffsetRestoreAction(
+  handle: ProcessHandle,
+): (
+  ofdId: number,
+  snapshotHostFd: number,
+  snapshotIno: number,
+  snapshotOffset: bigint | number,
+) => number {
+  const decide = handle.kernel.supervisor_regular_file_offset_restore_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_regular_file_offset_restore_action");
+  }
+  return decide.bind(handle.kernel);
 }
 
 export function collectProcessHeldOfds(handle: ProcessHandle): Set<number> {
   const maxFds = handle.kernel.abi_max_fds();
   const heldOfds = new Set<number>();
-
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (ofdId !== 0 && ofdId < maxFds) {
+  const supervisorHeldOfdRefcount = requireSupervisorProcessHeldOfdRefcount(handle);
+  for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+    if (supervisorHeldOfdRefcount(handle.vmPtr, ofdId) > 0) {
       heldOfds.add(ofdId);
     }
   }
-
-  for (let slot = 0; slot < boundedThreadSlotCount(handle); slot += 1) {
-    let threadVmPtr = 0;
-    try {
-      threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
-    } catch {
-      continue;
-    }
-    if (threadVmPtr === 0) {
-      continue;
-    }
-    if (!plausibleThreadVmPtr(handle, threadVmPtr)) {
-      continue;
-    }
-    let blockedOfdId = 0;
-    try {
-      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(threadVmPtr) ?? 0;
-    } catch {
-      continue;
-    }
-    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
-      heldOfds.add(blockedOfdId);
-    }
-  }
-
-  for (const blocked of (handle.blockedWorkers?.values() ?? [])) {
-    let blockedOfdId = 0;
-    try {
-      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(blocked.vmPtr) ?? 0;
-    } catch {
-      continue;
-    }
-    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
-      heldOfds.add(blockedOfdId);
-    }
-  }
-
   return heldOfds;
 }
 
 export function collectProcessHeldOfdRefcounts(handle: ProcessHandle): Int32Array {
   const maxFds = handle.kernel.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
-
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (ofdId !== 0 && ofdId < maxFds) {
-      heldOfdRefcounts[ofdId] += 1;
+  const supervisorHeldOfdRefcount = requireSupervisorProcessHeldOfdRefcount(handle);
+  for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+    const refcount = supervisorHeldOfdRefcount(handle.vmPtr, ofdId);
+    if (refcount > 0) {
+      heldOfdRefcounts[ofdId] = refcount;
     }
   }
-
-  for (let slot = 0; slot < boundedThreadSlotCount(handle); slot += 1) {
-    let threadVmPtr = 0;
-    try {
-      threadVmPtr = handle.kernel.process_thread_vm_ptr(handle.vmPtr, slot);
-    } catch {
-      continue;
-    }
-    if (threadVmPtr === 0 || !plausibleThreadVmPtr(handle, threadVmPtr)) {
-      continue;
-    }
-    let blockedOfdId = 0;
-    try {
-      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(threadVmPtr) ?? 0;
-    } catch {
-      continue;
-    }
-    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
-      heldOfdRefcounts[blockedOfdId] += 1;
-    }
-  }
-
-  for (const blocked of (handle.blockedWorkers?.values() ?? [])) {
-    let blockedOfdId = 0;
-    try {
-      blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(blocked.vmPtr) ?? 0;
-    } catch {
-      continue;
-    }
-    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
-      heldOfdRefcounts[blockedOfdId] += 1;
-    }
-  }
-
   return heldOfdRefcounts;
 }
 
-export function collectHeldOfdIdsByType(handle: ProcessHandle, types: number[]): number[] {
-  const held = collectProcessHeldOfds(handle);
+function collectSupervisorProcessOfdIds(
+  handle: ProcessHandle,
+  nextOfd: ((vmPtr: number, index: number) => number) | undefined,
+  exportName: string,
+): number[] {
+  if (!nextOfd) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  const maxFds = handle.kernel.abi_max_fds();
   const ofdIds: number[] = [];
-  for (const ofdId of held) {
-    if (types.includes(handle.kernel.kernel_ofd_fd_type(ofdId))) {
+  for (let index = 0; index < maxFds; index += 1) {
+    const ofdId = nextOfd.call(handle.kernel, handle.vmPtr, index);
+    if (ofdId === 0) {
+      break;
+    }
+    if (ofdId > 0 && ofdId < maxFds) {
       ofdIds.push(ofdId);
     }
   }
@@ -143,77 +118,35 @@ export function collectHeldOfdIdsByType(handle: ProcessHandle, types: number[]):
 }
 
 export function collectHeldEpollOfdIds(handle: ProcessHandle): number[] {
-  const held = collectProcessHeldOfds(handle);
-  const epollOfdIds: number[] = [];
-  for (const ofdId of held) {
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_epoll()) {
-      epollOfdIds.push(ofdId);
-    }
-  }
-  return epollOfdIds;
+  return collectSupervisorProcessOfdIds(
+    handle,
+    handle.kernel.supervisor_process_epoll_held_ofd,
+    "supervisor_process_epoll_held_ofd",
+  );
 }
 
-export function collectHeldEpollDependentOfdIdsByType(handle: ProcessHandle, types: number[]): number[] {
-  const epollOfdIds = collectHeldEpollOfdIds(handle);
-  if (epollOfdIds.length === 0) {
-    return [];
+export function collectProcessSyncDependentOfdIds(handle: ProcessHandle): number[] {
+  return collectSupervisorProcessOfdIds(
+    handle,
+    handle.kernel.supervisor_process_sync_dependent_ofd,
+    "supervisor_process_sync_dependent_ofd",
+  );
+}
+
+export function collectHeldEpollDependentSyncOfdIds(handle: ProcessHandle): number[] {
+  return collectSupervisorProcessOfdIds(
+    handle,
+    handle.kernel.supervisor_process_epoll_dependent_sync_ofd,
+    "supervisor_process_epoll_dependent_sync_ofd",
+  );
+}
+
+export function processEpollDependsOnOfd(handle: ProcessHandle, ofdId: number): boolean {
+  const dependsOnOfd = handle.kernel.supervisor_process_epoll_depends_on_ofd;
+  if (!dependsOnOfd) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_epoll_depends_on_ofd");
   }
-
-  const maxFds = handle.kernel.abi_max_fds();
-  const tableBytes = handle.kernel.kernel_epoll_table_bytes();
-  const instanceBytes = handle.kernel.kernel_epoll_instance_bytes();
-  const tablePointerBytes = tableBytes % 8 === 0
-    && Math.floor((instanceBytes - 4) / (tableBytes >>> 3)) >= 28
-    ? 8
-    : 4;
-  const tableEntries = Math.floor(tableBytes / tablePointerBytes);
-  const entryStride = tableEntries > 0 ? Math.floor((instanceBytes - 4) / tableEntries) : 0;
-  const countOffset = entryStride * tableEntries;
-  const tablePtr = handle.kernelState.epollTablePtr;
-  const view = new DataView(handle.memory.buffer);
-  if (
-    tableEntries <= 0
-    || entryStride < 8
-    || tablePtr < 0
-    || tablePtr + tableBytes > view.byteLength
-  ) {
-    return [];
-  }
-
-  const dependentOfdIds = new Set<number>();
-  for (const epollOfdId of epollOfdIds) {
-    if (
-      epollOfdId <= 0
-      || epollOfdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(epollOfdId) !== handle.kernel.abi_fd_type_epoll()
-    ) {
-      continue;
-    }
-
-    const epollIdx = handle.kernel.kernel_ofd_ino(epollOfdId);
-    if (epollIdx < 0 || epollIdx >= tableEntries) {
-      continue;
-    }
-    const instancePtr = view.getUint32(tablePtr + epollIdx * tablePointerBytes, true);
-    if (instancePtr === 0 || instancePtr + instanceBytes > view.byteLength) {
-      continue;
-    }
-    const rawCount = view.getUint32(instancePtr + countOffset, true);
-    const count = Math.min(rawCount, tableEntries);
-    for (let i = 0; i < count; i += 1) {
-      const entryOffset = instancePtr + i * entryStride;
-      const ofdId = view.getUint32(entryOffset + 4, true);
-      if (
-        ofdId > 0
-        && ofdId < maxFds
-        && types.includes(handle.kernel.kernel_ofd_fd_type(ofdId))
-      ) {
-        dependentOfdIds.add(ofdId);
-      }
-    }
-  }
-
-  return [...dependentOfdIds];
+  return dependsOnOfd.call(handle.kernel, handle.vmPtr, ofdId) !== 0;
 }
 
 export function snapshotOfdSlotsForThread(
@@ -235,7 +168,7 @@ export function snapshotOfdSlotsForThread(
     if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    const watermarked = networkOfdSlotWatermarks(handle).get(ofdId);
     if (watermarked && watermarked.length === slotBytes) {
       ofdSlots.push({
         ofdId,
@@ -253,30 +186,24 @@ export function snapshotOfdSlotsForThread(
 }
 
 export function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
-  const offsets = handle.regularFileOfdOffsets;
-  if (!offsets || offsets.size === 0) {
+  const offsets = regularFileOfdOffsetSnapshotEntries(handle);
+  if (offsets.length === 0) {
     return;
   }
+  const restoreAction = requireSupervisorRegularFileOffsetRestoreAction(handle);
+  const applyAction = requireSupervisorRestoreActionApply(handle);
   const maxFds = handle.kernel.abi_max_fds();
-  const fileType = handle.kernel.abi_fd_type_file?.();
   const tableBytes = handle.kernel.kernel_ofd_table_bytes();
   const slotBytes = tableBytes / maxFds;
-  if (fileType === undefined || !Number.isInteger(slotBytes) || slotBytes <= 0) {
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     return;
   }
   const view = new DataView(handle.memory.buffer);
   for (const [ofdId, snapshot] of offsets) {
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== fileType
-      || handle.kernel.kernel_ofd_refcount(ofdId) <= 0
-      || handle.kernel.kernel_ofd_ino(ofdId) !== snapshot.ino
-      || handle.kernel.kernel_ofd_host_fd(ofdId) !== snapshot.hostFd
-    ) {
+    if (ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_offset(ofdId) >= snapshot.offset) {
+    if (restoreAction(ofdId, snapshot.hostFd, snapshot.ino, snapshot.offset) !== applyAction) {
       continue;
     }
     view.setBigInt64(handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET, snapshot.offset, true);
@@ -287,20 +214,20 @@ export function hasPlausibleOfdState(handle: KernelSyncHandle, ofdId: number): b
   if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
     return false;
   }
-  const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+  const type = supervisorOfdFdType(handle, ofdId);
   return type > 0 && type <= 64;
 }
 
 export function activeKernelShareOfdIds(handle: ProcessHandle): number[] {
   const heldByAnyMember = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       heldByAnyMember.add(ofdId);
     }
   }
 
   const active: number[] = [];
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (heldByAnyMember.has(ofdId)) {
       active.push(ofdId);
     }
@@ -310,19 +237,48 @@ export function activeKernelShareOfdIds(handle: ProcessHandle): number[] {
 
 export function staleKernelShareOfdIds(handle: ProcessHandle): number[] {
   const heldByAnyMember = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
       heldByAnyMember.add(ofdId);
     }
   }
 
   const stale: number[] = [];
-  for (const ofdId of handle.kernelShare.sharedOfdIds) {
+  for (const ofdId of kernelShareSharedOfdIdList(handle)) {
     if (!heldByAnyMember.has(ofdId)) {
       stale.push(ofdId);
     }
   }
   return stale.sort((left, right) => left - right);
+}
+
+export function forkSharedHeldOfdTrackAction(
+  handle: ProcessHandle,
+  ofdId: number,
+  facts: { shared: boolean; hostStdioPipe: boolean; stdioFd: boolean; fdEntrySource?: boolean },
+): boolean {
+  const decide = handle.kernel.supervisor_fork_shared_held_ofd_track_action;
+  const sharedFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_shared;
+  const hostStdioPipeFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe;
+  const stdioFdFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_stdio_fd;
+  const fdEntrySourceFlag = handle.kernel.supervisor_fork_shared_held_ofd_track_flag_fd_entry_source;
+  if (!decide || !sharedFlag || !hostStdioPipeFlag || !stdioFdFlag || !fdEntrySourceFlag) {
+    throw new Error("kernel supervisor ABI missing fork-shared held OFD track action exports");
+  }
+  let flags = 0;
+  if (facts.shared) {
+    flags |= sharedFlag.call(handle.kernel);
+  }
+  if (facts.hostStdioPipe) {
+    flags |= hostStdioPipeFlag.call(handle.kernel);
+  }
+  if (facts.stdioFd) {
+    flags |= stdioFdFlag.call(handle.kernel);
+  }
+  if (facts.fdEntrySource) {
+    flags |= fdEntrySourceFlag.call(handle.kernel);
+  }
+  return decide.call(handle.kernel, ofdId, flags) !== 0;
 }
 
 export function trackForkSharedOfds(
@@ -332,41 +288,41 @@ export function trackForkSharedOfds(
 ): number[] {
   const stdioOfdIds = new Set<number>();
   const stdioPipeSlotByFd = new Map<number, number>([
-    [0, handle.stdinPipe],
-    [1, handle.stdoutPipe],
-    [2, handle.stderrPipe],
+    [0, processStdinPipe(handle)],
+    [1, processStdoutPipe(handle)],
+    [2, processStderrPipe(handle)],
   ]);
   for (const [fd, stdioPipeSlot] of stdioPipeSlotByFd) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
     if (
       ofdId !== 0
       && stdioPipeSlot > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && handle.kernel.kernel_ofd_ino(ofdId) === stdioPipeSlot
+      && supervisorProcessPipeSlotForFd(handle, vmPtr, fd) === stdioPipeSlot
     ) {
       stdioOfdIds.add(ofdId);
     }
   }
   const retained = new Set<number>();
   for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd++) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
-    if (stdioOfdIds.has(ofdId)) {
+    if (!forkSharedHeldOfdTrackAction(handle, ofdId, {
+      shared: kernelShareHasSharedOfdId(handle, ofdId),
+      hostStdioPipe: stdioOfdIds.has(ofdId),
+      stdioFd: fd >= 0 && fd <= 2,
+      fdEntrySource: true,
+    })) {
       continue;
     }
     retained.add(ofdId);
-    handle.kernelShare.sharedOfdIds.add(ofdId);
+    addKernelShareSharedOfdId(handle, ofdId);
     if (retainRefcounts) {
-      handle.kernel.kernel_retain_ofd(ofdId);
+      supervisorOfdReconcileRefcount(handle, ofdId, supervisorOfdRefcount(handle, ofdId) + 1);
     }
   }
   return [...retained].sort((left, right) => left - right);
-}
-
-export function retainForkSharedOfds(handle: ProcessHandle): void {
-  trackForkSharedOfds(handle, handle.vmPtr, true);
 }
 
 export function snapshotLocalOfdSlots(
@@ -384,7 +340,7 @@ export function snapshotLocalOfdSlots(
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
     }
-    const fdType = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const fdType = supervisorOfdFdType(handle, ofdId);
     if (fdType <= 0 || fdType > 64) {
       continue;
     }
@@ -413,12 +369,12 @@ export function snapshotRuntimeNetworkOfdSlots(
     if (ofdId <= 0 || ofdId >= maxFds || snapshots.has(ofdId)) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
+    if (supervisorOfdFdType(handle, ofdId) === handle.kernel.abi_fd_type_socket()) {
       const slotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
       snapshots.set(ofdId, memory.slice(slotOffset, slotOffset + slotBytes));
       continue;
     }
-    const watermarked = handle.networkOfdSlotWatermarks?.get(ofdId);
+    const watermarked = networkOfdSlotWatermarks(handle).get(ofdId);
     if (watermarked && watermarked.length === slotBytes) {
       snapshots.set(ofdId, watermarked.slice());
     }
@@ -492,11 +448,11 @@ export function syncPipeOfdGenerationsForSlot(handle: ProcessHandle, pipeSlot: n
 }
 
 export function pipeOfdGenerationDiffers(handle: ProcessHandle, ofdId: number): boolean {
-  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
+  if (supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_pipe()) {
     return false;
   }
-  const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
-  return pipeGeneration !== null && handle.kernel.kernel_ofd_offset(ofdId) !== BigInt(pipeGeneration);
+  const pipeGeneration = currentPipeGeneration(handle, supervisorOfdIno(handle, ofdId));
+  return pipeGeneration !== null && supervisorOfdOffset(handle, ofdId) !== BigInt(pipeGeneration);
 }
 
 export function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: number, slot: Uint8Array): boolean {
@@ -508,15 +464,15 @@ export function localOfdSlotDiffersFromHandle(handle: ProcessHandle, ofdId: numb
   if (sourceType === 0) {
     return false;
   }
-  const targetType = handle.kernel.kernel_ofd_fd_type(ofdId);
+  const targetType = supervisorOfdFdType(handle, ofdId);
   if (targetType === 0 || targetType !== sourceType) {
     return true;
   }
   if (pipeOfdGenerationDiffers(handle, ofdId)) {
     return true;
   }
-  return handle.kernel.kernel_ofd_host_fd(ofdId) !== view.getInt32(OFD_HOST_FD_OFFSET, true)
-    || handle.kernel.kernel_ofd_ino(ofdId) !== view.getUint32(OFD_INO_OFFSET, true);
+  return supervisorOfdHostFd(handle, ofdId) !== view.getInt32(OFD_HOST_FD_OFFSET, true)
+    || supervisorOfdIno(handle, ofdId) !== view.getUint32(OFD_INO_OFFSET, true);
 }
 
 export function restoreIncompatibleLocalOfdSlots(
@@ -541,9 +497,9 @@ export function restoreIncompatibleLocalOfdSlots(
     const ofdSlotOffset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
     bytes.set(slot, ofdSlotOffset);
     if (
-      handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
+      supervisorOfdFdType(handle, ofdId) === handle.kernel.abi_fd_type_pipe()
     ) {
-      const pipeGeneration = currentPipeGeneration(handle, handle.kernel.kernel_ofd_ino(ofdId));
+      const pipeGeneration = currentPipeGeneration(handle, supervisorOfdIno(handle, ofdId));
       if (pipeGeneration !== null) {
         view.setBigInt64(ofdSlotOffset + OFD_OFFSET_OFFSET, BigInt(pipeGeneration), true);
       }

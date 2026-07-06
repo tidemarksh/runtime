@@ -1,7 +1,30 @@
 import { createRuntimeStateBridge } from "../../bridge/runtime-state.js";
 import { createInheritedErrorSink, retainSharedHostStdio } from "../stdio.js";
 import type { KernelExports } from "../../abi.js";
-import { createTransferDebugStats, createWorkerMessageDebugStats } from "../types.js";
+import { copyGuestWriteWatchRegions } from "../guest-write-watch-state.js";
+import { copyProcessMemoryOwnership } from "../memory-ownership-state.js";
+import { copyNetworkSocketState } from "../network-socket-state.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../process-debug-state.js";
+import { setProcessOnError } from "../process-callback-state.js";
+import {
+  processHostStdio,
+  processStdinClosed,
+  processStdioOwner,
+  processTtyPtySlot,
+  setProcessStdioState,
+} from "../process-stdio-state.js";
+import { setProcessWorkers } from "../process-worker-state.js";
+import {
+  processKernelWorkerRequest,
+  setProcessKernelWorkerRequest,
+} from "../process-kernel-worker-request-state.js";
+import {
+  processKernelShareGroup,
+  setProcessKernelShareGroup,
+} from "../kernel-share.js";
 import type { ProcessHandle } from "../types.js";
 import type { WorkerForkDeps } from "./types.js";
 export { normalizeGuestMemoryPolicyLimitBytes } from "../memory-policy.js";
@@ -16,6 +39,8 @@ interface CreateForkChildHandleArgs {
   memory: WebAssembly.Memory;
   kernel: KernelExports;
   kernelState: ProcessHandle["kernelState"];
+  guestMemoryPolicyLimitBytes: bigint;
+  maxMemoryPages: number;
   debugCommand: string;
   workerDebugLabel: string;
 }
@@ -30,16 +55,18 @@ export function createForkChildHandle({
   memory,
   kernel,
   kernelState,
+  guestMemoryPolicyLimitBytes,
+  maxMemoryPages,
   debugCommand,
   workerDebugLabel,
 }: CreateForkChildHandleArgs): ProcessHandle {
-  return {
+  const childHandle: ProcessHandle = {
     runtimeId: parent.runtimeId,
     pid: childPid,
     parentPid: childPpid,
     vmPtr,
-    guestMemoryPolicyLimitBytes: parent.guestMemoryPolicyLimitBytes,
-    maxMemoryPages: parent.maxMemoryPages,
+    guestMemoryPolicyLimitBytes,
+    maxMemoryPages,
     forkMaxMemoryPages: parent.forkMaxMemoryPages,
     guestBase: parent.guestBase,
     worker,
@@ -47,98 +74,41 @@ export function createForkChildHandle({
     wasmModule: parent.wasmModule,
     kernel,
     kernelState,
+    runtimeBridge: createRuntimeStateBridge(),
+    sabPageCache: parent.sabPageCache,
+    networkBridge: parent.networkBridge,
+  };
+  setProcessDebugCommand(childHandle, debugCommand);
+  setProcessLastDebugMessage(childHandle, undefined);
+  setProcessKernelShareGroup(childHandle, processKernelShareGroup(parent));
+  setProcessKernelWorkerRequest(childHandle, processKernelWorkerRequest(parent));
+  setProcessStdioState(childHandle, {
     stdinPipe: kernel.process_stdin_pipe(vmPtr),
     stdoutPipe: kernel.process_stdout_pipe(vmPtr),
     stderrPipe: kernel.process_stderr_pipe(vmPtr),
-    ttyPtySlot: kernel.process_tty_pty_slot?.(vmPtr) ?? parent.ttyPtySlot,
-    hostStdio: retainSharedHostStdio(parent.hostStdio),
-    stdinClosed: parent.stdinClosed,
+    ttyPtySlot: kernel.process_tty_pty_slot?.(vmPtr) ?? processTtyPtySlot(parent),
+    hostStdio: retainSharedHostStdio(processHostStdio(parent)),
+    stdinClosed: processStdinClosed(parent),
     stdioOwner: parent,
-    kernelShare: parent.kernelShare,
-    stdinQueue: [],
-    stdinFlushPromise: null,
-    outputBacklog: [],
-    debugCommand,
-    lastDebugMessage: undefined,
-    runtimeBridge: createRuntimeStateBridge(),
-    sabPageCache: parent.sabPageCache,
-    kernelWorkerRequest: parent.kernelWorkerRequest,
-    networkBridge: parent.networkBridge,
-    networkConnections: new Map(parent.networkConnections),
-    networkConnectionOfds: new Map(parent.networkConnectionOfds),
-    networkOfdSlotWatermarks: new Map(
-      [...(parent.networkOfdSlotWatermarks ?? new Map())].map(([ofdId, slot]) => [ofdId, slot.slice()]),
-    ),
-    networkPendingConnectFds: new Set(parent.networkPendingConnectFds),
-    networkClosedFds: new Set(parent.networkClosedFds),
-    networkClosedSocketSlots: new Map(
-      [...parent.networkClosedSocketSlots].map(([fd, slot]) => [fd, {
-        offset: slot.offset,
-        data: slot.data.slice(),
-      }]),
-    ),
-    networkSocketSlotWatermarks: new Map(
-      [...parent.networkSocketSlotWatermarks].map(([fd, slot]) => [fd, {
-        offset: slot.offset,
-        data: slot.data.slice(),
-      }]),
-    ),
-    networkRecvHeadWatermarks: new Map(parent.networkRecvHeadWatermarks),
-    networkRecvTailWatermarks: new Map(parent.networkRecvTailWatermarks),
-    networkRecvPayloadWatermarks: new Map(
-      [...parent.networkRecvPayloadWatermarks].map(([fd, snapshot]) => [fd, {
-        recvBufIdx: snapshot.recvBufIdx,
-        head: snapshot.head,
-        tail: snapshot.tail,
-        capacity: snapshot.capacity,
-        readBytes: snapshot.readBytes,
-        availableBytes: snapshot.availableBytes,
-        deliveredBytes: snapshot.deliveredBytes,
-        data: snapshot.data.slice(),
-      }]),
-    ),
-    workers: new Set(),
-    readyWorkers: [],
-    runningWorker: null,
-    blockedWorkers: new Map(),
-    pendingChildExitRecords: 0,
-    pendingChildSpawnRecords: 0,
-    childExitSyncRecords: new Map(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    pendingPipeSlotSnapshots: [],
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
-    forkSharedSyncPromise: null,
-    processMemfsDirty: false,
-    processMemfsPublishPending: false,
-    processMemfsDeletedPaths: new Set(),
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
-    vforkSnapshot: null,
-    vforkWorker: null,
-    exitInProgress: false,
-    onError: createInheritedErrorSink(
+  });
+  setProcessWorkers(childHandle, []);
+  setProcessOnError(
+    childHandle,
+    createInheritedErrorSink(
       parent,
       childPid,
       (pid) => deps.processHandles.get(pid),
       deps.failProcess,
     ),
-    workerDebugLog: [],
-    workerMessageDebugStats: createWorkerMessageDebugStats(),
-    transferDebugStats: createTransferDebugStats(),
-    guestWriteWatchRegions: parent.guestWriteWatchRegions.map((region) => ({ ...region })),
-    ...(parent.memoryOwnership ? { memoryOwnership: { ...parent.memoryOwnership } } : {}),
-  };
+  );
+  copyGuestWriteWatchRegions(childHandle, parent);
+  copyProcessMemoryOwnership(childHandle, parent);
+  copyNetworkSocketState(childHandle, parent);
+  return childHandle;
 }
 
 export function detachInheritedHostStdioFromChild(child: ProcessHandle): void {
-  if (child.stdioOwner === null) {
+  if (processStdioOwner(child) === null) {
     return;
   }
   child.kernel.process_set_host_stdio(child.vmPtr, 0, 0, 0);

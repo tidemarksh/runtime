@@ -1,4 +1,11 @@
-import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import type {
   GuestMemoryWriteSnapshot,
@@ -7,29 +14,21 @@ import type {
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
 import {
-  FS_OP_READ,
-  FS_OP_WRITE,
-  FS_OP_MMAP,
-  FS_OP_TRUNCATE,
-  FS_REQ_FLAG_PWRITE,
-  FS_RING_REQUEST_FD_OFFSET,
-  FS_RING_REQUEST_BUF_PTR_OFFSET,
-  FS_RING_REQUEST_FLAGS_OFFSET,
-  FS_RING_REQUEST_LEN_OFFSET,
-  FS_RING_REQUEST_OFFSET_OFFSET,
-  FS_RING_REQUEST_OPCODE_OFFSET,
-  FS_RING_REQUEST_VM_PTR_OFFSET,
-  FS_RING_SUBMIT_HEAD_OFFSET,
-  FS_RING_SUBMIT_TAIL_OFFSET,
-  FS_RING_TOTAL_BYTES,
-  fsRingRequestEntryOffset,
-} from "../layout/fs-ring.js";
-import {
   DEFAULT_RESIDENT_PAGE_SIZE,
   publishResidentPage,
   readResidentFileData,
   resetPageCache,
 } from "../fs/sab-page-cache.js";
+import { FS_OP_EXECVE } from "../layout/fs-ring.js";
+import {
+  clearSupervisorPendingBackingFill,
+  supervisorBackingFillSpan,
+  readSupervisorPendingBackingFill,
+  supervisorBackingRetryLimit,
+  type SupervisorBackingFillSpan,
+  type SupervisorPendingBackingFillRequest,
+} from "../fs/supervisor-backing-fill.js";
+import { supervisorResidentPageTableAuthority } from "../fs/supervisor-page-table.js";
 import {
   restoreThreadWorkerPrepareMemory,
   snapshotThreadWorkerPrepareMemory,
@@ -46,11 +45,6 @@ import {
 const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
-export const KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP = "transitional-runtime-owner" as const;
-const LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES = 16 * 1024 * 1024;
-const EXECVE_BACKING_RETRY_MIN_ATTEMPTS = 256;
-const EXECVE_BACKING_RETRY_MAX_ATTEMPTS = 16 * 1024;
-const EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS = 2;
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -77,13 +71,7 @@ interface PendingMmapGuestWriteRequest {
   length: number;
 }
 
-interface PendingBackingFillRequest {
-  ino: number;
-  offset: number;
-  length: number;
-  expectedSize: number;
-  opcode?: number;
-}
+type PendingBackingFillRequest = SupervisorPendingBackingFillRequest;
 
 interface ExecveBackingRetryStats {
   attempts: number;
@@ -330,159 +318,100 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     };
   }
 
+  function supervisorU64ToSafeNumber(value: bigint | number | undefined): number | null {
+    if (value === undefined) {
+      return null;
+    }
+    const numeric = typeof value === "bigint" ? Number(value) : value;
+    if (!Number.isSafeInteger(numeric) || numeric < 0) {
+      return null;
+    }
+    return numeric;
+  }
+
+  function supervisorNumber(value: bigint | number | undefined, name: string): number {
+    const numeric = typeof value === "bigint" ? Number(value) : value;
+    if (typeof numeric !== "number" || !Number.isSafeInteger(numeric)) {
+      throw new RangeError(`invalid ${name}: ${String(value)}`);
+    }
+    return numeric;
+  }
+
+  function supervisorNumericExport(
+    processExports: KernelExports,
+    name:
+      | "supervisor_fs_metadata_full_sync_action_none"
+      | "supervisor_fs_metadata_full_sync_action_required"
+      | "supervisor_fs_backing_fill_mode_direct"
+      | "supervisor_fs_backing_fill_mode_resident",
+    label: string,
+  ): number {
+    const read = processExports[name];
+    if (typeof read !== "function") {
+      throw new Error(`missing ${name} export`);
+    }
+    return supervisorNumber(read.call(processExports), label);
+  }
+
+  function supervisorMetadataFullSyncRequired(
+    processExports: KernelExports,
+    treeMutated: boolean,
+    handledMetadataMutation: boolean,
+  ): boolean {
+    const decide = processExports.supervisor_fs_metadata_full_sync_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_metadata_full_sync_decision export");
+    }
+    const decision = supervisorNumber(
+      decide.call(processExports, treeMutated ? 1 : 0, handledMetadataMutation ? 1 : 0),
+      "supervisor metadata full-sync decision",
+    );
+    const none = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_metadata_full_sync_action_none",
+      "supervisor metadata full-sync none action",
+    );
+    const required = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_metadata_full_sync_action_required",
+      "supervisor metadata full-sync required action",
+    );
+    if (decision === none) {
+      return false;
+    }
+    if (decision === required) {
+      return true;
+    }
+    throw new Error(`unknown supervisor metadata full-sync decision: ${decision}`);
+  }
+
   function readPendingMmapGuestWriteRequest(
     processExports: KernelExports,
     vmPtr: number,
   ): PendingMmapGuestWriteRequest | null {
-    const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
-    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
+    if (
+      typeof processExports.supervisor_fs_pending_mmap_guest_write_ptr !== "function"
+      || typeof processExports.supervisor_fs_pending_mmap_guest_write_len !== "function"
+    ) {
+      throw new Error("missing supervisor pending mmap guest-write exports");
+    }
+    const guestPtrHint = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_mmap_guest_write_ptr(vmPtr),
+    );
+    const length = supervisorU64ToSafeNumber(
+      processExports.supervisor_fs_pending_mmap_guest_write_len(vmPtr),
+    );
+    if (guestPtrHint === null || length === null || length <= 0) {
       return null;
     }
-    const view = new DataView(processExports.memory.buffer);
-    const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
-    const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
-    if (submitHead === submitTail) {
-      return null;
-    }
-    for (let pos = submitTail; pos < submitHead; pos += 1) {
-      const entry = fsRingRequestEntryOffset(ringBase, pos);
-      if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
-        continue;
-      }
-      if (view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true) !== FS_OP_MMAP) {
-        continue;
-      }
-      const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
-      const guestPtrHint = Number(view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true));
-      if (!Number.isFinite(length) || length <= 0) {
-        return null;
-      }
-      return { guestPtrHint, length };
-    }
-    return null;
+    return { guestPtrHint, length };
   }
 
   function readPendingBackingFillRequest(
     processExports: KernelExports,
     vmPtr: number,
   ): PendingBackingFillRequest | null {
-    const ringBase = processExports.thread_fs_ring_base?.(vmPtr) ?? 0;
-    if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength) {
-      return null;
-    }
-    const view = new DataView(processExports.memory.buffer);
-    const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
-    const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
-    for (let pos = submitTail; pos !== submitHead; pos = (pos + 1) >>> 0) {
-      const entry = fsRingRequestEntryOffset(ringBase, pos);
-      if (view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true) !== vmPtr) {
-        continue;
-      }
-      const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
-      if (opcode !== FS_OP_READ && opcode !== FS_OP_WRITE && opcode !== FS_OP_MMAP && opcode !== FS_OP_TRUNCATE) {
-        continue;
-      }
-      const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
-      const length = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
-      const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
-      const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
-      const ino = ofdId > 0 ? processExports.kernel_ofd_ino(ofdId) : processExports.thread_pending_fs_target_ino(vmPtr);
-      if (ofdId <= 0 && ino <= 0) {
-        return null;
-      }
-      if (opcode !== FS_OP_TRUNCATE && (!Number.isFinite(length) || length <= 0)) {
-        return null;
-      }
-      const expectedSize = Number(processExports.memfs_file_size(ino));
-      const offset = opcode === FS_OP_MMAP || (flags & FS_REQ_FLAG_PWRITE) !== 0
-        ? Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true))
-        : Number(processExports.kernel_ofd_offset(ofdId));
-      if (
-        ino <= 0
-        || !Number.isFinite(offset)
-        || offset < 0
-        || !Number.isFinite(expectedSize)
-        || expectedSize <= 0
-      ) {
-        return null;
-      }
-      if (opcode === FS_OP_TRUNCATE) {
-        const truncateSize = Number(view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true));
-        if (!Number.isFinite(truncateSize) || truncateSize <= 0) {
-          return null;
-        }
-        const survivingLastByte = Math.min(truncateSize, expectedSize) - 1;
-        if (survivingLastByte < 0) {
-          return null;
-        }
-        return {
-          ino,
-          offset: survivingLastByte,
-          length: 1,
-          expectedSize,
-          opcode,
-        };
-      }
-      if (opcode === FS_OP_WRITE) {
-        if (offset >= expectedSize) {
-          return {
-            ino,
-            offset: expectedSize - 1,
-            length: 1,
-            expectedSize,
-            opcode,
-          };
-        }
-        return {
-          ino,
-          offset,
-          length: Math.min(length, expectedSize - offset),
-          expectedSize,
-          opcode,
-        };
-      }
-      if (offset >= expectedSize) {
-        return null;
-      }
-      return {
-        ino,
-        offset,
-        length: Math.min(length, expectedSize - offset),
-        expectedSize,
-        opcode,
-      };
-    }
-    return null;
-  }
-
-  function readPendingExecveBackingMissSnapshot(
-    processExports: KernelExports,
-    vmPtr: number,
-  ): PendingBackingFillRequest | null {
-    const hasExports = typeof processExports.thread_execve_backing_miss_ino === "function"
-      && typeof processExports.thread_execve_backing_miss_offset === "function"
-      && typeof processExports.thread_execve_backing_miss_len === "function"
-      && typeof processExports.thread_execve_backing_miss_expected_size === "function";
-    if (!hasExports) {
-      return null;
-    }
-    const ino = processExports.thread_execve_backing_miss_ino?.(vmPtr) ?? 0;
-    const offsetRaw = processExports.thread_execve_backing_miss_offset?.(vmPtr) ?? 0;
-    const length = processExports.thread_execve_backing_miss_len?.(vmPtr) ?? 0;
-    const expectedSize = processExports.thread_execve_backing_miss_expected_size?.(vmPtr) ?? 0;
-    const offset = typeof offsetRaw === "bigint" ? Number(offsetRaw) : offsetRaw;
-    if (
-      ino <= 0
-      || !Number.isSafeInteger(offset)
-      || offset < 0
-      || !Number.isFinite(length)
-      || length <= 0
-      || !Number.isFinite(expectedSize)
-      || expectedSize <= 0
-    ) {
-      return null;
-    }
-    return { ino, offset, length, expectedSize };
+    return readSupervisorPendingBackingFill(processExports, vmPtr);
   }
 
   function backingProbeIsReadable(ino: number, offset: number, length: number): boolean {
@@ -490,65 +419,132 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return range !== null && range.length === length;
   }
 
-  function hasDirectBackingForLargeMmap(
+  function supervisorBackingFillShouldProbeDirect(
+    processExports: KernelExports,
     request: PendingBackingFillRequest,
-    alignedOffset: number,
-    alignedEnd: number,
+    spanLength: number,
   ): boolean {
-    const alignedLength = alignedEnd - alignedOffset;
-    if (request.opcode !== FS_OP_MMAP || alignedLength < LARGE_MMAP_DIRECT_BACKING_THRESHOLD_BYTES) {
-      return false;
+    const decide = processExports.supervisor_fs_backing_fill_probe_direct;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_backing_fill_probe_direct export");
     }
-    const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, alignedLength);
-    if (!backingProbeIsReadable(request.ino, alignedOffset, probeLength)) {
-      return false;
+    const result = supervisorNumber(
+      decide.call(processExports, request.opcode ?? 0, BigInt(spanLength)),
+      "supervisor backing-fill probe decision",
+    );
+    if (result < 0) {
+      throw new Error(`supervisor backing-fill probe decision failed: ${result}`);
     }
-    const tailOffset = alignedEnd - probeLength;
-    return tailOffset === alignedOffset || backingProbeIsReadable(request.ino, tailOffset, probeLength);
+    return result !== 0;
   }
 
-  async function publishBackingRange(request: PendingBackingFillRequest): Promise<boolean> {
-    const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
-    const requestedEnd = request.offset + request.length;
-    const alignedEnd = Math.min(
-      request.expectedSize,
-      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
-    );
-    const alignedLength = Math.max(0, alignedEnd - alignedOffset);
-    if (alignedLength <= 0) {
-      return false;
+  function supervisorBackingFillUsesDirect(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    spanLength: number,
+    headProbeReadable: boolean,
+    tailProbeReadable: boolean,
+  ): boolean {
+    const decide = processExports.supervisor_fs_backing_fill_mode_decision;
+    if (typeof decide !== "function") {
+      throw new Error("missing supervisor_fs_backing_fill_mode_decision export");
     }
-    if (hasDirectBackingForLargeMmap(request, alignedOffset, alignedEnd)) {
+    const mode = supervisorNumber(
+      decide.call(
+        processExports,
+        request.opcode ?? 0,
+        BigInt(spanLength),
+        headProbeReadable ? 1 : 0,
+        tailProbeReadable ? 1 : 0,
+      ),
+      "supervisor backing-fill mode decision",
+    );
+    if (mode < 0) {
+      throw new Error(`supervisor backing-fill mode decision failed: ${mode}`);
+    }
+    const direct = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_backing_fill_mode_direct",
+      "supervisor backing-fill direct mode",
+    );
+    const resident = supervisorNumericExport(
+      processExports,
+      "supervisor_fs_backing_fill_mode_resident",
+      "supervisor backing-fill resident mode",
+    );
+    if (mode === direct) {
       return true;
     }
-    let alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
+    if (mode === resident) {
+      return false;
+    }
+    throw new Error(`unknown supervisor backing-fill mode decision: ${mode}`);
+  }
+
+  function hasDirectBackingForFill(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    span: SupervisorBackingFillSpan,
+  ): boolean {
+    if (!supervisorBackingFillShouldProbeDirect(processExports, request, span.length)) {
+      return false;
+    }
+    const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, span.length);
+    const headProbeReadable = backingProbeIsReadable(request.ino, span.offset, probeLength);
+    const tailOffset = span.end - probeLength;
+    const tailProbeReadable = tailOffset === span.offset
+      ? headProbeReadable
+      : backingProbeIsReadable(request.ino, tailOffset, probeLength);
+    return supervisorBackingFillUsesDirect(
+      processExports,
+      request,
+      span.length,
+      headProbeReadable,
+      tailProbeReadable,
+    );
+  }
+
+  async function publishBackingRange(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+  ): Promise<boolean> {
+    const span = supervisorBackingFillSpan(processExports, request);
+    if (!span) {
+      return false;
+    }
+    if (hasDirectBackingForFill(processExports, request, span)) {
+      return true;
+    }
+    let alignedRange = deps.readBackingFileRangeByInode(request.ino, span.offset, span.length);
     if (alignedRange === null) {
       const ensured = await deps.ensureBackingSourceRangeForInode?.(
         request.ino,
-        alignedOffset,
-        alignedLength,
+        span.offset,
+        span.length,
         request.expectedSize,
       );
       if (ensured === false) {
         return false;
       }
-      alignedRange = deps.readBackingFileRangeByInode(request.ino, alignedOffset, alignedLength);
+      alignedRange = deps.readBackingFileRangeByInode(request.ino, span.offset, span.length);
     }
     if (alignedRange === null) {
       return false;
     }
     const sab = deps.getSabPageCache();
-    for (let pageStart = alignedOffset; pageStart < alignedEnd; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+    for (let pageStart = span.offset; pageStart < span.end; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
       const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
       if (pageLen <= 0 || readResidentFileData(sab, request.ino, pageStart, pageLen)) {
         continue;
       }
-      const backingOffset = pageStart - alignedOffset;
+      const backingOffset = pageStart - span.offset;
       const page = alignedRange.subarray(backingOffset, backingOffset + pageLen);
       if (page.length !== pageLen) {
         return false;
       }
-      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page)) {
+      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page, {
+        authority: supervisorResidentPageTableAuthority(processExports),
+      })) {
         return false;
       }
     }
@@ -564,7 +560,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   ): Promise<void> {
     const request = readPendingBackingFillRequest(processExports, vmPtr);
     if (request) {
-      const published = await publishBackingRange(request);
+      const published = await publishBackingRange(processExports, request);
       if (!published) {
         throw new Error(`failed to publish backing range: ${formatBackingFillDebug(request)}`);
       }
@@ -584,24 +580,24 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       publishFailed: false,
       lastMiss: null,
     };
-    let maxAttempts = EXECVE_BACKING_RETRY_MIN_ATTEMPTS;
+    let maxAttempts = 1;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       stats.attempts += 1;
       debug?.("thread_process_fs-start", `attempt=${attempt}`);
       processExports.thread_process_fs(vmPtr);
       debug?.("thread_process_fs-done", `attempt=${attempt}:status=${processExports.thread_status?.(vmPtr) ?? "n/a"}`);
-      const miss = readPendingExecveBackingMissSnapshot(processExports, vmPtr);
-      if (!miss) {
+      const miss = readPendingBackingFillRequest(processExports, vmPtr);
+      if (!miss || miss.opcode !== FS_OP_EXECVE) {
         return stats;
       }
       stats.misses += 1;
       stats.lastMiss = miss;
-      maxAttempts = Math.max(maxAttempts, execveBackingRetryLimitForMiss(miss));
+      maxAttempts = Math.max(maxAttempts, supervisorBackingRetryLimit(processExports, miss));
       debug?.("execve-backing-miss", formatBackingFillDebug(miss));
       debug?.("execve-backing-publish-start", formatBackingFillDebug(miss));
-      const published = await publishBackingRange(miss);
+      const published = await publishBackingRange(processExports, miss);
       debug?.("execve-backing-publish-done", `published=${published ? 1 : 0}`);
-      processExports.thread_clear_execve_backing_miss?.(vmPtr);
+      clearSupervisorPendingBackingFill(processExports, vmPtr);
       if (!published) {
         stats.publishFailed = true;
         return stats;
@@ -610,22 +606,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     stats.exhausted = true;
     return stats;
-  }
-
-  function execveBackingRetryLimitForMiss(request: PendingBackingFillRequest): number {
-    const alignedOffset = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE;
-    const requestedEnd = request.offset + request.length;
-    const alignedEnd = Math.min(
-      request.expectedSize,
-      Math.ceil(requestedEnd / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
-    );
-    const alignedLength = Math.max(DEFAULT_RESIDENT_PAGE_SIZE, alignedEnd - alignedOffset);
-    const sourceChunks = Math.ceil(request.expectedSize / alignedLength);
-    const attempts = sourceChunks + EXECVE_BACKING_RETRY_FINAL_SCAN_ATTEMPTS;
-    return Math.min(
-      EXECVE_BACKING_RETRY_MAX_ATTEMPTS,
-      Math.max(EXECVE_BACKING_RETRY_MIN_ATTEMPTS, attempts),
-    );
   }
 
   function formatBackingFillDebug(request: PendingBackingFillRequest | null): string {
@@ -701,13 +681,19 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     const returnedGuestPtr = Number(result);
     const guestPtr = returnedGuestPtr > 0 ? returnedGuestPtr : request.guestPtrHint;
-    const length = Math.ceil(request.length / 4096) * 4096;
+    const snapshotLen = processExports.supervisor_fs_pending_mmap_guest_write_snapshot_len;
+    if (typeof snapshotLen !== "function") {
+      throw new Error("missing supervisor_fs_pending_mmap_guest_write_snapshot_len export");
+    }
+    const length = supervisorU64ToSafeNumber(
+      snapshotLen.call(processExports, vmPtr),
+    );
     const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
     const start = guestBase + guestPtr;
-    const end = start + length;
+    const end = length === null ? -1 : start + length;
     if (
       !Number.isFinite(guestPtr)
-      || !Number.isFinite(length)
+      || length === null
       || guestPtr <= 0
       || length <= 0
       || start < 0
@@ -748,7 +734,11 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       }
     }
 
-    const needsMetadataFullSync = treeMutated && !handledMetadataMutation;
+    const needsMetadataFullSync = supervisorMetadataFullSyncRequired(
+      processExports,
+      treeMutated,
+      handledMetadataMutation,
+    );
 
     return {
       memfsMutated: treeMutated || fileDataMutated,
@@ -824,11 +814,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   async function initKernel(
     module: WebAssembly.Module,
     pageCache: SharedArrayBuffer,
-    maxMemoryPages = 32768,
+    maxMemoryPages: number,
   ): Promise<KernelRuntimeState> {
     deps.setWasmModule(module);
     deps.setSabPageCache(pageCache);
 
+    if (!Number.isFinite(maxMemoryPages) || maxMemoryPages <= 0) {
+      throw new Error(`kernel worker init invalid max memory pages: ${maxMemoryPages}`);
+    }
     const boundedMaxMemoryPages = Math.max(maxMemoryPages, 1024);
     const { instance } = await instantiateKernelWithSharedMemory(module, {
       initialPages: 1024,
@@ -1050,8 +1043,8 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     for (let fd = 0; fd < maxFds; fd += 1) {
       fdEntries.push({
         fd,
-        ofdId: processExports.process_fd_ofd_id(vmPtr, fd),
-        fdFlags: processExports.process_fd_flags(vmPtr, fd),
+        ofdId: supervisorProcessOfdForFd(processExports, vmPtr, fd),
+        fdFlags: supervisorProcessFdFlagsForFd(processExports, vmPtr, fd),
         generation: processExports.process_fd_generation?.(vmPtr, fd),
       });
     }

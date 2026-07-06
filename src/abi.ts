@@ -1,7 +1,12 @@
+import { ensureMemoryCapacity, kernelScratchBase } from "./worker/kernel-scratch.js";
+import { normalizeGuestMemoryPolicyLimitBytes } from "./worker/memory-policy.js";
+
 /**
  * WASM exports from the kernel module.
  * All constants are read from the WASM exports — no hand-written values.
  */
+const SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET = 0x2e000;
+
 export interface KernelExports {
   memory: WebAssembly.Memory;
   __stack_pointer?: WebAssembly.Global;
@@ -59,6 +64,7 @@ export interface KernelExports {
   abi_sigchld(): number;
   abi_sigpipe(): number;
   abi_clone_parent(): bigint | number;
+  abi_o_nonblock?(): number;
   abi_sys_read?(): bigint | number;
   abi_sys_openat?(): bigint | number;
   abi_sys_write?(): bigint | number;
@@ -133,6 +139,836 @@ export interface KernelExports {
   debug_execve_error_stage?(): number;
   debug_execve_error_value0?(): bigint | number;
   debug_execve_error_value1?(): bigint | number;
+
+  // Supervisor protocol
+  supervisor_abi_version?(): number;
+  supervisor_debug_snapshot_bytes?(): number;
+  supervisor_thread_event_record_bytes?(): number;
+  supervisor_thread_event_record_magic?(): number;
+  supervisor_thread_event_kind_blocked?(): number;
+  supervisor_thread_event_kind_ready?(): number;
+  supervisor_thread_event_kind_faulted?(): number;
+  supervisor_thread_event_kind_exited?(): number;
+  supervisor_thread_event_kind_host_completion_arrived?(): number;
+  supervisor_thread_event_kind_timer_fired?(): number;
+  supervisor_thread_event_kind_network_readable?(): number;
+  supervisor_thread_event_kind_backing_store_ready?(): number;
+  supervisor_thread_state_snapshot_bytes?(): number;
+  supervisor_thread_state_snapshot_magic?(): number;
+  supervisor_resume_record_bytes?(): number;
+  supervisor_resume_record_magic?(): number;
+  supervisor_host_completion_record_bytes?(): number;
+  supervisor_host_completion_record_magic?(): number;
+  supervisor_host_completion_outcome_success?(): number;
+  supervisor_host_completion_outcome_failure?(): number;
+  supervisor_host_op_record_bytes?(): number;
+  supervisor_host_op_record_magic?(): number;
+  supervisor_process_host_op_record_bytes?(): number;
+  supervisor_process_host_op_record_magic?(): number;
+  supervisor_fault_exit_decision_bytes?(): number;
+  supervisor_fault_exit_decision_magic?(): number;
+  supervisor_fd_control_record_bytes?(): number;
+  supervisor_fd_control_record_magic?(): number;
+  supervisor_fs_control_record_bytes?(): number;
+  supervisor_fs_control_record_magic?(): number;
+  supervisor_signal_control_record_bytes?(): number;
+  supervisor_signal_control_record_magic?(): number;
+  supervisor_resume_kind_futex_wake?(): number;
+  supervisor_resume_kind_runnable_thread?(): number;
+  supervisor_host_op_kind_spawn_thread_worker?(): number;
+  supervisor_host_op_kind_spawn_process_worker?(): number;
+  supervisor_host_op_kind_create_process_memory?(): number;
+  supervisor_host_op_kind_copy_memory_ranges?(): number;
+  supervisor_host_op_kind_fill_page_from_backing?(): number;
+  supervisor_host_op_kind_flush_dirty_page?(): number;
+  supervisor_host_op_kind_process_fs_request?(): number;
+  supervisor_host_op_kind_host_network_connect?(): number;
+  supervisor_host_op_kind_host_network_read?(): number;
+  supervisor_host_op_kind_host_network_write?(): number;
+  supervisor_host_op_kind_host_network_close?(): number;
+  supervisor_host_op_kind_arm_host_timer?(): number;
+  supervisor_host_op_kind_resume_thread?(): number;
+  supervisor_host_op_kind_terminate_worker?(): number;
+  supervisor_host_op_kind_retry_blocked_worker?(): number;
+  supervisor_process_host_op_kind_spawn_process_worker?(): number;
+  supervisor_fault_exit_kind_thread_exit?(): number;
+  supervisor_fault_exit_kind_process_exit?(): number;
+  supervisor_fd_control_kind_pipe_created?(): number;
+  supervisor_fd_control_kind_fd_closed?(): number;
+  supervisor_fd_control_kind_fd_duplicated?(): number;
+  supervisor_fd_control_kind_fd_flags_updated?(): number;
+  supervisor_fd_control_kind_epoll_created?(): number;
+  supervisor_fd_control_kind_epoll_ctl_add?(): number;
+  supervisor_fd_control_kind_epoll_ctl_del?(): number;
+  supervisor_fd_control_kind_epoll_ctl_mod?(): number;
+  supervisor_fd_control_kind_socket_created?(): number;
+  supervisor_fd_control_kind_socketpair_created?(): number;
+  supervisor_fd_control_kind_socket_bound?(): number;
+  supervisor_fd_control_kind_socket_listening?(): number;
+  supervisor_fd_control_kind_socket_connect_started?(): number;
+  supervisor_fd_control_kind_socket_connected?(): number;
+  supervisor_fd_control_kind_socket_connect_failed?(): number;
+  supervisor_fd_control_kind_socket_accepted?(): number;
+  supervisor_pipe_slot_mode_read?(): number;
+  supervisor_pipe_slot_mode_write?(): number;
+  supervisor_pipe_slot_mode_control?(): number;
+  supervisor_pipe_slot_snapshot_context_shared_state?(): number;
+  supervisor_pipe_slot_snapshot_context_thread_step?(): number;
+  supervisor_pipe_slot_snapshot_context_kernel_worker_apply?(): number;
+  supervisor_pipe_slot_snapshot_context_kernel_worker_process?(): number;
+  supervisor_pipe_slot_snapshot_context_kernel_worker_canonical?(): number;
+  supervisor_pipe_slot_snapshot_action_skip?(): number;
+  supervisor_pipe_slot_snapshot_action_apply_slot?(): number;
+  supervisor_pipe_slot_snapshot_action_apply_control?(): number;
+  supervisor_pipe_slot_snapshot_action_set_head_to_source?(): number;
+  supervisor_pipe_slot_snapshot_action_set_tail_to_source?(): number;
+  supervisor_pipe_slot_snapshot_action_set_head_zero?(): number;
+  supervisor_pipe_slot_snapshot_action_copy_full?(): number;
+  supervisor_pipe_slot_snapshot_action_copy_tail_delta?(): number;
+  supervisor_pipe_slot_snapshot_action_sync_generation?(): number;
+  supervisor_pipe_slot_snapshot_action_stop?(): number;
+  supervisor_blocked_pipe_resume_action_defer?(): number;
+  supervisor_blocked_pipe_resume_action_direct?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_none?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output?(): number;
+  supervisor_blocked_pipe_sync_before_retry_action_schedule_retry?(): number;
+  supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action_none?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output?(): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available?(): number;
+  supervisor_blocked_status_transition_action_block?(): number;
+  supervisor_blocked_status_transition_action_sync_socket?(): number;
+  supervisor_blocked_status_transition_action_sync_pipe?(): number;
+  supervisor_blocked_status_transition_action_sync_fork_shared?(): number;
+  supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared?(): number;
+  supervisor_blocked_status_transition_action_sync_socket_and_fork_shared?(): number;
+  supervisor_blocked_status_transition_flag_kernel_worker_available?(): number;
+  supervisor_blocked_status_transition_flag_network_connections_available?(): number;
+  supervisor_blocked_wait_network_pump_action_skip?(): number;
+  supervisor_blocked_wait_network_pump_action_pump?(): number;
+  supervisor_state_sync_kind_pipe?(): number;
+  supervisor_state_sync_kind_epoll?(): number;
+  supervisor_state_sync_kind_socket?(): number;
+  supervisor_state_sync_request_flag_wake_waiters?(): number;
+  supervisor_state_sync_run_flag_run?(): number;
+  supervisor_state_sync_run_flag_wake_waiters?(): number;
+  supervisor_state_sync_start_action_skip?(): number;
+  supervisor_state_sync_start_action_request_sync?(): number;
+  supervisor_state_sync_start_action_retry_waiters?(): number;
+  supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch?(): number;
+  supervisor_state_sync_start_flag_kernel_worker_available?(): number;
+  supervisor_state_sync_start_flag_epoll_state_kernel_owns?(): number;
+  supervisor_state_sync_start_flag_held_epoll_ofd?(): number;
+  supervisor_state_sync_start_flag_wake_waiters?(): number;
+  supervisor_owned_state_sync_action_none?(): number;
+  supervisor_owned_state_sync_action_mark_process_memfs_dirty?(): number;
+  supervisor_owned_state_sync_action_sync_fork_shared?(): number;
+  supervisor_owned_state_sync_action_sync_epoll_dependent_ofds?(): number;
+  supervisor_owned_state_sync_action_sync_socket?(): number;
+  supervisor_owned_state_sync_action_wake_socket_waiters?(): number;
+  supervisor_owned_state_sync_action_sync_process_memfs?(): number;
+  supervisor_owned_state_sync_action_sync_epoll?(): number;
+  supervisor_owned_state_sync_action_retry_epoll_waiters?(): number;
+  supervisor_owned_state_sync_flag_running_worker?(): number;
+  supervisor_owned_state_sync_flag_worker_owns_authoritative_state?(): number;
+  supervisor_owned_state_sync_flag_kernel_worker_available?(): number;
+  supervisor_owned_state_sync_flag_epoll_state_kernel_owns?(): number;
+  supervisor_owned_state_sync_flag_fork_shared_effect_requested?(): number;
+  supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch?(): number;
+  supervisor_owned_state_sync_flag_process_memfs_dirty?(): number;
+  supervisor_owned_state_sync_flag_held_epoll_ofd?(): number;
+  supervisor_owned_state_sync_flag_wrote_or_drained_pipe?(): number;
+  supervisor_owned_state_sync_action?(status: number, completedSyncEffects: number, flags: number): number;
+  supervisor_fs_control_kind_page_cache_miss?(): number;
+  supervisor_fs_control_kind_page_cache_fill?(): number;
+  supervisor_fs_control_kind_dirty_page_published?(): number;
+  supervisor_fs_control_kind_dirty_page_flushed?(): number;
+  supervisor_fs_dirty_page_op_write?(): number;
+  supervisor_fs_dirty_page_op_truncate?(): number;
+  supervisor_fs_dirty_page_op_flush?(): number;
+  supervisor_fs_dirty_page_flag_update_inode?(): number;
+  supervisor_fs_dirty_page_flag_publish_dirty?(): number;
+  supervisor_fs_dirty_page_flag_writeback_required?(): number;
+  supervisor_fs_dirty_prepare_publish_none?(): number;
+  supervisor_fs_dirty_prepare_publish_missing?(): number;
+  supervisor_fs_dirty_prepare_publish_size_update?(): number;
+  supervisor_fs_data_sync_kind_export?(): number;
+  supervisor_fs_data_sync_kind_restore?(): number;
+  supervisor_fs_sync_action_none?(): number;
+  supervisor_fs_sync_action_externalize?(): number;
+  supervisor_fs_metadata_sync_action_none?(): number;
+  supervisor_fs_metadata_sync_action_remove?(): number;
+  supervisor_fs_metadata_sync_action_ensure?(): number;
+  supervisor_fs_metadata_sync_action_publish_ensure?(): number;
+  supervisor_fs_metadata_full_sync_action_none?(): number;
+  supervisor_fs_metadata_full_sync_action_required?(): number;
+  supervisor_fs_metadata_backing_none?(): number;
+  supervisor_fs_metadata_backing_published?(): number;
+  supervisor_fs_metadata_backing_backing?(): number;
+  supervisor_fs_backing_object_op_source?(): number;
+  supervisor_fs_backing_object_op_materialize?(): number;
+  supervisor_fs_backing_object_op_replace?(): number;
+  supervisor_fs_backing_object_op_flush_write?(): number;
+  supervisor_fs_backing_object_op_flush_truncate?(): number;
+  supervisor_fs_backing_fill_mode_resident?(): number;
+  supervisor_fs_backing_fill_mode_direct?(): number;
+  supervisor_fs_backing_fill_span_offset?(): bigint | number;
+  supervisor_fs_backing_fill_span_end?(): bigint | number;
+  supervisor_fs_backing_fill_span_length?(): bigint | number;
+  supervisor_fs_backing_source_range_none?(): number;
+  supervisor_fs_backing_source_range_read?(): number;
+  supervisor_fs_backing_retry_min_attempts?(): number;
+  supervisor_fs_backing_retry_max_attempts?(): number;
+  supervisor_fs_backing_retry_final_scan_attempts?(): number;
+  supervisor_fs_clean_backing_range_none?(): number;
+  supervisor_fs_clean_backing_range_read?(): number;
+  supervisor_fs_clean_backing_range_read_zero_tail?(): number;
+  supervisor_fs_clean_backing_range_zero?(): number;
+  supervisor_fs_page_table_source_backing?(): number;
+  supervisor_fs_page_table_source_resident?(): number;
+  supervisor_fs_completion_flag_memfs_dirty?(): number;
+  supervisor_fs_completion_flag_memfs_publish_ready?(): number;
+  supervisor_fs_completion_flag_ofd_state_changed?(): number;
+  supervisor_fs_completion_flag_regular_file_request?(): number;
+  supervisor_fs_response_flag_adopt_kernel_state?(): number;
+  supervisor_fs_response_flag_apply_guest_memory_writes?(): number;
+  supervisor_fs_response_flag_queue_thread_worker_writes?(): number;
+  supervisor_fs_response_flag_apply_local_metadata?(): number;
+  supervisor_fs_response_flag_clear_tombstones?(): number;
+  supervisor_fs_response_flag_fd_response_may_clear_live_fds?(): number;
+  supervisor_fs_response_flag_store_pending_kernel_state?(): number;
+  supervisor_fs_response_flag_resolved_to_execve_spawn?(): number;
+  supervisor_fs_response_flag_process_owner_matches?(): number;
+  supervisor_fd_entry_restore_action_apply?(): number;
+  supervisor_fd_entry_restore_action_skip?(): number;
+  supervisor_fd_entry_restore_flag_preserve_live_regular_file?(): number;
+  supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent?(): number;
+  supervisor_fd_entry_restore_action?(
+    vmPtr: number,
+    fd: number,
+    snapshotOfdId: number,
+    syscallNr: bigint | number,
+    flags: number,
+  ): number;
+  supervisor_fd_entry_guest_write_action?(
+    vmPtr: number,
+    fd: number,
+    candidateOfdId: number,
+    explicitOfdId: number,
+  ): number;
+  supervisor_ofd_slot_write_action?(
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+  ): number;
+  supervisor_ofd_slot_restore_flag_referenced_by_fd_entry?(): number;
+  supervisor_ofd_slot_restore_flag_trust_regular_file_offset?(): number;
+  supervisor_ofd_slot_restore_action?(
+    ofdId: number,
+    candidateType: number,
+    candidateHostFd: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+    syscallNr: bigint | number,
+    flags: number,
+  ): number;
+  supervisor_regular_file_offset_restore_action?(
+    ofdId: number,
+    snapshotHostFd: number,
+    snapshotIno: number,
+    snapshotOffset: bigint | number,
+  ): number;
+  supervisor_fs_local_metadata_action_none?(): number;
+  supervisor_fs_local_metadata_action_tombstone_primary?(): number;
+  supervisor_fs_local_metadata_action_forget_primary?(): number;
+  supervisor_fs_local_metadata_action_forget_secondary?(): number;
+  supervisor_fs_resident_page_evict_not_found?(): number;
+  supervisor_fs_resident_page_evict_dirty_pinned?(): number;
+  supervisor_fs_resident_page_evict_evicted?(): number;
+  supervisor_signal_control_kind_boundary_check?(): number;
+  supervisor_signal_control_kind_signal_delivered?(): number;
+  supervisor_signal_control_kind_blocked_wait_interrupted?(): number;
+  supervisor_reset_shadow_log?(): void;
+  supervisor_shadow_thread_event_count?(): bigint | number;
+  supervisor_shadow_host_completion_count?(): bigint | number;
+  supervisor_shadow_host_op_poll_count?(): bigint | number;
+  supervisor_shadow_host_op_emit_count?(): bigint | number;
+  supervisor_shadow_host_op_overflow_count?(): bigint | number;
+  supervisor_shadow_host_op_log_hash?(): bigint | number;
+  supervisor_shadow_host_op_last_hash?(): bigint | number;
+  supervisor_shadow_host_op_last_len?(): number;
+  supervisor_shadow_resume_poll_count?(): bigint | number;
+  supervisor_shadow_resume_enqueue_count?(): bigint | number;
+  supervisor_shadow_resume_overflow_count?(): bigint | number;
+  supervisor_shadow_fd_control_count?(): bigint | number;
+  supervisor_shadow_fs_control_count?(): bigint | number;
+  supervisor_shadow_signal_control_count?(): bigint | number;
+  supervisor_shadow_thread_event_log_hash?(): bigint | number;
+  supervisor_shadow_host_completion_log_hash?(): bigint | number;
+  supervisor_submit_thread_event?(eventPtr: number, eventLen: number): number;
+  supervisor_complete_host_op?(completionPtr: number, completionLen: number): number;
+  supervisor_next_host_op?(outPtr: number, outLen: number): number;
+  supervisor_next_host_op_kind?(kind: number, outPtr: number, outLen: number): number;
+  supervisor_process_host_op?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_process_memory_host_op?(vmPtr: number, index: number, outPtr: number, outLen: number): number;
+  supervisor_next_resume?(outPtr: number, outLen: number): number;
+  supervisor_process_resume?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_process_status_is_lifecycle_handoff?(status: number): number;
+  supervisor_process_status_is_execve_spawn?(status: number): number;
+  supervisor_process_status_is_clone_spawn?(status: number): number;
+  supervisor_process_status_is_vfork_wait?(status: number): number;
+  supervisor_process_status_allows_pid_mismatch?(status: number): number;
+  supervisor_process_status_defers_kernel_state_adoption?(status: number): number;
+  supervisor_process_status_route_action?(status: number, flags: number): number;
+  supervisor_process_status_route_action_none?(): number;
+  supervisor_process_status_route_action_apply_status_fd_state?(): number;
+  supervisor_process_status_route_action_adopt_thread_kernel_state?(): number;
+  supervisor_process_status_route_action_apply_fs_memory_writes?(): number;
+  supervisor_process_status_route_action_skip_fs_ring_writes?(): number;
+  supervisor_process_status_route_action_defer_local_pipe_drain?(): number;
+  supervisor_process_status_route_flag_status_state_belongs_to_handle?(): number;
+  supervisor_process_status_route_flag_kernel_worker_available?(): number;
+  supervisor_vfork_child_owner_mismatch?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_owner_matches?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_owner_mismatch?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_owner_absent?(vmPtr: number): number;
+  supervisor_process_owner_live_matches?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_owner_missing_or_invalid?(vmPtr: number): number;
+  supervisor_process_identity_matches?(vmPtr: number, runtimePid: number, processPtr: number): number;
+  supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_process_held_ofd_refcount?(vmPtr: number, ofdId: number): number;
+  supervisor_ofd_is_regular_file?(ofdId: number): number;
+  supervisor_pipe_sync_ofd_candidate?(ofdId: number): number;
+  supervisor_ofd_pipe_generation_slot?(ofdId: number): number;
+  supervisor_ofd_pipe_slot_mask?(ofdId: number): bigint | number;
+  supervisor_ofd_pipe_slot_mode?(ofdId: number, pipeSlot: number): number;
+  supervisor_fork_shared_peer_flag_compatible?(): number;
+  supervisor_fork_shared_peer_flag_incompatible?(): number;
+  supervisor_fork_shared_peer_flag_pipe_peer?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_shared?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_stdio_fd?(): number;
+  supervisor_fork_shared_held_ofd_track_flag_fd_entry_source?(): number;
+  supervisor_fork_shared_sync_target_action_reject?(): number;
+  supervisor_fork_shared_sync_target_action_defer?(): number;
+  supervisor_fork_shared_sync_target_action_use?(): number;
+  supervisor_fork_shared_ofd_action_include?(): number;
+  supervisor_fork_shared_ofd_action_add_shared?(): number;
+  supervisor_fork_shared_ofd_action_rehydrate?(): number;
+  supervisor_fork_shared_held_ofd_track_action?(ofdId: number, flags: number): number;
+  supervisor_fork_shared_ofd_identity_key?(ofdId: number): bigint | number;
+  supervisor_fork_shared_ofd_publish_action?(ofdId: number, peerFlags: number): number;
+  supervisor_fork_shared_effect_sync_action?(
+    hasEffect: number,
+    hasTrackedState: number,
+    sourceHoldsRegularFile: number,
+    regularFileHasPeer: number,
+  ): number;
+  supervisor_fork_shared_sync_target_action?(
+    invalidPid: number,
+    runningWorker: number,
+    vforkReadyWorker: number,
+    hasHostBlockedWorker: number,
+    rpcPending: number,
+    processExit: number,
+    registeredProcessExit: number,
+    registeredMismatch: number,
+    incompatibleOfd: number,
+    requireHostBlocked: number,
+    includeMemfs: number,
+    runtimeNetworkState: number,
+  ): number;
+  supervisor_fork_shared_syncable_ofd_action?(
+    syncable: number,
+    sourceConflicting: number,
+    allowed: number,
+    regularFile: number,
+    sourcePublished: number,
+    runtimeNetworkSocket: number,
+  ): number;
+  supervisor_fork_shared_delta_source_ofd_action?(
+    allowed: number,
+    sourcePublished: number,
+    sourceHeld: number,
+    pipePeer: number,
+  ): number;
+  supervisor_fork_shared_tracked_source_ofd_action?(
+    kernelShared: number,
+    sourceFdEntry: number,
+    syncable: number,
+    typeNone: number,
+    incompatiblePeer: number,
+  ): number;
+  supervisor_fork_shared_pipe_peer_ofd_action?(stale: number, syncable: number): number;
+  supervisor_fork_shared_rehydrate_ofd_action?(
+    active: number,
+    sourceHeld: number,
+    allowed: number,
+  ): number;
+  supervisor_process_holds_regular_file_ofd?(vmPtr: number, ofdId: number): number;
+  supervisor_process_ofd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_fd_flags_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_fd_is_open?(vmPtr: number, fd: number): number;
+  supervisor_ofd_fd_type?(ofdId: number): number;
+  supervisor_ofd_host_fd?(ofdId: number): number;
+  supervisor_ofd_status_flags?(ofdId: number): number;
+  supervisor_ofd_ino?(ofdId: number): number;
+  supervisor_ofd_refcount?(ofdId: number): number;
+  supervisor_ofd_reconcile_refcount?(ofdId: number, expectedRefcount: number): number;
+  supervisor_ofd_offset?(ofdId: number): bigint | number;
+  supervisor_process_private_pipe_slot_mask?(vmPtr: number): bigint | number;
+  supervisor_process_private_pipe_source_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_private_pipe_target_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_held_pipe_slot_mask?(vmPtr: number): bigint | number;
+  supervisor_process_pipe_used_mask?(vmPtr: number): bigint | number;
+  supervisor_process_pipe_slot_mode?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_pipe_slot_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_pipe_ofd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_pipe_host_fd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_pipe_read_open_count?(vmPtr: number, pipeSlot: number): number;
+  supervisor_process_pipe_write_open_count?(vmPtr: number, pipeSlot: number): number;
+  supervisor_pipe_reconcile_control?(pipeSlot: number, readOpen: number, writeOpen: number): number;
+  supervisor_pipe_slot_snapshot_merge_action?(
+    context: number,
+    mode: number,
+    fresh: number,
+    sourceHead: number,
+    sourceTail: number,
+    sourceReadOpen: number,
+    sourceWriteOpen: number,
+    sourceGeneration: number,
+    targetHead: number,
+    targetTail: number,
+    targetReadOpen: number,
+    targetWriteOpen: number,
+    targetGeneration: number,
+  ): number;
+  supervisor_blocked_pipe_resume_action?(vmPtr: number): number;
+  supervisor_blocked_pipe_sync_before_retry_action?(vmPtr: number, flags: number): number;
+  supervisor_blocked_pipe_sync_before_retry_requested?(vmPtr: number): number;
+  supervisor_blocked_pipe_sync_before_retry_clear?(vmPtr: number): number;
+  supervisor_blocked_pipe_sync_before_retry_completion_action?(flags: number): number;
+  supervisor_blocked_status_transition_action?(vmPtr: number, status: number, flags: number): number;
+  supervisor_blocked_wait_network_pump_action?(vmPtr: number): number;
+  supervisor_complete_blocked_wait_network_pump?(vmPtr: number, changed: number): number;
+  supervisor_clear_blocked_wait_network_pump?(vmPtr: number): number;
+  supervisor_state_sync_request?(vmPtr: number, kind: number, flags: number): number;
+  supervisor_state_sync_next_run_flags?(vmPtr: number, kind: number): number;
+  supervisor_state_sync_complete?(vmPtr: number, kind: number): number;
+  supervisor_state_sync_clear?(vmPtr: number, kind: number): number;
+  supervisor_state_sync_start_action?(kind: number, flags: number): number;
+  supervisor_process_epoll_held_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_epoll_dependent_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_sync_dependent_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_epoll_dependent_sync_ofd?(vmPtr: number, index: number): number;
+  supervisor_process_epoll_depends_on_ofd?(vmPtr: number, ofdId: number): number;
+  supervisor_blocked_epoll_watched_ofd?(vmPtr: number, index: number): number;
+  supervisor_blocked_epoll_dependent_sync_ofd?(vmPtr: number, index: number): number;
+  supervisor_blocked_epoll_watches_pipe?(vmPtr: number): number;
+  supervisor_process_socket_held_ofd?(vmPtr: number, index: number): number;
+  supervisor_socket_ofd_is_socket?(ofdId: number): number;
+  supervisor_process_socket_ofd_for_fd?(vmPtr: number, fd: number): number;
+  supervisor_process_socket_drain_fd?(vmPtr: number, connectedFd: number, index: number): number;
+  supervisor_socket_connect_fd?(vmPtr: number): number;
+  supervisor_socket_connect_peer_addr?(vmPtr: number, dstPtr: number, dstLen: number): number;
+  supervisor_socket_connect_peer_addr_for_fd?(vmPtr: number, fd: number, dstPtr: number, dstLen: number): number;
+  supervisor_socket_prepare_external_peer?(vmPtr: number, fd: number): number;
+  supervisor_socket_commit_external_connect_result?(vmPtr: number, fd: number, result: bigint | number): number;
+  supervisor_socket_close_external_peer?(vmPtr: number, fd: number): number;
+  supervisor_socket_force_shutdown?(vmPtr: number, fd: number): number;
+  supervisor_socket_bridge_active_fd?(vmPtr: number, preferredFd: number, expectedOfd: number, pendingConnect: number): number;
+  supervisor_resume_flag_timeout_expired?(): number;
+  supervisor_resume_blocked_syscall?(vmPtr: number, flags: number): bigint | number;
+  supervisor_blocked_resume_writeback_count?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number): number;
+  supervisor_blocked_resume_writeback_ptr?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
+  supervisor_blocked_resume_writeback_len?(vmPtr: number, blockedStatus: number, resumeResult: bigint | number, index: number): bigint | number;
+  supervisor_blocked_status_is_host_wait?(status: number): number;
+  supervisor_blocked_status_is_connect_wait?(status: number): number;
+  supervisor_blocked_status_is_epoll_wait?(status: number): number;
+  supervisor_blocked_status_is_pipe_wait?(status: number): number;
+  supervisor_blocked_status_is_wait4?(status: number): number;
+  supervisor_blocked_status_is_socket_wait?(status: number): number;
+  supervisor_blocked_status_needs_network_sidecar_restore?(status: number): number;
+  supervisor_blocked_status_syncs_socket_after_resume?(status: number): number;
+  supervisor_blocked_status_uses_fork_shared_state_sync?(status: number): number;
+  supervisor_blocked_epoll_wait_timeout_ms?(vmPtr: number): bigint | number;
+  supervisor_blocked_poll_wait_timeout_ms?(vmPtr: number): bigint | number;
+  supervisor_blocked_poll_wait_has_socket?(vmPtr: number): number;
+  supervisor_blocked_pipe_wait_has_ready_events?(vmPtr: number): number;
+  supervisor_blocked_wait_may_depend_on_network?(vmPtr: number): number;
+  supervisor_blocked_wait_should_pump_network?(vmPtr: number): number;
+  supervisor_blocked_epoll_wait_retry_required?(vmPtr: number): number;
+  supervisor_blocked_resume_delegation?(vmPtr: number, flags: number): number;
+  supervisor_blocked_resume_delegation_flag_kernel_worker_available?(): number;
+  supervisor_blocked_resume_delegation_direct?(): number;
+  supervisor_blocked_resume_delegation_kernel_worker?(): number;
+  supervisor_blocked_resume_delegation_wait4_kernel_worker?(): number;
+  supervisor_blocked_resume_delegation_unsupported?(): number;
+  supervisor_blocked_resume_delegation_epoll_direct?(): number;
+  supervisor_blocked_wait_retry_reason?(vmPtr: number, flags: number): number;
+  supervisor_blocked_wait_retry_delay_ms?(vmPtr: number, reason: number): number;
+  supervisor_blocked_wait_active_child_pid?(vmPtr: number): number;
+  supervisor_blocked_wait_retry_reason_default?(): number;
+  supervisor_blocked_wait_retry_reason_immediate?(): number;
+  supervisor_blocked_wait_retry_reason_standard_defer?(): number;
+  supervisor_blocked_wait_retry_reason_active_child?(): number;
+  supervisor_blocked_wait_retry_reason_passive_wait?(): number;
+  supervisor_blocked_wait_retry_reason_process_gate?(): number;
+  supervisor_blocked_wait_retry_flag_host_progress?(): number;
+  supervisor_blocked_wait_retry_flag_active_child?(): number;
+  supervisor_blocked_wait_retry_flag_passive_wait?(): number;
+  supervisor_blocked_wait_retry_flag_process_gate?(): number;
+  supervisor_blocked_wait_retry_flag_thread_init_pending?(): number;
+  supervisor_blocked_initial_action?(vmPtr: number, blockedStatus: number, flags: number): number;
+  supervisor_blocked_initial_action_none?(): number;
+  supervisor_blocked_initial_action_defer_supervisor_timer?(): number;
+  supervisor_blocked_initial_action_defer_rpc_pending?(): number;
+  supervisor_blocked_initial_action_arm_wait_timer?(): number;
+  supervisor_blocked_initial_action_retry_now?(): number;
+  supervisor_blocked_initial_action_schedule_retry?(): number;
+  supervisor_blocked_retry_result_action?(vmPtr: number, resultStatus: number): number;
+  supervisor_blocked_retry_result_action_none?(): number;
+  supervisor_blocked_retry_result_action_arm_wait_timer?(): number;
+  supervisor_blocked_retry_result_action_schedule_retry?(): number;
+  supervisor_blocked_retry_result_action_schedule_retry_and_pump?(): number;
+  supervisor_blocked_retry_result_action_park_futex?(): number;
+  supervisor_blocked_retry_status_action?(status: number): number;
+  supervisor_blocked_retry_status_action_none?(): number;
+  supervisor_blocked_retry_status_action_pipe_retry_diagnostics?(): number;
+  supervisor_blocked_retry_status_action_pump_blocked_outcome?(): number;
+  supervisor_blocked_retry_status_action_active_child_pipe?(): number;
+  supervisor_blocked_retry_status_action_active_child_wait4?(): number;
+  supervisor_blocked_retry_status_action_success_log_epoll_ready?(): number;
+  supervisor_blocked_retry_status_action_success_log_wait4_resumed?(): number;
+  supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running?(): number;
+  supervisor_blocked_post_network_pump_action?(vmPtr: number, changed: number, flags: number): number;
+  supervisor_blocked_post_network_pump_action_schedule_retry?(): number;
+  supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress?(): number;
+  supervisor_blocked_stale_retry_result_action?(vmPtr: number, blockedStatus: number): number;
+  supervisor_blocked_stale_retry_result_action_none?(): number;
+  supervisor_blocked_stale_retry_result_action_handle_current_result?(): number;
+  supervisor_blocked_stale_retry_result_action_handle_current_result_wait4?(): number;
+  supervisor_blocked_rpc_pipe_sync_action?(vmPtr: number, blockedStatus: number): number;
+  supervisor_blocked_rpc_pipe_sync_action_not_pipe?(): number;
+  supervisor_blocked_rpc_pipe_sync_action_none?(): number;
+  supervisor_blocked_rpc_pipe_sync_action_sync_socket?(): number;
+  supervisor_blocked_rpc_preserve_canonical_eof?(blockedStatus: number): number;
+  supervisor_blocked_rpc_post_resume_sync_action?(blockedStatus: number, flags: number): number;
+  supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available?(): number;
+  supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch?(): number;
+  supervisor_blocked_rpc_post_resume_sync_action_none?(): number;
+  supervisor_blocked_rpc_post_resume_sync_action_fork_shared?(): number;
+  supervisor_blocked_rpc_post_resume_sync_action_socket?(): number;
+  supervisor_blocked_retry_action?(vmPtr: number, flags: number): number;
+  supervisor_blocked_retry_action_flag_supervisor_timer_armed?(): number;
+  supervisor_blocked_retry_action_flag_rpc_pending?(): number;
+  supervisor_blocked_retry_action_flag_owner_async?(): number;
+  supervisor_blocked_retry_action_flag_thread_init_pending?(): number;
+  supervisor_blocked_retry_action_flag_fork_shared_sync_pending?(): number;
+  supervisor_blocked_retry_action_flag_running_worker?(): number;
+  supervisor_blocked_retry_action_flag_kernel_worker_available?(): number;
+  supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns?(): number;
+  supervisor_blocked_retry_action_flag_network_connections_available?(): number;
+  supervisor_blocked_retry_action_flag_wait_timer_already_checked?(): number;
+  supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available?(): number;
+  supervisor_blocked_retry_host_cleanup_action_none?(): number;
+  supervisor_blocked_retry_host_cleanup_action_flush_stdin?(): number;
+  supervisor_blocked_retry_host_cleanup_action_drain_local_pipe?(): number;
+  supervisor_blocked_retry_action_defer_supervisor_timer?(): number;
+  supervisor_blocked_retry_action_defer_rpc_pending?(): number;
+  supervisor_blocked_retry_action_defer_owner_async?(): number;
+  supervisor_blocked_retry_action_defer_thread_init_pending?(): number;
+  supervisor_blocked_retry_action_arm_wait_timer?(): number;
+  supervisor_blocked_retry_action_park_active_child?(): number;
+  supervisor_blocked_retry_action_resume_wait4?(): number;
+  supervisor_blocked_retry_action_defer_fork_shared_sync?(): number;
+  supervisor_blocked_retry_action_defer_running_worker?(): number;
+  supervisor_blocked_retry_action_defer_process_gate?(): number;
+  supervisor_blocked_retry_action_pump_network?(): number;
+  supervisor_blocked_retry_action_epoll_kernel_worker?(): number;
+  supervisor_blocked_retry_action_request_pipe_sync?(): number;
+  supervisor_blocked_retry_action_request_pipe_sync_and_drain_output?(): number;
+  supervisor_blocked_retry_action_schedule_pipe_sync_retry?(): number;
+  supervisor_blocked_retry_action_resume_fs?(): number;
+  supervisor_blocked_retry_action_defer_passive_wait?(): number;
+  supervisor_blocked_retry_action_resume_kernel_worker?(): number;
+  supervisor_blocked_retry_action_resume_wait4_kernel_worker?(): number;
+  supervisor_blocked_retry_action_resume_epoll_direct?(): number;
+  supervisor_blocked_retry_action_resume_direct?(): number;
+  supervisor_blocked_retry_action_unsupported?(): number;
+  supervisor_blocked_retry_host_cleanup_action?(flags: number): number;
+  supervisor_blocked_wait_wake_source_pipe_sync?(): number;
+  supervisor_blocked_wait_wake_source_epoll_sync?(): number;
+  supervisor_blocked_wait_wake_source_socket_sync?(): number;
+  supervisor_blocked_wait_wake_source_pipe_and_epoll_sync?(): number;
+  supervisor_blocked_wait_wake_target_pipe_wait?(): number;
+  supervisor_blocked_wait_wake_target_epoll_wait?(): number;
+  supervisor_blocked_wait_wake_target_socket_recv?(): number;
+  supervisor_blocked_wait_wake_target_socket_send?(): number;
+  supervisor_blocked_wait_wake_flag_rpc_pending?(): number;
+  supervisor_blocked_wait_wake_action_skip?(): number;
+  supervisor_blocked_wait_wake_action_retry?(): number;
+  supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry?(): number;
+  supervisor_blocked_wait_wake_action_log_epoll_and_retry?(): number;
+  supervisor_blocked_wait_wake_mask_for_sync?(source: number): number;
+  supervisor_blocked_wait_status_matches_wake_source?(status: number, source: number): number;
+  supervisor_blocked_wait_wake_action?(status: number, source: number, flags: number): number;
+  supervisor_wait_in_worker_status_action?(vmPtr: number, status: number, flags: number): number;
+  supervisor_wait_in_worker_status_action_none?(): number;
+  supervisor_wait_in_worker_status_action_block_epoll_timeout?(): number;
+  supervisor_wait_in_worker_status_action_park_futex?(): number;
+  supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe?(): number;
+  supervisor_wait_in_worker_status_action_sync_socket?(): number;
+  supervisor_wait_in_worker_status_action_sync_epoll?(): number;
+  supervisor_wait_in_worker_status_action_sync_pipe?(): number;
+  supervisor_wait_in_worker_status_action_drain_local_pipe?(): number;
+  supervisor_wait_in_worker_status_action_flag_running_worker?(): number;
+  supervisor_wait_in_worker_status_action_flag_kernel_worker_available?(): number;
+  supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns?(): number;
+  supervisor_wait4_child_exit_blocked_parent_action?(status: number): number;
+  supervisor_wait4_child_exit_blocked_parent_action_none?(): number;
+  supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc?(): number;
+  supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry?(): number;
+  supervisor_wait4_rpc_local_status_action?(status: number): number;
+  supervisor_wait4_rpc_local_status_action_skip?(): number;
+  supervisor_wait4_rpc_local_status_action_start?(): number;
+  supervisor_scheduler_clear_blocked_action?(status: number, flags: number): number;
+  supervisor_scheduler_clear_blocked_action_none?(): number;
+  supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry?(): number;
+  supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry?(): number;
+  supervisor_scheduler_block_worker_action?(status: number): number;
+  supervisor_scheduler_block_worker_action_record_blocked?(): number;
+  supervisor_scheduler_block_worker_action_park_futex?(): number;
+  supervisor_scheduler_futex_waiter_action?(status: number): number;
+  supervisor_scheduler_futex_waiter_action_not_waiter?(): number;
+  supervisor_scheduler_futex_waiter_action_waiter?(): number;
+  supervisor_worker_status_transition_action?(status: number): number;
+  supervisor_worker_status_transition_action_enqueue?(): number;
+  supervisor_worker_status_transition_action_connect_wait?(): number;
+  supervisor_worker_status_transition_action_park_futex?(): number;
+  supervisor_worker_status_transition_action_host_wait?(): number;
+  supervisor_worker_status_sync_action?(status: number, completedSyncEffects: number, flags: number): number;
+  supervisor_worker_status_sync_action_none?(): number;
+  supervisor_worker_status_sync_action_sync_pipe?(): number;
+  supervisor_worker_status_sync_action_sync_socket?(): number;
+  supervisor_worker_status_sync_action_sync_lifecycle?(): number;
+  supervisor_worker_status_sync_action_wake_signal_waiters?(): number;
+  supervisor_worker_status_sync_flag_wrote_or_drained_pipe?(): number;
+  supervisor_worker_sleep_status_action?(vmPtr: number, status: number, completedSyncEffects: number): number;
+  supervisor_worker_sleep_status_action_none?(): number;
+  supervisor_worker_sleep_status_action_yield?(): number;
+  supervisor_worker_sleep_status_action_arm_host_timer?(): number;
+  supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear?(): number;
+  supervisor_stdio_output_settle_kind_visible?(): number;
+  supervisor_stdio_output_settle_kind_inherited_child?(): number;
+  supervisor_stdio_pipe_read_progress_action_none?(): number;
+  supervisor_stdio_pipe_read_progress_action_snapshot?(): number;
+  supervisor_stdio_output_settle_max_passes?(kind: number): number;
+  supervisor_stdio_output_settle_stable_passes?(kind: number): number;
+  supervisor_stdio_pipe_read_progress_action?(
+    vmPtr: number,
+    pipeSlot: number,
+    drained: number,
+  ): number;
+  supervisor_enqueue_blocked_wait_timer?(vmPtr: number): number;
+  supervisor_enqueue_blocked_retry_timer?(vmPtr: number, flags: number): number;
+  supervisor_blocked_wait_timer_required?(vmPtr: number): number;
+  supervisor_fd_control_record?(outPtr: number, outLen: number): number;
+  supervisor_thread_take_completed_sync_effects?(vmPtr: number, status: number): number;
+  supervisor_fs_control_record?(outPtr: number, outLen: number): number;
+  supervisor_fs_pending_ring_request?(vmPtr: number): number;
+  supervisor_fs_pending_regular_file_fd?(vmPtr: number): number;
+  supervisor_fs_pending_regular_file_ofd?(vmPtr: number): number;
+  supervisor_fs_pipe_refresh_action_none?(): number;
+  supervisor_fs_pipe_refresh_action_request_sync?(): number;
+  supervisor_fs_pipe_refresh_flag_kernel_worker_available?(): number;
+  supervisor_fs_pipe_refresh_before_resume_action?(vmPtr: number, flags: number): number;
+  supervisor_fs_pending_backing_fill_ino?(vmPtr: number): number;
+  supervisor_fs_pending_backing_fill_offset?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_backing_fill_length?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_backing_fill_expected_size?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_backing_fill_opcode?(vmPtr: number): number;
+  supervisor_fs_clear_pending_backing_fill?(vmPtr: number): number;
+  supervisor_fs_pending_mmap_guest_write_ptr?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_mmap_guest_write_len?(vmPtr: number): bigint | number;
+  supervisor_fs_pending_mmap_guest_write_snapshot_len?(vmPtr: number): bigint | number;
+  supervisor_fs_backing_retry_limit?(
+    opcode: number,
+    offset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+  ): number;
+  supervisor_fs_backing_fill_span_decision?(
+    opcode: number,
+    offset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+  ): number;
+  supervisor_fs_dirty_page_decision?(
+    op: number,
+    ino: number,
+    offset: bigint | number,
+    lengthOrSize: bigint | number,
+    currentSize: bigint | number,
+    currentFileObjectId: bigint | number,
+    currentGeneration: bigint | number,
+    existingDirtyPages: number,
+    deltaDirtyPages: number,
+    residentPageCapacity: number,
+    pageMapNewer: number,
+  ): bigint | number;
+  supervisor_fs_dirty_page_decision_next_size?(): bigint | number;
+  supervisor_fs_dirty_page_decision_file_object_id?(): bigint | number;
+  supervisor_fs_dirty_page_decision_generation?(): bigint | number;
+  supervisor_fs_dirty_page_decision_flags?(): number;
+  supervisor_fs_dirty_prepare_decision?(
+    ino: number,
+    op: number,
+    expectedSize: bigint | number,
+    publishedPresent: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    publishedDataOff: bigint | number,
+    sourceIsRegular: number,
+    sourceFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+  ): number;
+  supervisor_fs_dirty_prepare_publish_mode?(): number;
+  supervisor_fs_data_sync_decision?(
+    kind: number,
+    ino: number,
+    sourceMode: number,
+    sourceSize: bigint | number,
+    targetMode: number,
+    targetSize: bigint | number,
+    publishedPresent: number,
+    publishedMode: number,
+    publishedSize: bigint | number,
+    publishedFileObjectId: bigint | number,
+    hasDirtyResidentPages: number,
+    pageMapNewer: number,
+    hasBackingFile: number,
+  ): number;
+  supervisor_fs_metadata_sync_decision?(
+    ino: number,
+    sourcePresent: number,
+    sourceMode: number,
+    sourceSize: bigint | number,
+    parentPresent: number,
+    parentIno: number,
+    publishedPresent: number,
+    publishedMode: number,
+    publishedSize: bigint | number,
+    publishedParentIno: number,
+    publishedNameMatches: number,
+    hasDirtyResidentPages: number,
+    backingPresent: number,
+  ): number;
+  supervisor_fs_metadata_sync_size?(): bigint | number;
+  supervisor_fs_metadata_sync_backing_source?(): number;
+  supervisor_fs_metadata_full_sync_decision?(
+    treeMutated: number,
+    handledMetadataMutation: number,
+  ): number;
+  supervisor_fs_backing_object_decision?(
+    op: number,
+    ino: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+  ): number;
+  supervisor_fs_backing_object_file_object_id?(): bigint | number;
+  supervisor_fs_backing_object_generation?(): bigint | number;
+  supervisor_fs_page_table_source_decision?(
+    ino: number,
+    hasDirtyPages: number,
+    publishedFileObjectId: bigint | number,
+    publishedGeneration: bigint | number,
+    publishedSize: bigint | number,
+    backingFileObjectId: bigint | number,
+    backingGeneration: bigint | number,
+    backingSize: bigint | number,
+  ): number;
+  supervisor_fs_backing_fill_probe_direct?(
+    opcode: number,
+    spanLength: bigint | number,
+  ): number;
+  supervisor_fs_backing_fill_mode_decision?(
+    opcode: number,
+    spanLength: bigint | number,
+    headProbeReadable: number,
+    tailProbeReadable: number,
+  ): number;
+  supervisor_fs_backing_source_range_decision?(
+    ino: number,
+    fileOffset: bigint | number,
+    length: bigint | number,
+    expectedSize: bigint | number,
+    extentOffset: bigint | number,
+    extentLength: bigint | number,
+    sourceByteLength: bigint | number,
+    requireSourceBounds: number,
+  ): number;
+  supervisor_fs_backing_source_range_source_byte_length?(): bigint | number;
+  supervisor_fs_backing_source_range_source_offset?(): bigint | number;
+  supervisor_fs_backing_source_range_read_length?(): bigint | number;
+  supervisor_fs_clean_backing_range_decision?(
+    ino: number,
+    offset: bigint | number,
+    length: bigint | number,
+    publishedSize: bigint | number,
+    backingSize: bigint | number,
+  ): number;
+  supervisor_fs_clean_backing_range_read_offset?(): bigint | number;
+  supervisor_fs_clean_backing_range_read_length?(): bigint | number;
+  supervisor_fs_clean_backing_range_output_length?(): bigint | number;
+  supervisor_fs_completion_decision?(
+    vmPtr: number,
+    opcode: number,
+    effects: number,
+    result: bigint | number,
+    hostMemfsMutated: number,
+    hostOfdStateChanged: number,
+    pendingRingRequest: number,
+    regularFileRequest: number,
+  ): number;
+  supervisor_fs_response_disposition?(
+    vmPtr: number,
+    runtimePid: number,
+    opcode: number,
+    result: bigint | number,
+    ownerAsyncStatus: number,
+    lastStatus: number,
+  ): number;
+  supervisor_fs_local_metadata_action?(
+    opcode: number,
+    effects: number,
+    result: bigint | number,
+    hasPrimaryPath: number,
+    hasSecondaryPath: number,
+  ): number;
+  supervisor_fs_resident_page_slot_decision?(
+    existingSlot: number,
+    emptySlot: number,
+    cleanEvictSlot: number,
+  ): number;
+  supervisor_fs_resident_page_evict_status?(recordFound: number, dirty: number): number;
+  supervisor_signal_control_record?(outPtr: number, outLen: number): number;
+  supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
+  supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_futex_wait_completion_woken?(): number;
+  supervisor_futex_wait_completion_not_equal?(): number;
+  supervisor_futex_wait_completion_invalid_address?(): number;
+  supervisor_futex_wait_completion_signal_check?(): number;
+  supervisor_complete_futex_wait?(vmPtr: number, completion: number): number;
+  supervisor_signal_pending_for_blocked_wait?(vmPtr: number): number;
+  supervisor_signal_boundary_check?(vmPtr: number): number;
 
   // Open flags
   abi_o_rdonly(): number;
@@ -316,11 +1152,6 @@ export interface KernelExports {
   thread_pending_fs_path_len?(vm_ptr: number): number;
   thread_pending_fs_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
   thread_pending_fs_secondary_absolute_path?(vm_ptr: number, buf_ptr: number, buf_len: number): bigint;
-  thread_execve_backing_miss_ino?(vm_ptr: number): number;
-  thread_execve_backing_miss_offset?(vm_ptr: number): bigint | number;
-  thread_execve_backing_miss_len?(vm_ptr: number): number;
-  thread_execve_backing_miss_expected_size?(vm_ptr: number): number;
-  thread_clear_execve_backing_miss?(vm_ptr: number): void;
   thread_fs_ring_base?(vm_ptr: number): number;
   thread_fs_ring_submit_head?(vm_ptr: number): number;
   thread_fs_ring_submit_tail?(vm_ptr: number): number;
@@ -337,8 +1168,6 @@ export interface KernelExports {
   thread_futex_wait_addr(vm_ptr: number): bigint;
   thread_futex_wait_timeout(vm_ptr: number): bigint;
   thread_futex_wait_expected(vm_ptr: number): number;
-  thread_resume_futex_wait(vm_ptr: number): void;
-  thread_resume_futex_wait_result(vm_ptr: number, result: bigint): void;
   thread_sleep_seconds(vm_ptr: number): bigint;
   thread_sleep_nanoseconds(vm_ptr: number): bigint;
   thread_sleep_deadline_ticks?(vm_ptr: number): bigint | number;
@@ -387,7 +1216,6 @@ export interface KernelExports {
   thread_resume_poll_wait_timeout?(vm_ptr: number): void;
   thread_resume_socket_wait_timeout?(vm_ptr: number): void;
   thread_interrupt_epoll_wait?(vm_ptr: number, errno: number): number;
-  thread_resume_blocked_syscall(vm_ptr: number): bigint;
   thread_resume_sleep?(vm_ptr: number): void;
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_resume_connect_result_for_fd?(vm_ptr: number, fd: number, result: bigint): void;
@@ -437,12 +1265,19 @@ export interface KernelExports {
   process_thread_vm_ptr(vm_ptr: number, slot: number): number;
   process_record_child_exit(pid: number, wait_status: number): void;
   process_record_child_exit_for_parent?(parent_pid: number, pid: number, wait_status: number): void;
+  process_has_active_child?(parent_pid: number): number;
+  process_active_child_pid?(parent_pid: number): number;
+  process_child_ppid?(pid: number): number;
+  process_child_pgid?(pid: number): number;
+  process_child_sid?(pid: number): number;
+  process_next_pid?(): number;
   process_current_pid(vm_ptr: number): number;
   process_current_ppid(vm_ptr: number): number;
   process_current_pgid(vm_ptr: number): number;
   process_current_sid(vm_ptr: number): number;
   process_current_did_exec(vm_ptr: number): number;
   process_rewrite_child_pid(vm_ptr: number, oldPid: number, newPid: number, nextPid: number): void;
+  process_canonicalize_child_pid?(vmPtr: number, provisionalChildPid: number, nextPidFloor: number): number;
   process_reset_lifecycle(
     vm_ptr: number,
     pid: number,
@@ -452,6 +1287,8 @@ export interface KernelExports {
     sid: number,
     didExec: number,
   ): void;
+  supervisor_vfork_execve_handoff_failure_wait_status?(): number;
+  supervisor_vfork_execve_rollback?(vmPtr: number, childPid: number): number;
   thread_prepare_fork_child?(vm_ptr: number, pid: number): void;
   thread_restore_fork_parent?(vm_ptr: number, processPtr: number, pid: number, ppid: number): void;
   process_upsert_process_entry(pid: number, ppid: number, pgid: number, sid: number, didExec: number): void;
@@ -983,6 +1820,580 @@ export interface KernelExports {
   memfs_readdir_names(dir_ino: number, buf_ptr: number, buf_len: number): bigint;
 }
 
+const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
+  "supervisor_abi_version",
+  "supervisor_debug_snapshot_bytes",
+  "supervisor_thread_event_record_bytes",
+  "supervisor_thread_event_record_magic",
+  "supervisor_thread_event_kind_blocked",
+  "supervisor_thread_event_kind_ready",
+  "supervisor_thread_event_kind_faulted",
+  "supervisor_thread_event_kind_exited",
+  "supervisor_thread_event_kind_host_completion_arrived",
+  "supervisor_thread_event_kind_timer_fired",
+  "supervisor_thread_event_kind_network_readable",
+  "supervisor_thread_event_kind_backing_store_ready",
+  "supervisor_thread_state_snapshot_bytes",
+  "supervisor_thread_state_snapshot_magic",
+  "supervisor_resume_record_bytes",
+  "supervisor_resume_record_magic",
+  "supervisor_host_completion_record_bytes",
+  "supervisor_host_completion_record_magic",
+  "supervisor_host_completion_outcome_success",
+  "supervisor_host_completion_outcome_failure",
+  "supervisor_host_op_record_bytes",
+  "supervisor_host_op_record_magic",
+  "supervisor_process_host_op_record_bytes",
+  "supervisor_process_host_op_record_magic",
+  "supervisor_fault_exit_decision_bytes",
+  "supervisor_fault_exit_decision_magic",
+  "supervisor_fd_control_record_bytes",
+  "supervisor_fd_control_record_magic",
+  "supervisor_fs_control_record_bytes",
+  "supervisor_fs_control_record_magic",
+  "supervisor_signal_control_record_bytes",
+  "supervisor_signal_control_record_magic",
+  "supervisor_resume_kind_futex_wake",
+  "supervisor_resume_kind_runnable_thread",
+  "supervisor_host_op_kind_spawn_thread_worker",
+  "supervisor_host_op_kind_spawn_process_worker",
+  "supervisor_host_op_kind_create_process_memory",
+  "supervisor_host_op_kind_copy_memory_ranges",
+  "supervisor_host_op_kind_fill_page_from_backing",
+  "supervisor_host_op_kind_flush_dirty_page",
+  "supervisor_host_op_kind_process_fs_request",
+  "supervisor_host_op_kind_host_network_connect",
+  "supervisor_host_op_kind_host_network_read",
+  "supervisor_host_op_kind_host_network_write",
+  "supervisor_host_op_kind_host_network_close",
+  "supervisor_host_op_kind_arm_host_timer",
+  "supervisor_host_op_kind_resume_thread",
+  "supervisor_host_op_kind_terminate_worker",
+  "supervisor_host_op_kind_retry_blocked_worker",
+  "supervisor_process_host_op_kind_spawn_process_worker",
+  "supervisor_fault_exit_kind_thread_exit",
+  "supervisor_fault_exit_kind_process_exit",
+  "supervisor_fd_control_kind_pipe_created",
+  "supervisor_fd_control_kind_fd_closed",
+  "supervisor_fd_control_kind_fd_duplicated",
+  "supervisor_fd_control_kind_fd_flags_updated",
+  "supervisor_fd_control_kind_epoll_created",
+  "supervisor_fd_control_kind_epoll_ctl_add",
+  "supervisor_fd_control_kind_epoll_ctl_del",
+  "supervisor_fd_control_kind_epoll_ctl_mod",
+  "supervisor_fd_control_kind_socket_created",
+  "supervisor_fd_control_kind_socketpair_created",
+  "supervisor_fd_control_kind_socket_bound",
+  "supervisor_fd_control_kind_socket_listening",
+  "supervisor_fd_control_kind_socket_connect_started",
+  "supervisor_fd_control_kind_socket_connected",
+  "supervisor_fd_control_kind_socket_connect_failed",
+  "supervisor_fd_control_kind_socket_accepted",
+  "supervisor_pipe_slot_mode_read",
+  "supervisor_pipe_slot_mode_write",
+  "supervisor_pipe_slot_mode_control",
+  "supervisor_pipe_slot_snapshot_context_shared_state",
+  "supervisor_pipe_slot_snapshot_context_thread_step",
+  "supervisor_pipe_slot_snapshot_context_kernel_worker_apply",
+  "supervisor_pipe_slot_snapshot_context_kernel_worker_process",
+  "supervisor_pipe_slot_snapshot_context_kernel_worker_canonical",
+  "supervisor_pipe_slot_snapshot_action_skip",
+  "supervisor_pipe_slot_snapshot_action_apply_slot",
+  "supervisor_pipe_slot_snapshot_action_apply_control",
+  "supervisor_pipe_slot_snapshot_action_set_head_to_source",
+  "supervisor_pipe_slot_snapshot_action_set_tail_to_source",
+  "supervisor_pipe_slot_snapshot_action_set_head_zero",
+  "supervisor_pipe_slot_snapshot_action_copy_full",
+  "supervisor_pipe_slot_snapshot_action_copy_tail_delta",
+  "supervisor_pipe_slot_snapshot_action_sync_generation",
+  "supervisor_pipe_slot_snapshot_action_stop",
+  "supervisor_blocked_pipe_resume_action_defer",
+  "supervisor_blocked_pipe_resume_action_direct",
+  "supervisor_blocked_pipe_sync_before_retry_action_none",
+  "supervisor_blocked_pipe_sync_before_retry_action_request_sync",
+  "supervisor_blocked_pipe_sync_before_retry_action_request_sync_and_drain_output",
+  "supervisor_blocked_pipe_sync_before_retry_action_schedule_retry",
+  "supervisor_blocked_pipe_sync_before_retry_flag_kernel_worker_available",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action_none",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action_drain_local_pipe",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action_schedule_retry",
+  "supervisor_blocked_pipe_sync_before_retry_completion_flag_requested_drain_output",
+  "supervisor_blocked_pipe_sync_before_retry_completion_flag_kernel_worker_available",
+  "supervisor_blocked_status_transition_action_block",
+  "supervisor_blocked_status_transition_action_sync_socket",
+  "supervisor_blocked_status_transition_action_sync_pipe",
+  "supervisor_blocked_status_transition_action_sync_fork_shared",
+  "supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared",
+  "supervisor_blocked_status_transition_action_sync_socket_and_fork_shared",
+  "supervisor_blocked_status_transition_flag_kernel_worker_available",
+  "supervisor_blocked_status_transition_flag_network_connections_available",
+  "supervisor_blocked_wait_network_pump_action_skip",
+  "supervisor_blocked_wait_network_pump_action_pump",
+  "supervisor_state_sync_kind_pipe",
+  "supervisor_state_sync_kind_epoll",
+  "supervisor_state_sync_kind_socket",
+  "supervisor_state_sync_request_flag_wake_waiters",
+  "supervisor_state_sync_run_flag_run",
+  "supervisor_state_sync_run_flag_wake_waiters",
+  "supervisor_state_sync_start_action_skip",
+  "supervisor_state_sync_start_action_request_sync",
+  "supervisor_state_sync_start_action_retry_waiters",
+  "supervisor_state_sync_start_flag_active_vfork_child_owner_mismatch",
+  "supervisor_state_sync_start_flag_kernel_worker_available",
+  "supervisor_state_sync_start_flag_epoll_state_kernel_owns",
+  "supervisor_state_sync_start_flag_held_epoll_ofd",
+  "supervisor_state_sync_start_flag_wake_waiters",
+  "supervisor_owned_state_sync_action_none",
+  "supervisor_owned_state_sync_action_mark_process_memfs_dirty",
+  "supervisor_owned_state_sync_action_sync_fork_shared",
+  "supervisor_owned_state_sync_action_sync_epoll_dependent_ofds",
+  "supervisor_owned_state_sync_action_sync_socket",
+  "supervisor_owned_state_sync_action_wake_socket_waiters",
+  "supervisor_owned_state_sync_action_sync_process_memfs",
+  "supervisor_owned_state_sync_action_sync_epoll",
+  "supervisor_owned_state_sync_action_retry_epoll_waiters",
+  "supervisor_owned_state_sync_flag_running_worker",
+  "supervisor_owned_state_sync_flag_worker_owns_authoritative_state",
+  "supervisor_owned_state_sync_flag_kernel_worker_available",
+  "supervisor_owned_state_sync_flag_epoll_state_kernel_owns",
+  "supervisor_owned_state_sync_flag_fork_shared_effect_requested",
+  "supervisor_owned_state_sync_flag_active_vfork_child_owner_mismatch",
+  "supervisor_owned_state_sync_flag_process_memfs_dirty",
+  "supervisor_owned_state_sync_flag_held_epoll_ofd",
+  "supervisor_owned_state_sync_flag_wrote_or_drained_pipe",
+  "supervisor_owned_state_sync_action",
+  "supervisor_fs_control_kind_page_cache_miss",
+  "supervisor_fs_control_kind_page_cache_fill",
+  "supervisor_fs_control_kind_dirty_page_published",
+  "supervisor_fs_control_kind_dirty_page_flushed",
+  "supervisor_fs_dirty_page_op_write",
+  "supervisor_fs_dirty_page_op_truncate",
+  "supervisor_fs_dirty_page_op_flush",
+  "supervisor_fs_dirty_page_flag_update_inode",
+  "supervisor_fs_dirty_page_flag_publish_dirty",
+  "supervisor_fs_dirty_page_flag_writeback_required",
+  "supervisor_fs_dirty_prepare_publish_none",
+  "supervisor_fs_dirty_prepare_publish_missing",
+  "supervisor_fs_dirty_prepare_publish_size_update",
+  "supervisor_fs_metadata_full_sync_action_none",
+  "supervisor_fs_metadata_full_sync_action_required",
+  "supervisor_fs_metadata_full_sync_decision",
+  "supervisor_fs_backing_fill_mode_resident",
+  "supervisor_fs_backing_fill_mode_direct",
+  "supervisor_fs_backing_fill_span_offset",
+  "supervisor_fs_backing_fill_span_end",
+  "supervisor_fs_backing_fill_span_length",
+  "supervisor_fs_backing_source_range_none",
+  "supervisor_fs_backing_source_range_read",
+  "supervisor_fs_backing_retry_min_attempts",
+  "supervisor_fs_backing_retry_max_attempts",
+  "supervisor_fs_backing_retry_final_scan_attempts",
+  "supervisor_fs_clean_backing_range_none",
+  "supervisor_fs_clean_backing_range_read",
+  "supervisor_fs_clean_backing_range_read_zero_tail",
+  "supervisor_fs_clean_backing_range_zero",
+  "supervisor_fs_page_table_source_backing",
+  "supervisor_fs_page_table_source_resident",
+  "supervisor_fs_response_flag_adopt_kernel_state",
+  "supervisor_fs_response_flag_apply_guest_memory_writes",
+  "supervisor_fs_response_flag_queue_thread_worker_writes",
+  "supervisor_fs_response_flag_apply_local_metadata",
+  "supervisor_fs_response_flag_clear_tombstones",
+  "supervisor_fs_response_flag_fd_response_may_clear_live_fds",
+  "supervisor_fs_response_flag_store_pending_kernel_state",
+  "supervisor_fs_response_flag_resolved_to_execve_spawn",
+  "supervisor_fs_response_flag_process_owner_matches",
+  "supervisor_fd_entry_restore_action_apply",
+  "supervisor_fd_entry_restore_action_skip",
+  "supervisor_fd_entry_restore_flag_preserve_live_regular_file",
+  "supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent",
+  "supervisor_fd_entry_restore_action",
+  "supervisor_fd_entry_guest_write_action",
+  "supervisor_ofd_slot_write_action",
+  "supervisor_ofd_slot_restore_flag_referenced_by_fd_entry",
+  "supervisor_ofd_slot_restore_flag_trust_regular_file_offset",
+  "supervisor_ofd_slot_restore_action",
+  "supervisor_regular_file_offset_restore_action",
+  "supervisor_fs_local_metadata_action_none",
+  "supervisor_fs_local_metadata_action_tombstone_primary",
+  "supervisor_fs_local_metadata_action_forget_primary",
+  "supervisor_fs_local_metadata_action_forget_secondary",
+  "supervisor_fs_resident_page_evict_not_found",
+  "supervisor_fs_resident_page_evict_dirty_pinned",
+  "supervisor_fs_resident_page_evict_evicted",
+  "supervisor_signal_control_kind_boundary_check",
+  "supervisor_signal_control_kind_signal_delivered",
+  "supervisor_signal_control_kind_blocked_wait_interrupted",
+  "supervisor_reset_shadow_log",
+  "supervisor_shadow_thread_event_count",
+  "supervisor_shadow_host_completion_count",
+  "supervisor_shadow_host_op_poll_count",
+  "supervisor_shadow_host_op_emit_count",
+  "supervisor_shadow_host_op_overflow_count",
+  "supervisor_shadow_host_op_log_hash",
+  "supervisor_shadow_host_op_last_hash",
+  "supervisor_shadow_host_op_last_len",
+  "supervisor_shadow_resume_poll_count",
+  "supervisor_shadow_resume_enqueue_count",
+  "supervisor_shadow_resume_overflow_count",
+  "supervisor_shadow_fd_control_count",
+  "supervisor_shadow_fs_control_count",
+  "supervisor_shadow_signal_control_count",
+  "supervisor_shadow_thread_event_log_hash",
+  "supervisor_shadow_host_completion_log_hash",
+  "supervisor_submit_thread_event",
+  "supervisor_complete_host_op",
+  "supervisor_next_host_op",
+  "supervisor_next_host_op_kind",
+  "supervisor_process_host_op",
+  "supervisor_process_memory_host_op",
+  "supervisor_next_resume",
+  "supervisor_process_resume",
+  "supervisor_process_status_is_lifecycle_handoff",
+  "supervisor_process_status_is_execve_spawn",
+  "supervisor_process_status_is_clone_spawn",
+  "supervisor_process_status_is_vfork_wait",
+  "supervisor_process_status_allows_pid_mismatch",
+  "supervisor_process_status_defers_kernel_state_adoption",
+  "supervisor_process_status_route_action",
+  "supervisor_process_status_route_action_none",
+  "supervisor_process_status_route_action_apply_status_fd_state",
+  "supervisor_process_status_route_action_adopt_thread_kernel_state",
+  "supervisor_process_status_route_action_apply_fs_memory_writes",
+  "supervisor_process_status_route_action_skip_fs_ring_writes",
+  "supervisor_process_status_route_action_defer_local_pipe_drain",
+  "supervisor_process_status_route_flag_status_state_belongs_to_handle",
+  "supervisor_process_status_route_flag_kernel_worker_available",
+  "supervisor_vfork_child_owner_mismatch",
+  "supervisor_process_owner_matches",
+  "supervisor_process_owner_mismatch",
+  "supervisor_process_owner_absent",
+  "supervisor_process_owner_live_matches",
+  "supervisor_process_owner_missing_or_invalid",
+  "supervisor_process_identity_matches",
+  "supervisor_fault_exit_decision",
+  "supervisor_process_held_ofd_refcount",
+  "supervisor_ofd_is_regular_file",
+  "supervisor_pipe_sync_ofd_candidate",
+  "supervisor_ofd_pipe_generation_slot",
+  "supervisor_ofd_pipe_slot_mask",
+  "supervisor_ofd_pipe_slot_mode",
+  "supervisor_fork_shared_peer_flag_compatible",
+  "supervisor_fork_shared_peer_flag_incompatible",
+  "supervisor_fork_shared_peer_flag_pipe_peer",
+  "supervisor_fork_shared_held_ofd_track_flag_shared",
+  "supervisor_fork_shared_held_ofd_track_flag_host_stdio_pipe",
+  "supervisor_fork_shared_held_ofd_track_flag_stdio_fd",
+  "supervisor_fork_shared_held_ofd_track_flag_fd_entry_source",
+  "supervisor_fork_shared_sync_target_action_reject",
+  "supervisor_fork_shared_sync_target_action_defer",
+  "supervisor_fork_shared_sync_target_action_use",
+  "supervisor_fork_shared_ofd_action_include",
+  "supervisor_fork_shared_ofd_action_add_shared",
+  "supervisor_fork_shared_ofd_action_rehydrate",
+  "supervisor_fork_shared_held_ofd_track_action",
+  "supervisor_fork_shared_ofd_identity_key",
+  "supervisor_fork_shared_ofd_publish_action",
+  "supervisor_fork_shared_effect_sync_action",
+  "supervisor_fork_shared_sync_target_action",
+  "supervisor_fork_shared_syncable_ofd_action",
+  "supervisor_fork_shared_delta_source_ofd_action",
+  "supervisor_fork_shared_tracked_source_ofd_action",
+  "supervisor_fork_shared_pipe_peer_ofd_action",
+  "supervisor_fork_shared_rehydrate_ofd_action",
+  "supervisor_process_holds_regular_file_ofd",
+  "supervisor_process_ofd_for_fd",
+  "supervisor_process_fd_flags_for_fd",
+  "supervisor_process_fd_is_open",
+  "supervisor_ofd_fd_type",
+  "supervisor_ofd_host_fd",
+  "supervisor_ofd_status_flags",
+  "supervisor_ofd_ino",
+  "supervisor_ofd_refcount",
+  "supervisor_ofd_reconcile_refcount",
+  "supervisor_ofd_offset",
+  "supervisor_process_private_pipe_slot_mask",
+  "supervisor_process_private_pipe_source_mode",
+  "supervisor_process_private_pipe_target_mode",
+  "supervisor_process_held_pipe_slot_mask",
+  "supervisor_process_pipe_used_mask",
+  "supervisor_process_pipe_slot_mode",
+  "supervisor_process_pipe_slot_for_fd",
+  "supervisor_process_pipe_ofd_for_fd",
+  "supervisor_process_pipe_host_fd_for_fd",
+  "supervisor_process_pipe_read_open_count",
+  "supervisor_process_pipe_write_open_count",
+  "supervisor_pipe_reconcile_control",
+  "supervisor_pipe_slot_snapshot_merge_action",
+  "supervisor_blocked_pipe_resume_action",
+  "supervisor_blocked_pipe_sync_before_retry_action",
+  "supervisor_blocked_pipe_sync_before_retry_requested",
+  "supervisor_blocked_pipe_sync_before_retry_clear",
+  "supervisor_blocked_pipe_sync_before_retry_completion_action",
+  "supervisor_blocked_status_transition_action",
+  "supervisor_blocked_wait_network_pump_action",
+  "supervisor_complete_blocked_wait_network_pump",
+  "supervisor_clear_blocked_wait_network_pump",
+  "supervisor_state_sync_request",
+  "supervisor_state_sync_next_run_flags",
+  "supervisor_state_sync_complete",
+  "supervisor_state_sync_clear",
+  "supervisor_state_sync_start_action",
+  "supervisor_process_epoll_held_ofd",
+  "supervisor_process_epoll_dependent_ofd",
+  "supervisor_process_sync_dependent_ofd",
+  "supervisor_process_epoll_dependent_sync_ofd",
+  "supervisor_process_epoll_depends_on_ofd",
+  "supervisor_blocked_epoll_watched_ofd",
+  "supervisor_blocked_epoll_dependent_sync_ofd",
+  "supervisor_blocked_epoll_watches_pipe",
+  "supervisor_process_socket_held_ofd",
+  "supervisor_socket_ofd_is_socket",
+  "supervisor_process_socket_ofd_for_fd",
+  "supervisor_process_socket_drain_fd",
+  "supervisor_socket_connect_fd",
+  "supervisor_socket_connect_peer_addr",
+  "supervisor_socket_connect_peer_addr_for_fd",
+  "supervisor_socket_prepare_external_peer",
+  "supervisor_socket_commit_external_connect_result",
+  "supervisor_socket_close_external_peer",
+  "supervisor_socket_force_shutdown",
+  "supervisor_socket_bridge_active_fd",
+  "supervisor_resume_flag_timeout_expired",
+  "supervisor_resume_blocked_syscall",
+  "supervisor_blocked_resume_writeback_count",
+  "supervisor_blocked_resume_writeback_ptr",
+  "supervisor_blocked_resume_writeback_len",
+  "supervisor_blocked_status_is_host_wait",
+  "supervisor_blocked_status_is_connect_wait",
+  "supervisor_blocked_status_is_epoll_wait",
+  "supervisor_blocked_status_is_pipe_wait",
+  "supervisor_blocked_status_is_wait4",
+  "supervisor_blocked_status_is_socket_wait",
+  "supervisor_blocked_status_needs_network_sidecar_restore",
+  "supervisor_blocked_status_syncs_socket_after_resume",
+  "supervisor_blocked_epoll_wait_timeout_ms",
+  "supervisor_blocked_poll_wait_timeout_ms",
+  "supervisor_blocked_poll_wait_has_socket",
+  "supervisor_blocked_pipe_wait_has_ready_events",
+  "supervisor_blocked_epoll_wait_retry_required",
+  "supervisor_blocked_wait_active_child_pid",
+  "supervisor_blocked_wait_retry_flag_host_progress",
+  "supervisor_blocked_wait_retry_flag_active_child",
+  "supervisor_blocked_wait_retry_flag_passive_wait",
+  "supervisor_blocked_wait_retry_flag_process_gate",
+  "supervisor_blocked_wait_retry_flag_thread_init_pending",
+  "supervisor_blocked_initial_action",
+  "supervisor_blocked_initial_action_none",
+  "supervisor_blocked_initial_action_defer_supervisor_timer",
+  "supervisor_blocked_initial_action_defer_rpc_pending",
+  "supervisor_blocked_initial_action_arm_wait_timer",
+  "supervisor_blocked_initial_action_retry_now",
+  "supervisor_blocked_initial_action_schedule_retry",
+  "supervisor_blocked_retry_result_action",
+  "supervisor_blocked_retry_result_action_none",
+  "supervisor_blocked_retry_result_action_arm_wait_timer",
+  "supervisor_blocked_retry_result_action_schedule_retry",
+  "supervisor_blocked_retry_result_action_schedule_retry_and_pump",
+  "supervisor_blocked_retry_result_action_park_futex",
+  "supervisor_blocked_retry_status_action",
+  "supervisor_blocked_retry_status_action_none",
+  "supervisor_blocked_retry_status_action_pipe_retry_diagnostics",
+  "supervisor_blocked_retry_status_action_pump_blocked_outcome",
+  "supervisor_blocked_retry_status_action_active_child_pipe",
+  "supervisor_blocked_retry_status_action_active_child_wait4",
+  "supervisor_blocked_retry_status_action_success_log_epoll_ready",
+  "supervisor_blocked_retry_status_action_success_log_wait4_resumed",
+  "supervisor_blocked_retry_status_action_wake_runtime_bridge_while_running",
+  "supervisor_blocked_post_network_pump_action",
+  "supervisor_blocked_post_network_pump_action_schedule_retry",
+  "supervisor_blocked_post_network_pump_action_schedule_retry_with_host_progress",
+  "supervisor_blocked_stale_retry_result_action",
+  "supervisor_blocked_stale_retry_result_action_none",
+  "supervisor_blocked_stale_retry_result_action_handle_current_result",
+  "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4",
+  "supervisor_blocked_rpc_pipe_sync_action",
+  "supervisor_blocked_rpc_pipe_sync_action_not_pipe",
+  "supervisor_blocked_rpc_pipe_sync_action_none",
+  "supervisor_blocked_rpc_pipe_sync_action_sync_socket",
+  "supervisor_blocked_rpc_preserve_canonical_eof",
+  "supervisor_blocked_rpc_post_resume_sync_action",
+  "supervisor_blocked_rpc_post_resume_sync_flag_kernel_worker_available",
+  "supervisor_blocked_rpc_post_resume_sync_flag_process_owner_mismatch",
+  "supervisor_blocked_rpc_post_resume_sync_action_none",
+  "supervisor_blocked_rpc_post_resume_sync_action_fork_shared",
+  "supervisor_blocked_rpc_post_resume_sync_action_socket",
+  "supervisor_blocked_retry_action",
+  "supervisor_blocked_retry_action_flag_supervisor_timer_armed",
+  "supervisor_blocked_retry_action_flag_rpc_pending",
+  "supervisor_blocked_retry_action_flag_owner_async",
+  "supervisor_blocked_retry_action_flag_thread_init_pending",
+  "supervisor_blocked_retry_action_flag_fork_shared_sync_pending",
+  "supervisor_blocked_retry_action_flag_running_worker",
+  "supervisor_blocked_retry_action_flag_kernel_worker_available",
+  "supervisor_blocked_retry_action_flag_pipe_state_kernel_worker_owns",
+  "supervisor_blocked_retry_action_flag_network_connections_available",
+  "supervisor_blocked_retry_action_flag_wait_timer_already_checked",
+  "supervisor_blocked_retry_host_cleanup_flag_kernel_worker_available",
+  "supervisor_blocked_retry_host_cleanup_action_none",
+  "supervisor_blocked_retry_host_cleanup_action_flush_stdin",
+  "supervisor_blocked_retry_host_cleanup_action_drain_local_pipe",
+  "supervisor_blocked_retry_action_defer_supervisor_timer",
+  "supervisor_blocked_retry_action_defer_rpc_pending",
+  "supervisor_blocked_retry_action_defer_owner_async",
+  "supervisor_blocked_retry_action_defer_thread_init_pending",
+  "supervisor_blocked_retry_action_arm_wait_timer",
+  "supervisor_blocked_retry_action_park_active_child",
+  "supervisor_blocked_retry_action_resume_wait4",
+  "supervisor_blocked_retry_action_defer_fork_shared_sync",
+  "supervisor_blocked_retry_action_defer_running_worker",
+  "supervisor_blocked_retry_action_defer_process_gate",
+  "supervisor_blocked_retry_action_pump_network",
+  "supervisor_blocked_retry_action_epoll_kernel_worker",
+  "supervisor_blocked_retry_action_request_pipe_sync",
+  "supervisor_blocked_retry_action_request_pipe_sync_and_drain_output",
+  "supervisor_blocked_retry_action_schedule_pipe_sync_retry",
+  "supervisor_blocked_retry_action_resume_fs",
+  "supervisor_blocked_retry_action_defer_passive_wait",
+  "supervisor_blocked_retry_action_resume_kernel_worker",
+  "supervisor_blocked_retry_action_resume_wait4_kernel_worker",
+  "supervisor_blocked_retry_action_resume_epoll_direct",
+  "supervisor_blocked_retry_action_resume_direct",
+  "supervisor_blocked_retry_action_unsupported",
+  "supervisor_blocked_retry_host_cleanup_action",
+  "supervisor_blocked_wait_wake_source_pipe_sync",
+  "supervisor_blocked_wait_wake_source_epoll_sync",
+  "supervisor_blocked_wait_wake_source_socket_sync",
+  "supervisor_blocked_wait_wake_source_pipe_and_epoll_sync",
+  "supervisor_blocked_wait_wake_flag_rpc_pending",
+  "supervisor_blocked_wait_wake_action_skip",
+  "supervisor_blocked_wait_wake_action_retry",
+  "supervisor_blocked_wait_wake_action_clear_pipe_sync_and_retry",
+  "supervisor_blocked_wait_wake_action_log_epoll_and_retry",
+  "supervisor_blocked_wait_status_matches_wake_source",
+  "supervisor_blocked_wait_wake_action",
+  "supervisor_wait_in_worker_status_action",
+  "supervisor_wait_in_worker_status_action_none",
+  "supervisor_wait_in_worker_status_action_block_epoll_timeout",
+  "supervisor_wait_in_worker_status_action_park_futex",
+  "supervisor_wait_in_worker_status_action_block_wait4_and_sync_pipe",
+  "supervisor_wait_in_worker_status_action_sync_socket",
+  "supervisor_wait_in_worker_status_action_sync_epoll",
+  "supervisor_wait_in_worker_status_action_sync_pipe",
+  "supervisor_wait_in_worker_status_action_drain_local_pipe",
+  "supervisor_wait_in_worker_status_action_flag_running_worker",
+  "supervisor_wait_in_worker_status_action_flag_kernel_worker_available",
+  "supervisor_wait_in_worker_status_action_flag_epoll_state_kernel_owns",
+  "supervisor_wait4_child_exit_blocked_parent_action",
+  "supervisor_wait4_child_exit_blocked_parent_action_none",
+  "supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc",
+  "supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry",
+  "supervisor_wait4_rpc_local_status_action",
+  "supervisor_wait4_rpc_local_status_action_skip",
+  "supervisor_wait4_rpc_local_status_action_start",
+  "supervisor_scheduler_clear_blocked_action",
+  "supervisor_scheduler_clear_blocked_action_none",
+  "supervisor_scheduler_clear_blocked_action_clear_pipe_sync_before_retry",
+  "supervisor_scheduler_clear_blocked_flag_clear_pipe_sync_before_retry",
+  "supervisor_scheduler_block_worker_action",
+  "supervisor_scheduler_block_worker_action_record_blocked",
+  "supervisor_scheduler_block_worker_action_park_futex",
+  "supervisor_scheduler_futex_waiter_action",
+  "supervisor_scheduler_futex_waiter_action_not_waiter",
+  "supervisor_scheduler_futex_waiter_action_waiter",
+  "supervisor_worker_status_transition_action",
+  "supervisor_worker_status_transition_action_enqueue",
+  "supervisor_worker_status_transition_action_connect_wait",
+  "supervisor_worker_status_transition_action_park_futex",
+  "supervisor_worker_status_transition_action_host_wait",
+  "supervisor_worker_status_sync_action",
+  "supervisor_worker_status_sync_action_none",
+  "supervisor_worker_status_sync_action_sync_pipe",
+  "supervisor_worker_status_sync_action_sync_socket",
+  "supervisor_worker_status_sync_action_sync_lifecycle",
+  "supervisor_worker_status_sync_action_wake_signal_waiters",
+  "supervisor_worker_status_sync_flag_wrote_or_drained_pipe",
+  "supervisor_worker_sleep_status_action",
+  "supervisor_worker_sleep_status_action_none",
+  "supervisor_worker_sleep_status_action_yield",
+  "supervisor_worker_sleep_status_action_arm_host_timer",
+  "supervisor_worker_sleep_status_action_sync_pipe_before_yield_clear",
+  "supervisor_stdio_output_settle_kind_visible",
+  "supervisor_stdio_output_settle_kind_inherited_child",
+  "supervisor_stdio_pipe_read_progress_action_none",
+  "supervisor_stdio_pipe_read_progress_action_snapshot",
+  "supervisor_stdio_output_settle_max_passes",
+  "supervisor_stdio_output_settle_stable_passes",
+  "supervisor_stdio_pipe_read_progress_action",
+  "supervisor_enqueue_blocked_wait_timer",
+  "supervisor_enqueue_blocked_retry_timer",
+  "supervisor_blocked_wait_timer_required",
+  "supervisor_vfork_execve_handoff_failure_wait_status",
+  "supervisor_vfork_execve_rollback",
+  "supervisor_fd_control_record",
+  "supervisor_thread_take_completed_sync_effects",
+  "supervisor_fs_control_record",
+  "supervisor_fs_pipe_refresh_action_none",
+  "supervisor_fs_pipe_refresh_action_request_sync",
+  "supervisor_fs_pipe_refresh_flag_kernel_worker_available",
+  "supervisor_fs_pipe_refresh_before_resume_action",
+  "supervisor_fs_pending_backing_fill_ino",
+  "supervisor_fs_pending_backing_fill_offset",
+  "supervisor_fs_pending_backing_fill_length",
+  "supervisor_fs_pending_backing_fill_expected_size",
+  "supervisor_fs_pending_backing_fill_opcode",
+  "supervisor_fs_clear_pending_backing_fill",
+  "supervisor_fs_backing_retry_limit",
+  "supervisor_fs_backing_fill_span_decision",
+  "supervisor_fs_pending_mmap_guest_write_ptr",
+  "supervisor_fs_pending_mmap_guest_write_len",
+  "supervisor_fs_pending_mmap_guest_write_snapshot_len",
+  "supervisor_fs_dirty_page_decision",
+  "supervisor_fs_dirty_page_decision_next_size",
+  "supervisor_fs_dirty_page_decision_file_object_id",
+  "supervisor_fs_dirty_page_decision_generation",
+  "supervisor_fs_dirty_page_decision_flags",
+  "supervisor_fs_dirty_prepare_decision",
+  "supervisor_fs_dirty_prepare_publish_mode",
+  "supervisor_fs_page_table_source_decision",
+  "supervisor_fs_backing_fill_probe_direct",
+  "supervisor_fs_backing_fill_mode_decision",
+  "supervisor_fs_backing_source_range_decision",
+  "supervisor_fs_backing_source_range_source_byte_length",
+  "supervisor_fs_backing_source_range_source_offset",
+  "supervisor_fs_backing_source_range_read_length",
+  "supervisor_fs_clean_backing_range_decision",
+  "supervisor_fs_clean_backing_range_read_offset",
+  "supervisor_fs_clean_backing_range_read_length",
+  "supervisor_fs_clean_backing_range_output_length",
+  "supervisor_fs_response_disposition",
+  "supervisor_fs_local_metadata_action",
+  "supervisor_fs_resident_page_slot_decision",
+  "supervisor_fs_resident_page_evict_status",
+  "supervisor_signal_control_record",
+  "supervisor_debug_snapshot",
+  "supervisor_thread_state_snapshot",
+  "supervisor_futex_wait_completion_woken",
+  "supervisor_futex_wait_completion_not_equal",
+  "supervisor_futex_wait_completion_invalid_address",
+  "supervisor_futex_wait_completion_signal_check",
+  "supervisor_complete_futex_wait",
+  "supervisor_signal_pending_for_blocked_wait",
+  "supervisor_signal_boundary_check",
+] as const;
+
+export function requiredSupervisorRuntimeExportNames(): readonly string[] {
+  return REQUIRED_SUPERVISOR_RUNTIME_EXPORTS;
+}
+
+export function assertSupervisorRuntimeAbi(exports: KernelExports): void {
+  const missing = REQUIRED_SUPERVISOR_RUNTIME_EXPORTS.filter((name) =>
+    typeof (exports as unknown as Record<string, unknown>)[name] !== "function");
+  if (missing.length > 0) {
+    throw new Error(`kernel supervisor ABI missing required export(s): ${missing.join(", ")}`);
+  }
+}
+
 /** Cached STATUS constants read from WASM exports. */
 export interface StatusCodes {
   OK: number;
@@ -1094,6 +2505,8 @@ export interface ProcessSpawnHandoff {
   addressProfile: number;
   guestMemoryPolicyLimit: bigint;
   processMaxMemoryPages: number;
+  supervisorHostOp?: boolean;
+  supervisorHostOpId?: bigint;
 }
 
 export function guestAddressProfileForProcessCreation(exports: KernelExports): number {
@@ -1230,6 +2643,173 @@ export function readSpawnKindCodes(exports: KernelExports): SpawnKindCodes {
   };
 }
 
+function requireSupervisorProcessOfdForFd(exports: KernelExports): (vmPtr: number, fd: number) => number {
+  const read = exports.supervisor_process_ofd_for_fd;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_ofd_for_fd");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorProcessFdFlagsForFd(exports: KernelExports): (vmPtr: number, fd: number) => number {
+  const read = exports.supervisor_process_fd_flags_for_fd;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_fd_flags_for_fd");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdFdType(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_fd_type;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_fd_type");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdHostFd(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_host_fd;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_host_fd");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdStatusFlags(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_status_flags;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_status_flags");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdIno(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_ino;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_ino");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdRefcount(exports: KernelExports): (ofdId: number) => number {
+  const read = exports.supervisor_ofd_refcount;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_refcount");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorOfdReconcileRefcount(
+  exports: KernelExports,
+): (ofdId: number, expectedRefcount: number) => number {
+  const reconcile = exports.supervisor_ofd_reconcile_refcount;
+  if (!reconcile) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_reconcile_refcount");
+  }
+  return reconcile.bind(exports);
+}
+
+function requireSupervisorOfdOffset(exports: KernelExports): (ofdId: number) => bigint | number {
+  const read = exports.supervisor_ofd_offset;
+  if (!read) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_offset");
+  }
+  return read.bind(exports);
+}
+
+function requireSupervisorPipeReconcileControl(
+  exports: KernelExports,
+): (pipeSlot: number, readOpen: number, writeOpen: number) => number {
+  const reconcile = exports.supervisor_pipe_reconcile_control;
+  if (!reconcile) {
+    throw new Error("kernel supervisor ABI missing supervisor_pipe_reconcile_control");
+  }
+  return reconcile.bind(exports);
+}
+
+function validOfdId(exports: KernelExports, ofdId: number): boolean {
+  return ofdId > 0 && ofdId < exports.abi_max_fds();
+}
+
+export function supervisorOfdFdType(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdFdType(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdHostFd(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdHostFd(exports)(ofdId) : -1;
+}
+
+export function supervisorOfdStatusFlags(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdStatusFlags(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdIno(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdIno(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdRefcount(exports: KernelExports, ofdId: number): number {
+  return validOfdId(exports, ofdId) ? requireSupervisorOfdRefcount(exports)(ofdId) : 0;
+}
+
+export function supervisorOfdReconcileRefcount(
+  exports: KernelExports,
+  ofdId: number,
+  expectedRefcount: number,
+): number {
+  return validOfdId(exports, ofdId)
+    ? requireSupervisorOfdReconcileRefcount(exports)(ofdId, Math.trunc(expectedRefcount))
+    : 0;
+}
+
+export function supervisorOfdOffset(exports: KernelExports, ofdId: number): bigint {
+  if (!validOfdId(exports, ofdId)) {
+    return 0n;
+  }
+  const offset = requireSupervisorOfdOffset(exports)(ofdId);
+  return typeof offset === "bigint" ? offset : BigInt(offset);
+}
+
+export function supervisorProcessOfdForFd(
+  exports: KernelExports,
+  vmPtr: number,
+  fd: number,
+): number {
+  const maxFds = exports.abi_max_fds();
+  if (vmPtr === 0 || fd < 0 || fd >= maxFds) {
+    return 0;
+  }
+  const ofdId = requireSupervisorProcessOfdForFd(exports)(vmPtr, fd);
+  return ofdId > 0 && ofdId < maxFds ? ofdId : 0;
+}
+
+export function supervisorProcessFdFlagsForFd(
+  exports: KernelExports,
+  vmPtr: number,
+  fd: number,
+): number {
+  if (vmPtr === 0 || fd < 0 || fd >= exports.abi_max_fds()) {
+    return 0;
+  }
+  return requireSupervisorProcessFdFlagsForFd(exports)(vmPtr, fd);
+}
+
+export function supervisorPipeReconcileControl(
+  exports: KernelExports,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): number {
+  const slot = Math.trunc(pipeSlot);
+  if (slot <= 0 || slot >= exports.abi_max_pipes()) {
+    return 0;
+  }
+  return requireSupervisorPipeReconcileControl(exports)(
+    slot,
+    Math.trunc(readOpen),
+    Math.trunc(writeOpen),
+  );
+}
+
 export function readKernelRuntimeState(exports: KernelExports): KernelRuntimeState {
   const memfsExports = exports as Partial<Pick<
     KernelExports,
@@ -1329,10 +2909,106 @@ export function attachKernelRuntimeState(
   );
 }
 
+function supervisorProcessHostOpKindSpawnProcessWorker(exports: KernelExports): number {
+  const exportFn = exports.supervisor_process_host_op_kind_spawn_process_worker;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_host_op_kind_spawn_process_worker");
+  }
+  return exportFn.call(exports);
+}
+
+function supervisorProcessHostOpRecordMagic(exports: KernelExports): number {
+  const exportFn = exports.supervisor_process_host_op_record_magic;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_host_op_record_magic");
+  }
+  return exportFn.call(exports);
+}
+
+function supervisorProcessHostOpRecordBytes(exports: KernelExports): number {
+  const exportFn = exports.supervisor_process_host_op_record_bytes;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_host_op_record_bytes");
+  }
+  return exportFn.call(exports);
+}
+
+function supervisorAbiVersion(exports: KernelExports): number {
+  const exportFn = exports.supervisor_abi_version;
+  if (exportFn === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_abi_version");
+  }
+  return exportFn.call(exports);
+}
+
+function readSupervisorProcessSpawnHandoff(
+  exports: KernelExports,
+  vmPtr: number,
+): ProcessSpawnHandoff | null | undefined {
+  const readHostOp = exports.supervisor_process_host_op;
+  if (readHostOp === undefined) {
+    return undefined;
+  }
+  const recordBytes = supervisorProcessHostOpRecordBytes(exports);
+  const scratch = kernelScratchBase(exports) + SUPERVISOR_PROCESS_HOST_OP_SCRATCH_OFFSET;
+  ensureMemoryCapacity(exports.memory, scratch + recordBytes);
+  const result = readHostOp.call(exports, vmPtr, scratch, recordBytes);
+  if (result === 0) {
+    return null;
+  }
+  if (result < 0 || result > recordBytes) {
+    throw new Error(`supervisor process HostOp poll failed: ${result}`);
+  }
+  if (result < recordBytes) {
+    throw new Error(`supervisor process HostOp record too short: ${result}`);
+  }
+  const view = new DataView(exports.memory.buffer, scratch, result);
+  const magic = view.getUint32(0, true);
+  const version = view.getUint32(4, true);
+  const bytes = view.getUint32(8, true);
+  const kind = view.getUint32(12, true);
+  if (magic !== supervisorProcessHostOpRecordMagic(exports)) {
+    throw new Error(`supervisor process HostOp bad magic: 0x${magic.toString(16)}`);
+  }
+  const expectedVersion = supervisorAbiVersion(exports);
+  if (version !== expectedVersion) {
+    throw new Error(`supervisor process HostOp bad version: ${version}`);
+  }
+  if (bytes < recordBytes || bytes > view.byteLength) {
+    throw new Error(`supervisor process HostOp bad size: ${bytes}`);
+  }
+  if (kind !== supervisorProcessHostOpKindSpawnProcessWorker(exports)) {
+    throw new Error(`supervisor process HostOp bad kind: ${kind}`);
+  }
+  const parentVmPtr = view.getUint32(24, true);
+  if (parentVmPtr !== vmPtr) {
+    throw new Error(
+      `supervisor process HostOp parent mismatch: `
+        + `0x${parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
+    );
+  }
+  return {
+    kind: view.getUint32(28, true),
+    childPid: view.getInt32(32, true),
+    path: view.getBigUint64(64, true),
+    argv: view.getBigUint64(72, true),
+    envp: view.getBigUint64(80, true),
+    addressProfile: view.getUint32(44, true),
+    guestMemoryPolicyLimit: view.getBigUint64(48, true),
+    processMaxMemoryPages: view.getUint32(56, true),
+    supervisorHostOp: true,
+    supervisorHostOpId: view.getBigUint64(16, true),
+  };
+}
+
 export function readProcessSpawnHandoff(
   exports: KernelExports,
   vmPtr: number,
 ): ProcessSpawnHandoff {
+  const supervisorHandoff = readSupervisorProcessSpawnHandoff(exports, vmPtr);
+  if (supervisorHandoff !== undefined && supervisorHandoff !== null) {
+    return supervisorHandoff;
+  }
   return {
     kind: exports.thread_spawn_kind(vmPtr),
     childPid: exports.thread_spawn_child_pid(vmPtr),
@@ -1344,4 +3020,3 @@ export function readProcessSpawnHandoff(
     processMaxMemoryPages: exports.thread_spawn_process_max_memory_pages?.(vmPtr) ?? 0,
   };
 }
-import { normalizeGuestMemoryPolicyLimitBytes } from "./worker/memory-policy.js";

@@ -1,4 +1,10 @@
 import type { ProcessHandle } from "../types.js";
+import { supervisorProcessOwnerMatches } from "../process-identity.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "./fd-table.js";
+import { supervisorOfdFdType } from "./ofd-metadata.js";
 
 type StandardFdIntegrityCheck = (handle: ProcessHandle, context: string) => void;
 
@@ -14,8 +20,8 @@ function assertThreadBelongsToHandle(
   if (vmPtr === 0) {
     throw new Error(`${context}: missing vmPtr for pid=${handle.pid}`);
   }
-  const currentPid = handle.kernel.process_current_pid(vmPtr);
-  if (currentPid !== handle.pid) {
+  if (!supervisorProcessOwnerMatches(handle.kernel, vmPtr, handle.pid)) {
+    const currentPid = handle.kernel.process_current_pid(vmPtr);
     throw new Error(
       `${context}: thread owner pid drift expected=${handle.pid} actual=${currentPid}`
         + ` vm=0x${vmPtr.toString(16)}`,
@@ -34,14 +40,14 @@ function assertOpenFdOfdsAreValid(
 ): void {
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
     if (ofdId < 0 || ofdId >= maxFds) {
       throw new Error(`${context}: fd=${fd} invalid ofd=${ofdId} max=${maxFds}`);
     }
-    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const type = supervisorOfdFdType(handle, ofdId);
     if (type <= 0 || type > 64) {
       throw new Error(`${context}: fd=${fd} ofd=${ofdId} invalid type=${type}`);
     }
@@ -59,11 +65,11 @@ function assertNoCloexecDescriptors(
   }
   const maxFds = handle.kernel.abi_max_fds();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
-    const fdFlags = handle.kernel.process_fd_flags(vmPtr, fd);
+    const fdFlags = supervisorProcessFdFlagsForFd(handle, vmPtr, fd);
     if ((fdFlags & cloexecFlag) !== 0) {
       throw new Error(`${context}: exec child retained CLOEXEC fd=${fd} ofd=${ofdId}`);
     }

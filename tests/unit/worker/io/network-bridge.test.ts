@@ -1,4 +1,11 @@
 import { expect, test, vi } from "vite-plus/test";
+import {
+  networkClosedFds,
+  networkConnections,
+  networkPendingConnectFds,
+  networkRecvHeadWatermarks,
+  networkRecvTailWatermarks,
+} from "../../../../src/worker/network-socket-state.js";
 import { createWorkerProcessIoHelpers } from "../../../../src/worker/process-io.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -13,12 +20,136 @@ function createDeps() {
     flushStdin: vi.fn(() => false),
     getActiveHandle: vi.fn((handle: ProcessHandle) => handle),
     isActiveHandle: vi.fn(() => true),
-    kickBlockedWorkers: vi.fn(),
+    notifyHostIoProgress: vi.fn(),
     pumpProcess: vi.fn(),
     requestPipeStateSync: vi.fn(async () => {}),
     requestSocketStateSync: vi.fn(async () => {}),
     writeProcessStdin: vi.fn(),
   };
+}
+
+type NetworkBridgeKernelFixture = {
+  abi_einprogress?: () => number;
+  abi_fd_type_socket?: () => number;
+  abi_max_fds?: () => number;
+  abi_max_sockets?: () => number;
+  kernel_net_buf_pool_bytes?: () => number;
+  kernel_socket_table_bytes?: () => number;
+  kernel_ofd_fd_type?: (ofdId: number) => number;
+  process_fd_ofd_id?: (vmPtr: number, fd: number) => number;
+  thread_socket_idx_for_fd?: (vmPtr: number, fd: number) => number;
+  thread_socket_peer_idx?: (socketIdx: number) => number;
+  thread_socket_state?: (socketIdx: number) => number;
+  thread_socket_external_peer?: (socketIdx: number) => number;
+  thread_socket_recv_available?: (socketIdx: number) => number;
+  thread_socket_recv_buf_idx?: (socketIdx: number) => number;
+  thread_socket_read_bytes?: (socketIdx: number) => bigint | number;
+  thread_socket_outbound_available?: (vmPtr: number, fd: number) => number;
+  thread_socket_mark_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  thread_socket_commit_external_connect?: (vmPtr: number, fd: number) => number | undefined;
+  thread_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_force_shutdown?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_commit_external_connect_result?: (
+    vmPtr: number,
+    fd: number,
+    result: bigint,
+  ) => number;
+  supervisor_socket_prepare_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_close_external_peer?: (vmPtr: number, fd: number) => number | undefined;
+  supervisor_socket_bridge_active_fd?: (
+    vmPtr: number,
+    preferredFd: number,
+    expectedOfd: number,
+    pendingConnect: number,
+  ) => number;
+  supervisor_socket_ofd_is_socket?: (ofdId: number) => number;
+  supervisor_process_socket_ofd_for_fd?: (vmPtr: number, fd: number) => number;
+  supervisor_process_socket_drain_fd?: (vmPtr: number, connectedFd: number, index: number) => number;
+};
+
+function withSupervisorSocketDefaults<T extends NetworkBridgeKernelFixture>(kernel: T): T {
+  kernel.abi_max_sockets ??= vi.fn(() => 1);
+  kernel.kernel_net_buf_pool_bytes ??= vi.fn(() => 0);
+  kernel.kernel_socket_table_bytes ??= vi.fn(() => 0);
+  kernel.thread_socket_idx_for_fd ??= vi.fn((vmPtr, fd) => {
+    const ofdId = kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return ofdId > 0 && kernel.kernel_ofd_fd_type?.(ofdId) === kernel.abi_fd_type_socket?.()
+      ? 0
+      : -1;
+  });
+  kernel.thread_socket_peer_idx ??= vi.fn(() => -1);
+  kernel.thread_socket_state ??= vi.fn(() => 3);
+  kernel.thread_socket_external_peer ??= vi.fn(() => 1);
+  kernel.thread_socket_recv_available ??= vi.fn(() => 0);
+  kernel.thread_socket_recv_buf_idx ??= vi.fn(() => 0);
+  kernel.thread_socket_read_bytes ??= vi.fn(() => 0n);
+  kernel.thread_socket_outbound_available ??= vi.fn(() => 0);
+  kernel.supervisor_socket_commit_external_connect_result ??= vi.fn((_vmPtr, _fd, result) => {
+    const signedResult = BigInt.asIntN(64, result);
+    const einprogress = BigInt(kernel.abi_einprogress?.() ?? -115);
+    return signedResult === 0n || signedResult === einprogress ? 1 : 0;
+  });
+  kernel.supervisor_socket_prepare_external_peer ??= vi.fn((vmPtr, fd) => {
+    const markResult = kernel.thread_socket_mark_external_peer?.(vmPtr, fd);
+    if (markResult === 0 || typeof kernel.thread_socket_commit_external_connect !== "function") {
+      return markResult ?? 0;
+    }
+    return kernel.thread_socket_commit_external_connect(vmPtr, fd);
+  });
+  kernel.supervisor_socket_close_external_peer ??= vi.fn((vmPtr, fd) => (
+    kernel.thread_socket_close_external_peer?.(vmPtr, fd) ?? 0
+  ));
+  kernel.supervisor_socket_force_shutdown ??= vi.fn(() => 0);
+  kernel.supervisor_socket_ofd_is_socket ??= vi.fn((ofdId) => (
+    ofdId > 0 && kernel.kernel_ofd_fd_type?.(ofdId) === kernel.abi_fd_type_socket?.() ? 1 : 0
+  ));
+  kernel.supervisor_process_socket_ofd_for_fd ??= vi.fn((vmPtr, fd) => {
+    const ofdId = kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+    return kernel.supervisor_socket_ofd_is_socket?.(ofdId) === 1 ? ofdId : 0;
+  });
+  kernel.supervisor_process_socket_drain_fd ??= vi.fn((vmPtr, connectedFd, index) => {
+    const connectedOfd = kernel.supervisor_process_socket_ofd_for_fd?.(vmPtr, connectedFd) ?? 0;
+    if (connectedOfd <= 0) {
+      return -1;
+    }
+    const candidates = [connectedFd];
+    const maxFds = kernel.abi_max_fds?.() ?? 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (fd !== connectedFd && kernel.supervisor_process_socket_ofd_for_fd?.(vmPtr, fd) === connectedOfd) {
+        candidates.push(fd);
+      }
+    }
+    return candidates[index] ?? -1;
+  });
+  kernel.supervisor_socket_bridge_active_fd ??= vi.fn((vmPtr, preferredFd, expectedOfd, pendingConnect) => {
+    if (pendingConnect !== 0 || expectedOfd <= 0) {
+      return -1;
+    }
+    const currentOfd = kernel.process_fd_ofd_id?.(vmPtr, preferredFd) ?? 0;
+    if (
+      currentOfd > 0
+      && kernel.kernel_ofd_fd_type?.(currentOfd) === kernel.abi_fd_type_socket?.()
+    ) {
+      return preferredFd;
+    }
+    const maxFds = kernel.abi_max_fds?.() ?? 0;
+    for (let fd = 0; fd < maxFds; fd += 1) {
+      if (fd !== preferredFd && kernel.process_fd_ofd_id?.(vmPtr, fd) === expectedOfd) {
+        return fd;
+      }
+    }
+    return -1;
+  });
+  return kernel;
+}
+
+function seedNetworkConnections(
+  handle: ProcessHandle,
+  entries: Iterable<readonly [number, unknown]>,
+): void {
+  for (const [fd, connection] of entries) {
+    networkConnections(handle).set(fd, connection as never);
+  }
 }
 
 test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime bridge", async () => {
@@ -31,17 +162,11 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
     pid: 42,
     memory,
     networkBridge: bridge,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([
           2, 0,
           0x01, 0xbb,
@@ -51,6 +176,7 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const result = await helpers.resolveNetworkConnect(handle, 0x2000);
@@ -63,6 +189,52 @@ test("resolveNetworkConnect reports IPv4 connect endpoint to a generic runtime b
       family: "inet",
       address: "93.184.216.34",
       port: 443,
+    },
+  });
+});
+
+test("resolveNetworkConnect reads IPv4 connect endpoint from supervisor socket control", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const bridge = {
+    connect: vi.fn(async () => undefined),
+  };
+  const handle = {
+    pid: 42,
+    memory,
+    networkBridge: bridge,
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_econnrefused: () => 111,
+      supervisor_socket_connect_fd: () => 9,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([
+          2, 0,
+          0x23, 0x82,
+          203, 0, 113, 10,
+        ], dstPtr);
+        return 8;
+      },
+      thread_connect_fd: () => 7,
+      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0, 80, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  const result = await helpers.resolveNetworkConnect(handle, 0x2000);
+
+  expect(result).toBe(0n);
+  expect(bridge.connect).toHaveBeenCalledWith({
+    pid: 42,
+    fd: 9,
+    endpoint: {
+      family: "inet",
+      address: "203.0.113.10",
+      port: 9090,
     },
   });
 });
@@ -81,12 +253,6 @@ test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers
     guestBase,
     memory,
     networkBridge: bridge,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
@@ -101,13 +267,14 @@ test("resolveNetworkConnect does not truncate Memory64 blocked sockaddr pointers
         }
         return 8n;
       },
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x01, 0xbb, 93, 184, 216, 34], dstPtr);
         return 8;
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const result = await helpers.resolveNetworkConnect(handle, 0x2000);
@@ -131,12 +298,6 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
   const handle = {
     pid: 42,
     memory,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set<number>(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     networkBridge: {
       connect: vi.fn(() => new Promise((resolve) => {
         finishConnect = resolve;
@@ -145,23 +306,24 @@ test("resolveNetworkConnect tracks pending fd while bridge connect is in flight"
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0, 80, 127, 0, 0, 1], dstPtr);
         return 8;
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   const pending = helpers.resolveNetworkConnect(handle, 0x2000);
   await vi.waitFor(() => {
-    expect(handle.networkPendingConnectFds.has(7)).toBe(true);
+    expect(networkPendingConnectFds(handle).has(7)).toBe(true);
   });
 
   finishConnect?.(undefined);
   await expect(pending).resolves.toBe(0n);
-  expect(handle.networkPendingConnectFds.has(7)).toBe(false);
+  expect(networkPendingConnectFds(handle).has(7)).toBe(false);
 });
 
 test("commitNetworkConnect adopts a successful bridge connection after the local status advances", async () => {
@@ -185,12 +347,6 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set([3]),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map([[3, 4096]]),
-    networkRecvTailWatermarks: new Map([[3, 8192]]),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -225,8 +381,8 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       abi_econnrefused: () => 111,
       abi_einprogress: () => -115,
       abi_status_ok: () => 0,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -242,19 +398,154 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
       thread_socket_mark_external_peer: vi.fn(() => 0),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  networkClosedFds(handle).add(3);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 8192);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000, 0n);
 
-  expect(handle.kernel.thread_socket_mark_external_peer).toHaveBeenCalledWith(0x2000, 3);
-  expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkPendingConnectFds.has(3)).toBe(false);
-  expect(handle.networkClosedFds.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(handle.kernel.supervisor_socket_commit_external_connect_result).toHaveBeenCalledWith(
+    0x2000,
+    3,
+    0n,
+  );
+  expect(networkConnections(handle).get(3)).toBe(connection);
+  expect(networkPendingConnectFds(handle).has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
   expect(netBufHeader.getUint32(0, true)).toBe(4096);
   expect(netBufHeader.getUint32(4, true)).toBe(4096);
+  expect(connection.close).not.toHaveBeenCalled();
+});
+
+test("commitNetworkConnect drops bridge connection when supervisor rejects the connect result", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    kernelState: {},
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 0,
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      supervisor_socket_commit_external_connect_result: vi.fn(() => 0),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000, 0n);
+
+  expect(handle.kernel.supervisor_socket_commit_external_connect_result).toHaveBeenCalledWith(
+    0x2000,
+    3,
+    0n,
+  );
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(networkPendingConnectFds(handle).has(3)).toBe(false);
+  expect(connection.close).toHaveBeenCalledTimes(1);
+});
+
+test("commitNetworkConnect adopts bridge connection when supervisor accepts the connect result", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    kernelState: {
+      ofdTablePtr: 0,
+      netBufBase: 0,
+    },
+    kernel: {
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0x100,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_ofd_table_bytes: () => 64 * 32,
+      kernel_memfs_ptr: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 64,
+      abi_fd_type_socket: () => 8,
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 30,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 19 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 19 ? 8 : 0,
+      thread_socket_idx_for_fd: vi.fn(() => -1),
+      supervisor_socket_commit_external_connect_result: vi.fn(() => 1),
+      thread_socket_mark_external_peer: vi.fn(() => -107),
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000, 0n);
+
+  expect(handle.kernel.supervisor_socket_commit_external_connect_result).toHaveBeenCalledWith(
+    0x2000,
+    3,
+    0n,
+  );
+  expect(networkConnections(handle).get(3)).toBe(connection);
+  expect(networkPendingConnectFds(handle).has(3)).toBe(false);
   expect(connection.close).not.toHaveBeenCalled();
 });
 
@@ -264,25 +555,20 @@ test("resolveNetworkConnect normalizes bridge errno to negative Linux result", a
   const handle = {
     pid: 42,
     memory,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     networkBridge: {
       connect: vi.fn(async () => ({ errno: 13 })),
     },
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_econnrefused: () => 111,
-      thread_connect_fd: () => 7,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 7,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0, 80, 127, 0, 0, 1], dstPtr);
         return 8;
       },
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(-13n);
@@ -293,29 +579,22 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
   const view = new Uint8Array(memory.buffer);
   const written: string[] = [];
   let inboundRead = false;
+  const connection = {
+    write: vi.fn((data: Uint8Array) => {
+      written.push(new TextDecoder().decode(data));
+    }),
+    read: vi.fn(() => {
+      if (inboundRead) {
+        return undefined;
+      }
+      inboundRead = true;
+      return new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok");
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn((data: Uint8Array) => {
-          written.push(new TextDecoder().decode(data));
-        }),
-        read: vi.fn(() => {
-          if (inboundRead) {
-            return undefined;
-          }
-          inboundRead = true;
-          return new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok");
-        }),
-      }],
-    ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -324,7 +603,8 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
       abi_enotsock: () => -88,
       process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 7 ? 7 : 0,
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 8 : 0,
-      thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_prepare_external_peer: vi.fn(() => 0),
+      thread_socket_mark_external_peer: vi.fn(() => -107),
       thread_socket_drain_outbound: vi.fn((_vmPtr: number, _fd: number, dstPtr: number) => {
         if (written.length > 0) {
           return 0;
@@ -336,11 +616,14 @@ test("pumpNetworkConnections drains guest outbound bytes and injects inbound byt
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
 
   expect(written).toEqual(["GET / HTTP/1.1\r\n\r\n"]);
+  expect(handle.kernel.supervisor_socket_prepare_external_peer).toHaveBeenCalledWith(0x2000, 7);
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x2000, 7, 0x34100, 21);
 });
 
@@ -350,28 +633,21 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
   payload.fill(0x61);
   let inboundRead = false;
   const readMaxBytes: number[] = [];
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn((maxBytes: number) => {
+      readMaxBytes.push(maxBytes);
+      if (inboundRead) {
+        return undefined;
+      }
+      inboundRead = true;
+      return payload;
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn((maxBytes: number) => {
-          readMaxBytes.push(maxBytes);
-          if (inboundRead) {
-            return undefined;
-          }
-          inboundRead = true;
-          return payload;
-        }),
-      }],
-    ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkClosedSocketSlots: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -385,6 +661,8 @@ test("pumpNetworkConnections requests and injects large generic inbound chunks",
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle)).resolves.toBe(true);
@@ -404,30 +682,23 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
   let readOffset = 0;
   let injectedOffset = 0;
   const maxSocketWrite = 48 * 1024;
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn((maxBytes: number) => {
+      readMaxBytes.push(maxBytes);
+      if (readOffset >= payload.length) {
+        return undefined;
+      }
+      const end = Math.min(payload.length, readOffset + maxBytes);
+      const chunk = payload.subarray(readOffset, end);
+      readOffset = end;
+      return chunk;
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn((maxBytes: number) => {
-          readMaxBytes.push(maxBytes);
-          if (readOffset >= payload.length) {
-            return undefined;
-          }
-          const end = Math.min(payload.length, readOffset + maxBytes);
-          const chunk = payload.subarray(readOffset, end);
-          readOffset = end;
-          return chunk;
-        }),
-      }],
-    ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkClosedSocketSlots: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -446,6 +717,8 @@ test("pumpNetworkConnections preserves pending large inbound bytes across partia
       }),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   while (injectedOffset < payload.length) {
@@ -462,29 +735,22 @@ test("async inbound read resumes pump with the source thread vm", async () => {
   let resolveRead: ((data: Uint8Array) => void) | null = null;
   let readStarted = false;
   const deps = createDeps();
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn(() => {
+      if (readStarted) {
+        return undefined;
+      }
+      readStarted = true;
+      return new Promise<Uint8Array>((resolve) => {
+        resolveRead = resolve;
+      });
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn(() => {
-          if (readStarted) {
-            return undefined;
-          }
-          readStarted = true;
-          return new Promise<Uint8Array>((resolve) => {
-            resolveRead = resolve;
-          });
-        }),
-      }],
-    ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -498,6 +764,8 @@ test("async inbound read resumes pump with the source thread vm", async () => {
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(false);
@@ -507,8 +775,14 @@ test("async inbound read resumes pump with the source thread vm", async () => {
     expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x3000, 7, 0x34100, 21);
   });
   expect(deps.requestSocketStateSync).toHaveBeenCalledWith(handle, true);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyHostIoProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(deps.requestSocketStateSync.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.notifyHostIoProgress.mock.invocationCallOrder[0],
+  );
+  expect(deps.notifyHostIoProgress.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.pumpProcess.mock.invocationCallOrder[0],
+  );
 });
 
 test("async inbound read adopts the current process handle before injecting", async () => {
@@ -536,21 +810,10 @@ test("async inbound read adopts the current process handle before injecting", as
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel,
   } as unknown as ProcessHandle;
   const activeHandle = {
     ...oldHandle,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set([7]),
-    networkRecvHeadWatermarks: new Map([[7, 4096]]),
-    networkRecvTailWatermarks: new Map([[7, 8192]]),
     kernel: {
       ...kernel,
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
@@ -559,6 +822,12 @@ test("async inbound read adopts the current process handle before injecting", as
   const deps = createDeps();
   deps.isActiveHandle = vi.fn((handle: ProcessHandle) => handle === activeHandle);
   deps.getActiveHandle = vi.fn(() => activeHandle);
+  withSupervisorSocketDefaults(kernel);
+  withSupervisorSocketDefaults(activeHandle.kernel);
+  seedNetworkConnections(oldHandle, [[7, connection]]);
+  networkClosedFds(activeHandle).add(7);
+  networkRecvHeadWatermarks(activeHandle).set(7, 4096);
+  networkRecvTailWatermarks(activeHandle).set(7, 8192);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(oldHandle, 0x3000)).resolves.toBe(false);
@@ -568,13 +837,19 @@ test("async inbound read adopts the current process handle before injecting", as
     expect(activeHandle.kernel.thread_socket_inject_inbound).toHaveBeenCalledWith(0x3000, 7, 0x34100, 21);
   });
 
-  expect(activeHandle.networkConnections.get(7)).toBe(connection);
-  expect(activeHandle.networkClosedFds.has(7)).toBe(false);
-  expect(activeHandle.networkRecvHeadWatermarks.has(7)).toBe(false);
-  expect(activeHandle.networkRecvTailWatermarks.has(7)).toBe(false);
+  expect(networkConnections(activeHandle).get(7)).toBe(connection);
+  expect(networkClosedFds(activeHandle).has(7)).toBe(false);
+  expect(networkRecvHeadWatermarks(activeHandle).has(7)).toBe(false);
+  expect(networkRecvTailWatermarks(activeHandle).has(7)).toBe(false);
   expect(deps.requestSocketStateSync).toHaveBeenCalledWith(activeHandle, true);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(activeHandle);
+  expect(deps.notifyHostIoProgress).toHaveBeenCalledWith(activeHandle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(activeHandle);
+  expect(deps.requestSocketStateSync.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.notifyHostIoProgress.mock.invocationCallOrder[0],
+  );
+  expect(deps.notifyHostIoProgress.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.pumpProcess.mock.invocationCallOrder[0],
+  );
 });
 
 test("pending async empty read does not drop the next inbound response", async () => {
@@ -584,33 +859,26 @@ test("pending async empty read does not drop the next inbound response", async (
   let readCalls = 0;
   let responseQueued = false;
   const deps = createDeps();
+  const connection = {
+    write: vi.fn(),
+    read: vi.fn(() => {
+      readCalls += 1;
+      if (readCalls === 1) {
+        return new Promise<undefined>((resolve) => {
+          resolveEmptyRead = resolve;
+        });
+      }
+      if (responseQueued) {
+        return undefined;
+      }
+      responseQueued = true;
+      return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(),
-        read: vi.fn(() => {
-          readCalls += 1;
-          if (readCalls === 1) {
-            return new Promise<undefined>((resolve) => {
-              resolveEmptyRead = resolve;
-            });
-          }
-          if (responseQueued) {
-            return undefined;
-          }
-          responseQueued = true;
-          return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
-        }),
-      }],
-    ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -628,6 +896,8 @@ test("pending async empty read does not drop the next inbound response", async (
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -648,29 +918,22 @@ test("post-write pump starts a response read after an async empty pre-read clear
   let readCalls = 0;
   let wroteRequest = false;
   const deps = createDeps();
+  const connection = {
+    write: vi.fn(() => {
+      wroteRequest = true;
+    }),
+    read: vi.fn(() => {
+      readCalls += 1;
+      if (!wroteRequest) {
+        return Promise.resolve(undefined);
+      }
+      return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
+    }),
+  };
   const handle = {
     pid: 42,
     vmPtr: 0x2000,
     memory,
-    networkConnections: new Map([
-      [7, {
-        write: vi.fn(() => {
-          wroteRequest = true;
-        }),
-        read: vi.fn(() => {
-          readCalls += 1;
-          if (!wroteRequest) {
-            return Promise.resolve(undefined);
-          }
-          return Promise.resolve(new TextEncoder().encode("HTTP/1.1 200 OK\r\n\r\nok"));
-        }),
-      }],
-    ]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -691,6 +954,8 @@ test("post-write pump starts a response read after an async empty pre-read clear
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(deps);
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -720,12 +985,6 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -748,14 +1007,16 @@ test("buffered EOF waits for guest recv drain before force-closing the socket", 
       }),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
 
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(7)).toBe(false);
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkClosedFds(handle).has(7)).toBe(false);
+  expect(networkConnections(handle).get(7)).toBe(connection);
   expect(connection.close).not.toHaveBeenCalled();
 });
 
@@ -777,12 +1038,6 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -797,11 +1052,14 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
       thread_socket_recv_available: vi.fn(() => 0),
       thread_socket_peer_idx: vi.fn(() => 1),
       thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_close_external_peer: vi.fn(),
       thread_socket_close_external_peer: vi.fn(),
       thread_socket_drain_outbound: vi.fn(() => 0),
       thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, _srcPtr: number, srcLen: number) => srcLen),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
@@ -809,7 +1067,7 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 });
 
 test("bridge EOF marks peer shutdown but preserves the guest socket until fd close", async () => {
@@ -823,12 +1081,6 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map([[7, 0]]),
-    networkRecvTailWatermarks: new Map([[7, 4096]]),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -843,20 +1095,26 @@ test("bridge EOF marks peer shutdown but preserves the guest socket until fd clo
       thread_socket_recv_available: vi.fn(() => 0),
       thread_socket_peer_idx: vi.fn(() => 1),
       thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_close_external_peer: vi.fn(),
       thread_socket_close_external_peer: vi.fn(),
       thread_socket_drain_outbound: vi.fn(() => 0),
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
+  networkRecvHeadWatermarks(handle).set(7, 0);
+  networkRecvTailWatermarks(handle).set(7, 4096);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
 
-  expect(handle.kernel.thread_socket_close_external_peer).toHaveBeenCalledWith(0x3000, 7);
+  expect(handle.kernel.supervisor_socket_close_external_peer).toHaveBeenCalledWith(0x3000, 7);
+  expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).toHaveBeenCalledTimes(1);
-  expect(handle.networkConnections.get(7)).toBe(connection);
-  expect(handle.networkRecvHeadWatermarks.has(7)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(7)).toBe(false);
+  expect(networkConnections(handle).get(7)).toBe(connection);
+  expect(networkRecvHeadWatermarks(handle).has(7)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(7)).toBe(false);
 });
 
 test("partial inbound is drained before bridge EOF closes the socket", async () => {
@@ -877,12 +1135,6 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
     pid: 42,
     vmPtr: 0x3000,
     memory,
-    networkConnections: new Map([[7, connection]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
       kernel_heap_ptr: () => 0x100,
       abi_max_fds: () => 16,
@@ -906,26 +1158,28 @@ test("partial inbound is drained before bridge EOF closes the socket", async () 
       }),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
   expect(handle.kernel.thread_socket_inject_inbound).toHaveBeenLastCalledWith(0x3000, 7, 0x34100, response.length);
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 
   recvAvailable = 0;
   injectLimit = response.length;
   await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
   expect(connection.read).toHaveBeenCalledTimes(2);
   expect(connection.close).not.toHaveBeenCalled();
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 
   recvAvailable = 0;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     await helpers.pumpNetworkConnections(handle, 0x3000);
   }
   expect(connection.close).toHaveBeenCalledTimes(1);
-  expect(handle.networkConnections.get(7)).toBe(connection);
+  expect(networkConnections(handle).get(7)).toBe(connection);
 });
 
 test("stale network OFD rekeys when fork-shared sync renumbers the same socket fd", async () => {
@@ -945,12 +1199,6 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -985,8 +1233,8 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1005,23 +1253,217 @@ test("stale network OFD rekeys when fork-shared sync renumbers the same socket f
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkConnections(handle).get(3)).toBe(connection);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 
   currentOfd = 20;
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(connection.close).not.toHaveBeenCalled();
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
+  expect(networkConnections(handle).get(3)).toBe(connection);
+});
+
+test("stale network OFD rekeys to supervisor-selected active fd alias", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  let fd3Ofd = 19;
+  let fd5Ofd = 0;
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernelState: {},
+    kernel: {
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0x100,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 8,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 0,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => {
+        if (fd === 3) {
+          return fd3Ofd;
+        }
+        if (fd === 5) {
+          return fd5Ofd;
+        }
+        return 0;
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 19 || ofdId === 20 ? 8 : 0,
+      supervisor_socket_bridge_active_fd: vi.fn((_vmPtr: number, _preferredFd: number, expectedOfd: number) => (
+        expectedOfd === 19 ? 5 : -2
+      )),
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      thread_socket_state: vi.fn(() => 3),
+      thread_socket_recv_buf_idx: vi.fn(() => 0),
+      thread_socket_recv_available: vi.fn(() => 0),
+      thread_socket_peer_idx: vi.fn(() => -1),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      thread_socket_force_shutdown: vi.fn(),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn(),
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000);
+  expect(networkConnections(handle).get(3)).toBe(connection);
+
+  fd3Ofd = 20;
+  fd5Ofd = 19;
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
+  await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
+
+  expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
+  expect(connection.close).not.toHaveBeenCalled();
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(networkConnections(handle).get(5)).toBe(connection);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).get(5)).toBe(4096);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).get(5)).toBe(188416);
+});
+
+test("stale network OFD closes when supervisor reports no active fd", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  let currentOfd = 19;
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: {
+      connect: vi.fn(async () => ({ connection })),
+    },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernelState: {},
+    kernel: {
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0x100,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      abi_econnrefused: () => 111,
+      abi_einprogress: () => -115,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 8,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 0,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? currentOfd : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 19 || ofdId === 20 ? 8 : 0,
+      supervisor_socket_bridge_active_fd: vi.fn(() => -2),
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      thread_socket_state: vi.fn(() => 3),
+      thread_socket_recv_buf_idx: vi.fn(() => 0),
+      thread_socket_recv_available: vi.fn(() => 0),
+      thread_socket_peer_idx: vi.fn(() => -1),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      thread_socket_force_shutdown: vi.fn(),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn(),
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  await helpers.commitNetworkConnect(handle, 0x2000);
+  expect(networkConnections(handle).get(3)).toBe(connection);
+
+  currentOfd = 20;
+  await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
+
+  expect(handle.kernel.supervisor_socket_bridge_active_fd).toHaveBeenCalledWith(0x2000, 3, 19, 0);
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(connection.close).toHaveBeenCalledTimes(1);
 });
 
 test("stale network OFD cleanup does not force-close a fd with a pending reconnect", async () => {
@@ -1049,12 +1491,6 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
         connection: connectCount++ === 0 ? oldConnection : nextConnection,
       })),
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1089,8 +1525,8 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1109,24 +1545,25 @@ test("stale network OFD cleanup does not force-close a fd with a pending reconne
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(oldConnection);
+  expect(networkConnections(handle).get(3)).toBe(oldConnection);
 
   currentOfd = 20;
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(oldConnection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
-  expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 });
 
 test("stale network OFD cleanup closes bridge immediately when the fd disappeared", async () => {
@@ -1146,12 +1583,6 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
     networkBridge: {
       connect: vi.fn(async () => ({ connection })),
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1186,8 +1617,8 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1206,23 +1637,24 @@ test("stale network OFD cleanup closes bridge immediately when the fd disappeare
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
-  handle.networkRecvHeadWatermarks.set(3, 4096);
-  handle.networkRecvTailWatermarks.set(3, 188416);
+  networkRecvHeadWatermarks(handle).set(3, 4096);
+  networkRecvTailWatermarks(handle).set(3, 188416);
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(connection);
+  expect(networkConnections(handle).get(3)).toBe(connection);
 
   currentOfd = 0;
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(connection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
-  expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
 });
 
 test("not-connected drain during pending reconnect closes only the stale bridge", async () => {
@@ -1249,12 +1681,6 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
         connection: connectCount++ === 0 ? oldConnection : nextConnection,
       })),
     },
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(176),
@@ -1289,8 +1715,8 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
       abi_fd_type_socket: () => 8,
       abi_enotconn: () => -107,
       abi_enotsock: () => -88,
-      thread_connect_fd: () => 3,
-      thread_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
         view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
         return 8;
       },
@@ -1309,17 +1735,18 @@ test("not-connected drain during pending reconnect closes only the stale bridge"
       thread_socket_inject_inbound: vi.fn(),
     },
   } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
   const helpers = createWorkerProcessIoHelpers(createDeps());
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await helpers.commitNetworkConnect(handle, 0x2000);
-  expect(handle.networkConnections.get(3)).toBe(oldConnection);
+  expect(networkConnections(handle).get(3)).toBe(oldConnection);
 
   await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
   await expect(helpers.pumpNetworkConnections(handle, 0x2000)).resolves.toBe(true);
 
   expect(oldConnection.close).toHaveBeenCalledTimes(1);
   expect(handle.kernel.thread_socket_force_shutdown).not.toHaveBeenCalled();
-  expect(handle.networkClosedFds.has(3)).toBe(false);
-  expect(handle.networkConnections.has(3)).toBe(false);
+  expect(networkClosedFds(handle).has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
 });

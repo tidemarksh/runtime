@@ -1,14 +1,32 @@
-import { readKernelRuntimeState } from "../abi.js";
-import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
+import { hostExecutionState } from "./host-execution-state.js";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdioOwner,
+  processStdoutPipe,
+} from "./process-stdio-state.js";
 import {
   kernelShareOtherMembers,
+  kernelShareSharedOfdIdList,
   reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
 import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "./ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+} from "./ownership/ofd-metadata.js";
 import { kernelWorkerOwnsEpollState } from "./ownership/epoll-control.js";
-import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
-import { kernelWorkerOwnsSocketState } from "./ownership/socket-control.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
+import { beginProcessExit } from "./process-lifecycle-state.js";
+import { processDebugCommand } from "./process-debug-state.js";
+import { supervisorProcessStatusIsLifecycleHandoff } from "./supervisor-status.js";
 import type { ProcessHandle } from "./types.js";
 import type { SyncCause } from "./contracts/sync.js";
 
@@ -17,7 +35,7 @@ interface WorkerLifecycleDeps {
   drainProcessOutput(handle: ProcessHandle): boolean;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   getProcessByPid(pid: number): ProcessHandle | undefined;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyLifecycleProgress(handle: ProcessHandle): void;
   recordChildExitViaKernelWorker(parent: ProcessHandle, childPid: number, waitStatus: number): Promise<void>;
   releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
@@ -43,7 +61,6 @@ interface WorkerLifecycleDeps {
   ): Promise<void>;
   workerExitCompleteProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   workerExitFailProcess(handle: ProcessHandle, error: Error): void;
-  workerExitPrepublishParentWaitStatus?(handle: ProcessHandle, exitCode: number, termSignal: number): boolean;
 }
 
 function encodeWaitStatus(exitCode: number, termSignal: number): number {
@@ -63,8 +80,8 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         continue;
       }
       try {
-        const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-        const fdFlags = handle.kernel.process_fd_flags?.(handle.vmPtr, fd) ?? 0;
+        const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
+        const fdFlags = supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd);
         if (ofdId <= 0 || ofdId >= maxFds) {
           parts.push(`${fd}->${ofdId}/${fdFlags}`);
           continue;
@@ -72,9 +89,9 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         parts.push([
           `${fd}->${ofdId}`,
           `flags=${fdFlags}`,
-          `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
-          `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
-          `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
+          `type=${supervisorOfdFdType(handle, ofdId)}`,
+          `ino=${supervisorOfdIno(handle, ofdId)}`,
+          `host=${supervisorOfdHostFd(handle, ofdId)}`,
         ].join("/"));
       } catch (error) {
         parts.push(`${fd}->error:${JSON.stringify(error instanceof Error ? error.message : String(error))}`);
@@ -82,26 +99,25 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
     return [
       `vm=0x${handle.vmPtr.toString(16)}`,
-      `stdioOwner=${handle.stdioOwner?.pid ?? 0}`,
-      `host=${handle.hostStdio.stdinPipe}.${handle.hostStdio.stdoutPipe}.${handle.hostStdio.stderrPipe}`,
-      `local=${handle.stdinPipe}.${handle.stdoutPipe}.${handle.stderrPipe}`,
+      `stdioOwner=${processStdioOwner(handle)?.pid ?? 0}`,
+      `host=${processHostStdio(handle).stdinPipe}.${processHostStdio(handle).stdoutPipe}.${processHostStdio(handle).stderrPipe}`,
+      `local=${processStdinPipe(handle)}.${processStdoutPipe(handle)}.${processStderrPipe(handle)}`,
       `fds=${parts.join(",")}`,
     ].join(":");
   }
 
   function beginProcessTeardown(handle: ProcessHandle): boolean {
-    if (handle.exitInProgress) {
+    if (!beginProcessExit(handle)) {
       return false;
     }
-    handle.exitInProgress = true;
-    if (handle.stdioOwner === null && !kernelWorkerOwnsPipeState(handle)) {
+    if (processStdioOwner(handle) === null && !processHasKernelWorkerOwnership(handle)) {
       deps.drainProcessOutput(handle);
     }
     return true;
   }
 
   async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
+    if (handle.pid > 0) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `exit-owned-state-sync-before:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
@@ -122,14 +138,14 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
       handle.runtimeId,
       `exit-owned-state-before-shared-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
     );
-    if (kernelWorkerOwnsPipeState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       await deps.requestPipeStateSync(handle, true);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `exit-owned-state-after-pipe-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
       );
     }
-    if (kernelWorkerOwnsSocketState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       await deps.requestSocketStateSync(handle, false);
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
@@ -151,14 +167,13 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`
+      `exit-begin:${handle.pid}:held=[${[...collectProcessHeldOfds(handle)].sort((left, right) => left - right).join(",")}]:shared=[${kernelShareSharedOfdIdList(handle).sort((left, right) => left - right).join(",")}]`
         + `:mem=${handle.kernel.debug_memory_brk_base?.() ?? "n/a"}`
         + `:${handle.kernel.debug_memory_brk_current?.() ?? "n/a"}`
         + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,
     );
-    deps.workerExitPrepublishParentWaitStatus?.(handle, exitCode, termSignal);
     await syncOwnedStateBeforeExit(handle);
-    if (kernelWorkerOwnsPipeState(handle)) {
+    if (processHasKernelWorkerOwnership(handle)) {
       reconcileKernelSharePipeControl(handle);
     }
     await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal, exitVmPtr);
@@ -170,7 +185,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `fail:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${JSON.stringify(error.message)}`,
+      `fail:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${JSON.stringify(error.message)}`,
     );
     deps.workerExitFailProcess(handle, error);
   }
@@ -182,7 +197,7 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     exitCode: number,
     termSignal: number,
   ): boolean {
-    const snapshot = handle.vforkSnapshot;
+    const snapshot = hostExecutionState(handle).vforkSnapshot;
     if (snapshot === null || snapshot.vmPtr !== vmPtr) {
       return false;
     }
@@ -197,30 +212,14 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:exit=${exitCode}:${termSignal}:wait=${waitStatus}`,
     );
 
-    if (handle.kernelWorkerRequest && handle.pid > 0) {
-      void deps.resumeVforkParentViaKernelWorker(handle, worker, vmPtr, waitStatus);
-      return true;
-    }
-
-    if (childPid <= 0) {
-      return false;
-    }
-
-    handle.vforkSnapshot = null;
-    handle.vforkWorker = null;
-    handle.kernel.thread_resume_vfork_parent(vmPtr, childPid);
-    void deps.recordChildExitViaKernelWorker(handle, childPid, waitStatus);
-    handle.kernelState = readKernelRuntimeState(handle.kernel);
-    publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
-    deps.kickBlockedWorkers(handle);
-    deps.enqueueWorker(handle, worker);
+    void deps.resumeVforkParentViaKernelWorker(handle, worker, vmPtr, waitStatus).catch((error) => {
+      deps.workerExitFailProcess(handle, error instanceof Error ? error : new Error(String(error)));
+    });
     return true;
   }
 
   function statusDefersOwnedStateSync(handle: ProcessHandle, status: number): boolean {
-    return status === handle.kernel.abi_status_vfork_wait()
-      || status === handle.kernel.abi_status_execve_spawn()
-      || status === handle.kernel.abi_status_clone_spawn();
+    return supervisorProcessStatusIsLifecycleHandoff(handle.kernel, status);
   }
 
   return {

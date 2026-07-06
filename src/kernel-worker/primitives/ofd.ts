@@ -1,6 +1,12 @@
 import {
   kernelOfdStateBytes,
   kernelOfdStatePtr,
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdReconcileRefcount,
+  supervisorOfdRefcount,
   type KernelExports,
   type KernelRuntimeState,
 } from "../../abi.js";
@@ -19,35 +25,13 @@ interface KernelWorkerPrimitivesDeps {
   processKernels: Map<number, KernelExports>;
 }
 
-function boundedThreadSlotCount(processExports: KernelExports, vmPtr: number): number {
-  const maxThreads = processExports.abi_max_threads();
-  try {
-    const processThreadCount = processExports.thread_process_thread_count?.(vmPtr) ?? maxThreads;
-    if (!Number.isFinite(processThreadCount) || processThreadCount <= 0) {
-      return 0;
-    }
-    // Kernel thread slots are sparse and keyed by tid-1, so thread_count is a
-    // population count, not a dense slot upper bound.
-    return maxThreads;
-  } catch {
-    return maxThreads;
-  }
-}
-
-function plausibleThreadVmPtr(processExports: KernelExports, vmPtr: number): boolean {
-  if (!Number.isInteger(vmPtr) || vmPtr <= 0) {
-    return false;
-  }
-  return vmPtr < processExports.memory.buffer.byteLength;
-}
-
 function ofdSlotsCanBeShared(
   sourceExports: KernelExports,
   targetExports: KernelExports,
   ofdId: number,
 ): boolean {
-  const sourceType = sourceExports.kernel_ofd_fd_type(ofdId);
-  const targetType = targetExports.kernel_ofd_fd_type(ofdId);
+  const sourceType = supervisorOfdFdType(sourceExports, ofdId);
+  const targetType = supervisorOfdFdType(targetExports, ofdId);
   if (sourceType === 0) {
     return targetType === 0;
   }
@@ -58,15 +42,15 @@ function ofdSlotsCanBeShared(
     return false;
   }
   if (
-    sourceExports.kernel_ofd_ino(ofdId) !== targetExports.kernel_ofd_ino(ofdId)
-    || sourceExports.kernel_ofd_host_fd(ofdId) !== targetExports.kernel_ofd_host_fd(ofdId)
+    supervisorOfdIno(sourceExports, ofdId) !== supervisorOfdIno(targetExports, ofdId)
+    || supervisorOfdHostFd(sourceExports, ofdId) !== supervisorOfdHostFd(targetExports, ofdId)
   ) {
     return false;
   }
   if (
     sourceType === sourceExports.abi_fd_type_file()
-    && targetExports.kernel_ofd_refcount(ofdId) > 0
-    && sourceExports.kernel_ofd_offset(ofdId) < targetExports.kernel_ofd_offset(ofdId)
+    && supervisorOfdRefcount(targetExports, ofdId) > 0
+    && supervisorOfdOffset(sourceExports, ofdId) < supervisorOfdOffset(targetExports, ofdId)
   ) {
     return false;
   }
@@ -79,7 +63,7 @@ function ofdSnapshotCanApply(
   snapshot: KernelWorkerOfdSlotSnapshot,
   slotBytes: number,
 ): boolean {
-  const targetType = targetExports.kernel_ofd_fd_type(snapshot.ofdId);
+  const targetType = supervisorOfdFdType(targetExports, snapshot.ofdId);
   if (targetType === 0) {
     return true;
   }
@@ -113,41 +97,26 @@ function ofdSnapshotCanApply(
   return true;
 }
 
+function requireSupervisorProcessHeldOfdRefcount(
+  processExports: KernelExports,
+): (vmPtr: number, ofdId: number) => number {
+  const readSupervisorHeldOfdRefcount = processExports.supervisor_process_held_ofd_refcount;
+  if (!readSupervisorHeldOfdRefcount) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_held_ofd_refcount");
+  }
+  return readSupervisorHeldOfdRefcount.bind(processExports);
+}
+
 export function collectProcessHeldOfdRefcounts(processExports: KernelExports, vmPtr: number): Int32Array {
   const maxFds = processExports.abi_max_fds();
   const heldOfdRefcounts = new Int32Array(maxFds);
-
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
-    if (ofdId !== 0 && ofdId < maxFds) {
-      heldOfdRefcounts[ofdId] += 1;
+  const supervisorHeldOfdRefcount = requireSupervisorProcessHeldOfdRefcount(processExports);
+  for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
+    const refcount = supervisorHeldOfdRefcount(vmPtr, ofdId);
+    if (refcount > 0) {
+      heldOfdRefcounts[ofdId] = refcount;
     }
   }
-
-  for (let slot = 0; slot < boundedThreadSlotCount(processExports, vmPtr); slot += 1) {
-    let threadVmPtr = 0;
-    try {
-      threadVmPtr = processExports.process_thread_vm_ptr(vmPtr, slot);
-    } catch {
-      continue;
-    }
-    if (threadVmPtr === 0) {
-      continue;
-    }
-    if (!plausibleThreadVmPtr(processExports, threadVmPtr)) {
-      continue;
-    }
-    let blockedOfdId = 0;
-    try {
-      blockedOfdId = processExports.thread_blocked_ofd_id(threadVmPtr);
-    } catch {
-      continue;
-    }
-    if (blockedOfdId !== 0 && blockedOfdId < maxFds) {
-      heldOfdRefcounts[blockedOfdId] += 1;
-    }
-  }
-
   return heldOfdRefcounts;
 }
 
@@ -282,16 +251,8 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     }
 
     for (const ofdId of trackedOfdIds) {
-      let currentRefcount = canonicalExports.kernel_ofd_refcount(ofdId);
       const expectedRefcount = expectedRefcounts[ofdId] ?? 0;
-      while (currentRefcount < expectedRefcount) {
-        canonicalExports.kernel_retain_ofd(ofdId);
-        currentRefcount += 1;
-      }
-      while (currentRefcount > expectedRefcount) {
-        canonicalExports.kernel_release_ofd(ofdId);
-        currentRefcount -= 1;
-      }
+      supervisorOfdReconcileRefcount(canonicalExports, ofdId, expectedRefcount);
     }
   }
 

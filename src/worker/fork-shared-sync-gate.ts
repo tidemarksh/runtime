@@ -2,6 +2,8 @@ import {
   describeForkSharedSyncPromise,
   getForkSharedSyncDebugRecord,
 } from "./fork-shared-sync-debug.js";
+import { clearForkSharedSyncIfCurrent } from "./fork-shared-sync-state.js";
+import { kernelShareMemberList } from "./kernel-share.js";
 import type { ProcessHandle } from "./types.js";
 
 function forkSharedSyncSourceIsStale(handle: ProcessHandle, promise: Promise<void>): boolean {
@@ -9,7 +11,7 @@ function forkSharedSyncSourceIsStale(handle: ProcessHandle, promise: Promise<voi
   if (record === null) {
     return false;
   }
-  const owner = [...handle.kernelShare.members].find((member) => member.pid === record.ownerPid);
+  const owner = kernelShareMemberList(handle).find((member) => member.pid === record.ownerPid);
   if (owner === undefined) {
     return true;
   }
@@ -34,12 +36,7 @@ export function clearStaleForkSharedSyncGate(
   if (!sourceIsStale && !hasNoTargets) {
     return null;
   }
-  if (handle.kernelShare.forkSharedSyncPromise === promise) {
-    handle.kernelShare.forkSharedSyncPromise = null;
-  }
-  if (handle.forkSharedSyncPromise === promise) {
-    handle.forkSharedSyncPromise = null;
-  }
+  clearForkSharedSyncIfCurrent(handle, promise);
   if (sourceIsStale) {
     return `fork-shared-sync-stale-source:${describeForkSharedSyncPromise(promise)}`;
   }

@@ -1,9 +1,19 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../src/worker/kernel-share.js";
+import { hostExecutionState } from "../../../src/worker/host-execution-state.js";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../../../src/worker/process-stdio-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../src/bridge/pipe.js";
 import { createRuntimeStateBridge } from "../../../src/bridge/runtime-state.js";
 import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import { createWorkerLifecycleHelpers } from "../../../src/worker/lifecycle.js";
+import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
+import { seedProcessHandleStateFixture } from "./support/process-handle-state-fixture.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -79,13 +89,13 @@ function makeHandle(
 ): {
   handle: ProcessHandle;
   enqueueWorker: ReturnType<typeof vi.fn>;
-  kickBlockedWorkers: ReturnType<typeof vi.fn>;
+  notifyLifecycleProgress: ReturnType<typeof vi.fn>;
   recordChildExitViaKernelWorker: ReturnType<typeof vi.fn>;
   resumeVforkParentViaKernelWorker: ReturnType<typeof vi.fn>;
   resumeParent: ReturnType<typeof vi.fn>;
 } {
   const enqueueWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn();
+  const notifyLifecycleProgress = vi.fn();
   const recordChildExitViaKernelWorker = vi.fn(async () => {});
   const resumeVforkParentViaKernelWorker = vi.fn(async () => {});
   const resumeParent = vi.fn();
@@ -117,42 +127,35 @@ function makeHandle(
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "test",
     runtimeBridge: createRuntimeStateBridge(),
     sabPageCache: null,
     workers: new Set([worker]),
-    readyWorkers: [],
-    runningWorker: null,
-    blockedWorkers: new Map(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
-    vforkSnapshot: {
-      vmPtr: 0x1234,
-      childPid: null,
-      nextPid: null,
-      pgid: null,
-      sid: null,
-      inheritedSharedOfdIds: [],
-    },
-    vforkWorker: worker,
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
-  handle.kernelShare.members.add(handle);
+  setProcessDebugCommand(handle, "test");
+  seedProcessHandleStateFixture(handle);
+  addKernelShareMember(handle);
+  const executionState = hostExecutionState(handle);
+  executionState.vforkSnapshot = {
+    vmPtr: 0x1234,
+    childPid: null,
+    nextPid: null,
+    pgid: null,
+    sid: null,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
+    inheritedSharedOfdIds: [],
+  };
+  executionState.vforkWorker = worker;
 
   return {
     handle,
     enqueueWorker,
-    kickBlockedWorkers,
+    notifyLifecycleProgress,
     recordChildExitViaKernelWorker,
     resumeVforkParentViaKernelWorker,
     resumeParent,
@@ -165,7 +168,7 @@ function makeLifecycleDeps(spies: ReturnType<typeof makeHandle>) {
     drainProcessOutput: () => false,
     enqueueWorker: spies.enqueueWorker,
     getProcessByPid: () => undefined,
-    kickBlockedWorkers: spies.kickBlockedWorkers,
+    notifyLifecycleProgress: spies.notifyLifecycleProgress,
     recordChildExitViaKernelWorker: spies.recordChildExitViaKernelWorker,
     releaseSharedHostStdio: async () => {},
     requestEpollStateSync: async () => {},
@@ -189,8 +192,9 @@ function setPipeWritable(
   view.setInt32(base + 12, 1, true);
 }
 
-test("resumeVforkParentAfterChildExit records a normal exit wait status and resumes the parent locally", () => {
+test("resumeVforkParentAfterChildExit delegates a normal exit wait status to kernel-worker", () => {
   const spies = makeHandle({
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" } as never)),
     stdinPipe: 1,
     stdoutPipe: 2,
     stderrPipe: 3,
@@ -212,16 +216,20 @@ test("resumeVforkParentAfterChildExit records a normal exit wait status and resu
   );
 
   expect(resumed).toBe(true);
-  expect(spies.recordChildExitViaKernelWorker).toHaveBeenCalledWith(spies.handle, 77, 3 << 8);
-  expect(spies.resumeParent).toHaveBeenCalledWith(0x1234, 77);
-  expect(spies.enqueueWorker).toHaveBeenCalledWith(spies.handle, spies.handle.worker);
-  expect(spies.kickBlockedWorkers).toHaveBeenCalledWith(spies.handle);
-  expect(spies.handle.vforkSnapshot).toBeNull();
-  expect(spies.handle.vforkWorker).toBeNull();
-  expect(spies.handle.stdinPipe).toBe(1);
-  expect(spies.handle.stdoutPipe).toBe(2);
-  expect(spies.handle.stderrPipe).toBe(3);
-  expect(spies.handle.hostStdio).toMatchObject({
+  expect(spies.resumeVforkParentViaKernelWorker).toHaveBeenCalledWith(
+    spies.handle,
+    spies.handle.worker,
+    0x1234,
+    3 << 8,
+  );
+  expect(spies.recordChildExitViaKernelWorker).not.toHaveBeenCalled();
+  expect(spies.resumeParent).not.toHaveBeenCalled();
+  expect(spies.enqueueWorker).not.toHaveBeenCalled();
+  expect(spies.notifyLifecycleProgress).not.toHaveBeenCalled();
+  expect(processStdinPipe(spies.handle)).toBe(1);
+  expect(processStdoutPipe(spies.handle)).toBe(2);
+  expect(processStderrPipe(spies.handle)).toBe(3);
+  expect(processHostStdio(spies.handle)).toMatchObject({
     stdinPipe: 1,
     stdoutPipe: 2,
     stderrPipe: 3,
@@ -229,8 +237,10 @@ test("resumeVforkParentAfterChildExit records a normal exit wait status and resu
   });
 });
 
-test("resumeVforkParentAfterChildExit records a signaled wait status and resumes the parent locally", () => {
-  const spies = makeHandle();
+test("resumeVforkParentAfterChildExit delegates a signaled wait status to kernel-worker", () => {
+  const spies = makeHandle({
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" } as never)),
+  });
   const lifecycle = makeLifecycleDeps(spies);
 
   const resumed = lifecycle.resumeVforkParentAfterChildExit(
@@ -242,9 +252,14 @@ test("resumeVforkParentAfterChildExit records a signaled wait status and resumes
   );
 
   expect(resumed).toBe(true);
-  expect(spies.recordChildExitViaKernelWorker).toHaveBeenCalledWith(spies.handle, 77, 15);
-  expect(spies.resumeParent).toHaveBeenCalledWith(0x1234, 77);
-  expect(spies.handle.vforkSnapshot).toBeNull();
+  expect(spies.resumeVforkParentViaKernelWorker).toHaveBeenCalledWith(
+    spies.handle,
+    spies.handle.worker,
+    0x1234,
+    15,
+  );
+  expect(spies.recordChildExitViaKernelWorker).not.toHaveBeenCalled();
+  expect(spies.resumeParent).not.toHaveBeenCalled();
 });
 
 test("resumeVforkParentAfterChildExit delegates to kernel-worker when runtime ownership is externalized", () => {
@@ -288,11 +303,13 @@ test("resumeVforkParentAfterChildExit ignores stale worker completions after the
   expect(resumed).toBe(false);
   expect(spies.recordChildExitViaKernelWorker).not.toHaveBeenCalled();
   expect(spies.resumeParent).not.toHaveBeenCalled();
-  expect(spies.handle.vforkSnapshot).not.toBeNull();
+  expect(hostExecutionState(spies.handle).vforkSnapshot).not.toBeNull();
 });
 
-test("resumeVforkParentAfterChildExit records fresh wait status for sequential child exits", () => {
-  const spies = makeHandle();
+test("resumeVforkParentAfterChildExit delegates fresh wait status for sequential child exits", () => {
+  const spies = makeHandle({
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" } as never)),
+  });
   const lifecycle = makeLifecycleDeps(spies);
 
   let resumed = lifecycle.resumeVforkParentAfterChildExit(
@@ -304,18 +321,30 @@ test("resumeVforkParentAfterChildExit records fresh wait status for sequential c
   );
 
   expect(resumed).toBe(true);
-  expect(spies.recordChildExitViaKernelWorker).toHaveBeenNthCalledWith(1, spies.handle, 77, 7 << 8);
+  expect(spies.resumeVforkParentViaKernelWorker).toHaveBeenNthCalledWith(
+    1,
+    spies.handle,
+    spies.handle.worker,
+    0x1234,
+    7 << 8,
+  );
 
-  spies.handle.vforkSnapshot = {
+  hostExecutionState(spies.handle).vforkSnapshot = {
     vmPtr: 0x1234,
     childPid: null,
     nextPid: null,
     pgid: null,
     sid: null,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
     inheritedSharedOfdIds: [],
   };
-  spies.handle.vforkWorker = spies.handle.worker;
+  hostExecutionState(spies.handle).vforkWorker = spies.handle.worker;
   spies.recordChildExitViaKernelWorker.mockClear();
+  spies.resumeVforkParentViaKernelWorker.mockClear();
   spies.resumeParent.mockClear();
 
   resumed = lifecycle.resumeVforkParentAfterChildExit(
@@ -327,8 +356,14 @@ test("resumeVforkParentAfterChildExit records fresh wait status for sequential c
   );
 
   expect(resumed).toBe(true);
-  expect(spies.recordChildExitViaKernelWorker).toHaveBeenCalledWith(spies.handle, 77, 14);
-  expect(spies.resumeParent).toHaveBeenCalledWith(0x1234, 77);
+  expect(spies.resumeVforkParentViaKernelWorker).toHaveBeenCalledWith(
+    spies.handle,
+    spies.handle.worker,
+    0x1234,
+    14,
+  );
+  expect(spies.recordChildExitViaKernelWorker).not.toHaveBeenCalled();
+  expect(spies.resumeParent).not.toHaveBeenCalled();
 });
 
 test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequential child exits", () => {
@@ -348,12 +383,12 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
   const processSetCwdIno = vi.fn();
   spies.handle.kernel.process_cwd_ino = () => 41;
   spies.handle.kernel.process_set_cwd_ino = processSetCwdIno;
-  setPipeWritable(spies.handle.memory, spies.handle.kernelState, spies.handle.stderrPipe);
+  setPipeWritable(spies.handle.memory, spies.handle.kernelState, processStderrPipe(spies.handle));
 
   expect(writePipe(
     spies.handle.memory,
     spies.handle.kernelState.pipeBase,
-    spies.handle.stderrPipe,
+    processStderrPipe(spies.handle),
     new TextEncoder().encode("parent-before\n"),
   )).toMatchObject({ written: "parent-before\n".length, broken: false });
 
@@ -366,27 +401,32 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
   );
 
   expect(resumed).toBe(true);
-  expect(spies.handle.stdinPipe).toBe(1);
-  expect(spies.handle.stdoutPipe).toBe(2);
-  expect(spies.handle.stderrPipe).toBe(3);
+  expect(processStdinPipe(spies.handle)).toBe(1);
+  expect(processStdoutPipe(spies.handle)).toBe(2);
+  expect(processStderrPipe(spies.handle)).toBe(3);
   expect(spies.handle.kernel.process_cwd_ino(spies.handle.vmPtr)).toBe(41);
   expect(processSetCwdIno).not.toHaveBeenCalled();
   expect(writePipe(
     spies.handle.memory,
     spies.handle.kernelState.pipeBase,
-    spies.handle.stderrPipe,
+    processStderrPipe(spies.handle),
     new TextEncoder().encode("parent-after-1\n"),
   )).toMatchObject({ written: "parent-after-1\n".length, broken: false });
 
-  spies.handle.vforkSnapshot = {
+  hostExecutionState(spies.handle).vforkSnapshot = {
     vmPtr: 0x1234,
     childPid: null,
     nextPid: null,
     pgid: null,
     sid: null,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
     inheritedSharedOfdIds: [],
   };
-  spies.handle.vforkWorker = spies.handle.worker;
+  hostExecutionState(spies.handle).vforkWorker = spies.handle.worker;
 
   resumed = lifecycle.resumeVforkParentAfterChildExit(
     spies.handle,
@@ -397,15 +437,15 @@ test("resumeVforkParentAfterChildExit preserves parent stdio and cwd across sequ
   );
 
   expect(resumed).toBe(true);
-  expect(spies.handle.stdinPipe).toBe(1);
-  expect(spies.handle.stdoutPipe).toBe(2);
-  expect(spies.handle.stderrPipe).toBe(3);
+  expect(processStdinPipe(spies.handle)).toBe(1);
+  expect(processStdoutPipe(spies.handle)).toBe(2);
+  expect(processStderrPipe(spies.handle)).toBe(3);
   expect(spies.handle.kernel.process_cwd_ino(spies.handle.vmPtr)).toBe(41);
   expect(processSetCwdIno).not.toHaveBeenCalled();
   expect(writePipe(
     spies.handle.memory,
     spies.handle.kernelState.pipeBase,
-    spies.handle.stderrPipe,
+    processStderrPipe(spies.handle),
     new TextEncoder().encode("parent-after-2\n"),
   )).toMatchObject({ written: "parent-after-2\n".length, broken: false });
 });

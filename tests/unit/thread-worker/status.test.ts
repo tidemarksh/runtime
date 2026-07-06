@@ -95,6 +95,8 @@ function makeKernelExports(): KernelExports {
     kernel_time_state_ptr: () => 0,
     process_fd_ofd_id: () => 0,
     process_fd_flags: () => 0,
+    supervisor_process_ofd_for_fd: () => 0,
+    supervisor_process_fd_flags_for_fd: () => 0,
     process_set_fd_entry: () => {},
     process_create: () => 0,
     process_destroy: () => {},
@@ -123,7 +125,7 @@ function makeKernelExports(): KernelExports {
     thread_blocked_ofd_id: () => 0,
     thread_fault_pc: () => 0n,
     thread_fault_addr: () => 0n,
-    thread_take_completed_sync_effects: () => 0,
+    supervisor_thread_take_completed_sync_effects: () => 0,
   } as unknown as KernelExports;
 }
 
@@ -143,7 +145,6 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     guestBase: 0,
     generation: 7,
     runtimeBridge: null,
-    syscallNumbers: null,
     lastResumeBlockedDebug,
     lastFutexWaitDebug,
     setLastResumeBlockedDebug(value) {
@@ -188,7 +189,6 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
     guestBase: 0,
     generation: 8,
     runtimeBridge: null,
-    syscallNumbers: null,
     lastResumeBlockedDebug: undefined,
     lastFutexWaitDebug: undefined,
     setLastResumeBlockedDebug() {},
@@ -205,39 +205,6 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
   expect([...(msg.pipeSlots?.[0]?.slot ?? [])]).toEqual(
     Array.from({ length: 32 }, (_, index) => 0x80 + index),
   );
-});
-
-test("postThreadWorkerStatus bounds fork stack snapshots", () => {
-  const postMessage = vi.fn();
-  Object.defineProperty(globalThis, "postMessage", {
-    configurable: true,
-    value: postMessage,
-  });
-  const kernelExports = makeKernelExports();
-  kernelExports.memory = new WebAssembly.Memory({ initial: 256 });
-  kernelExports.thread_spawn_kind = () => kernelExports.abi_spawn_kind_fork();
-  kernelExports.thread_guest_memory_policy_limit = () => 0x1000000n;
-  kernelExports.thread_sp = () => 0x300000n;
-
-  postThreadWorkerStatus({
-    kernelExports,
-    statusCodes: makeStatusCodes(),
-    vmPtr: 0x1234,
-    guestBase: 0,
-    generation: 9,
-    runtimeBridge: null,
-    syscallNumbers: null,
-    lastResumeBlockedDebug: undefined,
-    lastFutexWaitDebug: undefined,
-    setLastResumeBlockedDebug() {},
-    setLastFutexWaitDebug() {},
-  }, makeStatusCodes().EXECVE_SPAWN, false, 0);
-
-  const msg = postMessage.mock.calls[0]?.[0] as {
-    forkStackSnapshot?: { startGuest: number; bytes: Uint8Array };
-  };
-  expect(msg.forkStackSnapshot?.startGuest).toBe(0x200000);
-  expect(msg.forkStackSnapshot?.bytes.length).toBe(8 * 1024 * 1024);
 });
 
 test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics", () => {
@@ -290,7 +257,6 @@ test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics"
     guestBase: 0,
     generation: 10,
     runtimeBridge: null,
-    syscallNumbers: null,
     lastResumeBlockedDebug: undefined,
     lastFutexWaitDebug,
     setLastResumeBlockedDebug() {},

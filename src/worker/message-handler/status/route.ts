@@ -1,3 +1,5 @@
+import { hostExecutionState } from "../../host-execution-state.js";
+import { processWorkers } from "../../process-worker-state.js";
 import {
   attachKernelRuntimeState,
 } from "../../../abi.js";
@@ -7,10 +9,9 @@ import {
   flushStdin,
 } from "../../stdio.js";
 import {
-  applyStatusPipeSlots,
-  statusKernelWorkerOwnsPipeState,
-} from "./pipe-slots.js";
-import { processHasLiveThreads } from "../../live-threads.js";
+  applyThreadPipeSlots,
+} from "../../ownership/pipe-control.js";
+import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { adoptKernelStateForHandle } from "../../sync.js";
 import {
   pruneStatusNetworkConnectionsFromFdEntries,
@@ -34,9 +35,19 @@ import {
 } from "./debug.js";
 import {
   hasSuspiciousLowStateDebug,
-  incrementBoundedCounter,
   readLocalProcessPid,
 } from "./route-state.js";
+import {
+  processLastDebugMessage,
+  setProcessLastDebugMessage,
+} from "../../process-debug-state.js";
+import { workerMessageDebugStats } from "../../worker-debug-stats.js";
+import { setThreadExecveProcessState } from "../../thread-execve-state.js";
+import {
+  getThreadActivityState,
+  incrementBoundedActivityCounter,
+  pushRecentStatusActivity,
+} from "../../thread-activity-state.js";
 import {
   applyThreadGuestMemoryWrites,
   applyThreadKernelMemoryWrites,
@@ -44,8 +55,27 @@ import {
 } from "./socket-state.js";
 import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
 import { applyStatusFdEntries } from "./fd-entries.js";
+import {
+  clearThreadRunningGeneration,
+  getThreadGeneration,
+  getThreadOwnerPid,
+  getThreadRunningGeneration,
+  clearThreadWaitingInWorkerStatus,
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+} from "../../thread-host-state.js";
 import { applyStatusOfdSlots } from "./ofd-slots.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
+import {
+  readSupervisorFaultExitDecision,
+  submitSupervisorShadowStatusEvent,
+  supervisorFaultExitKindProcessExit,
+} from "../../supervisor-shadow.js";
+import {
+  supervisorProcessStatusIsCloneSpawn,
+  supervisorProcessStatusIsExecveSpawn,
+  supervisorProcessStatusRouteActions,
+} from "../../supervisor-status.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -72,7 +102,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
   ): void {
     const thread = deps.threadWorkerStates.get(worker);
     if (!thread) {
-      if (CLONE_SPAWN_DEBUG_ENABLED && msg.status === handle.kernel.abi_status_clone_spawn()) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, msg.status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-no-thread:${handle.pid}:0x${msg.vmPtr.toString(16)}`
@@ -80,27 +110,28 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         );
       }
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "statusHandlerNoThreadDrops",
         `status-no-thread:${handle.pid}:${msg.status}`,
       );
       return;
     }
-    if (msg.generation !== undefined && msg.generation !== thread.generation) {
-      if (handle.runningWorker === worker && thread.runningGeneration === msg.generation) {
-        handle.runningWorker = null;
-        thread.runningGeneration = null;
+    const threadGeneration = getThreadGeneration(thread);
+    if (msg.generation !== undefined && msg.generation !== threadGeneration) {
+      if (hostExecutionState(handle).runningWorker === worker && getThreadRunningGeneration(thread) === msg.generation) {
+        hostExecutionState(handle).runningWorker = null;
+        clearThreadRunningGeneration(thread);
       }
       deps.appendWorkerDebugLog(
         handle,
         `status-stale-generation:0x${thread.vmPtr.toString(16)}`
-          + `:msg=${msg.generation}:current=${thread.generation}:status=${msg.status}`,
+          + `:msg=${msg.generation}:current=${threadGeneration}:status=${msg.status}`,
       );
-      if (CLONE_SPAWN_DEBUG_ENABLED && msg.status === handle.kernel.abi_status_clone_spawn()) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, msg.status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-stale-generation:${handle.pid}:0x${thread.vmPtr.toString(16)}`
-            + `:msg=${msg.generation}:current=${thread.generation}`,
+            + `:msg=${msg.generation}:current=${threadGeneration}`,
         );
       }
       return;
@@ -111,7 +142,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     const transientProcessOwnerMismatch = processPidField !== null
       ? processPidField !== handle.pid
       : localProcessPid !== null && localProcessPid !== handle.pid;
-    const activeVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
+    const activeVforkWorker = hostExecutionState(handle).vforkSnapshot !== null && hostExecutionState(handle).vforkWorker === worker;
     const statusBelongsToHandle = !transientProcessOwnerMismatch || activeVforkWorker;
     const faultStatus = handle.kernel.abi_status_fault?.();
     const statusStateBelongsToHandle = statusBelongsToHandle
@@ -124,31 +155,35 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       statusBelongsToHandle: statusStateBelongsToHandle,
       deps,
     })) {
-      if (CLONE_SPAWN_DEBUG_ENABLED && status === handle.kernel.abi_status_clone_spawn()) {
+      if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `clone-status-owner-async:${handle.pid}:0x${thread.vmPtr.toString(16)}`
             + `:generation=${msg.generation ?? "n/a"}`
-            + `:owner=${thread.ownerAsyncStatus ?? "null"}`
+            + `:owner=${getThreadOwnerAsyncStatus(thread) ?? "null"}`
             + `:belongs=${statusStateBelongsToHandle ? 1 : 0}`,
         );
       }
       return;
     }
-    const previousWaitingStatus = thread.waitingInWorkerStatus;
-    thread.waitingInWorkerStatus = null;
-    if (status === handle.kernel.abi_status_execve_spawn()) {
+    const previousWaitingStatus = getThreadWaitingInWorkerStatus(thread);
+    clearThreadWaitingInWorkerStatus(thread);
+    if (supervisorProcessStatusIsExecveSpawn(handle.kernel, status)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `status-execve-spawn-seen:${handle.pid}:0x${msg.vmPtr.toString(16)}`
-          + `:owner=${thread.ownerPid}`
+          + `:owner=${getThreadOwnerPid(thread)}`
           + `:field=${processPidField ?? "n/a"}`
           + `:local=${localProcessPid ?? "n/a"}`
           + `:kind=${handle.kernel.thread_spawn_kind?.(msg.vmPtr) ?? -1}`
           + `:child=${handle.kernel.thread_spawn_child_pid?.(msg.vmPtr) ?? -1}`,
       );
     }
-    if (statusStateBelongsToHandle) {
+    const routeActions = supervisorProcessStatusRouteActions(handle.kernel, status, {
+      statusStateBelongsToHandle,
+      kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
+    });
+    if (routeActions.applyStatusFdState) {
       applyStatusOfdSlots(handle, msg);
       applyStatusFdEntries(handle, msg);
       pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
@@ -165,22 +200,22 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status-fds:${handle.pid}:0x${msg.vmPtr.toString(16)}:status=${status}:${formatStatusFdEntries(handle, msg)}`,
       );
     }
-    thread.statusCount += 1;
-    recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusHandled");
-    thread.statusCounts[String(status)] = (thread.statusCounts[String(status)] ?? 0) + 1;
-    thread.lastStatus = status;
-    if (CLONE_SPAWN_DEBUG_ENABLED && status === handle.kernel.abi_status_clone_spawn()) {
+    const activity = getThreadActivityState(thread);
+    activity.statusCount += 1;
+    recordWorkerMessageDebugEvent(workerMessageDebugStats(handle), "statusHandled");
+    activity.statusCounts[String(status)] = (activity.statusCounts[String(status)] ?? 0) + 1;
+    activity.lastStatus = status;
+    if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,
         `clone-status-route:${handle.pid}:0x${thread.vmPtr.toString(16)}`
           + `:generation=${msg.generation ?? "n/a"}`
-          + `:count=${thread.statusCounts[String(status)] ?? 0}`,
+          + `:count=${activity.statusCounts[String(status)] ?? 0}`,
       );
     }
     const statusAtMs = Date.now();
-    thread.lastStatusAtMs = statusAtMs;
-    const recentStatuses = thread.recentStatuses ??= [];
-    recentStatuses.push({
+    activity.lastStatusAtMs = statusAtMs;
+    pushRecentStatusActivity(activity, {
       status,
       pc: msg.pc,
       syscallNr: msg.syscallNr ?? null,
@@ -190,41 +225,30 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       futexBlockedAddr: msg.futexBlockedAddr ?? null,
       atMs: statusAtMs,
     });
-    if (recentStatuses.length > 16) {
-      recentStatuses.splice(0, recentStatuses.length - 16);
+    if (getThreadRunningGeneration(thread) === msg.generation && activity.lastStepAtMs !== null) {
+      const stepWallMs = Math.max(0, statusAtMs - activity.lastStepAtMs);
+      activity.lastStepDurationMs = stepWallMs;
+      activity.totalStepWallMs += stepWallMs;
+      activity.maxStepWallMs = Math.max(activity.maxStepWallMs, stepWallMs);
     }
-    if (thread.runningGeneration === msg.generation && thread.lastStepAtMs !== null) {
-      const stepWallMs = Math.max(0, statusAtMs - thread.lastStepAtMs);
-      thread.lastStepDurationMs = stepWallMs;
-      thread.totalStepWallMs += stepWallMs;
-      thread.maxStepWallMs = Math.max(thread.maxStepWallMs, stepWallMs);
-    }
-    thread.lastStatusPc = msg.pc;
-    thread.lastStatusSp = msg.sp ?? null;
-    thread.lastStatusS11 = msg.s11 ?? null;
-    thread.lastStatusFutexWaitAddr = msg.futexWaitAddr ?? null;
-    thread.lastStatusFutexBlockedAddr = msg.futexBlockedAddr ?? null;
-    if (status !== handle.kernel.abi_status_sleep()) {
-      thread.yieldedReady = false;
-    }
-    if (msg.forkStackSnapshot) {
-      thread.forkStackSnapshot = msg.forkStackSnapshot;
-    }
+    activity.lastStatusPc = msg.pc;
+    activity.lastStatusSp = msg.sp ?? null;
+    activity.lastStatusS11 = msg.s11 ?? null;
     if (msg.processState) {
-      thread.execveProcessState = msg.processState;
+      setThreadExecveProcessState(thread, msg.processState);
     }
-    incrementBoundedCounter(thread.hotStatusPcs, `0x${msg.pc.toString(16)}`);
+    incrementBoundedActivityCounter(activity.hotStatusPcs, `0x${msg.pc.toString(16)}`);
     const suspiciousLowStateDebug = hasSuspiciousLowStateDebug(msg.debug);
     deps.appendWorkerDebugLog(
       handle,
       `status-route:0x${thread.vmPtr.toString(16)}`
-        + `:owner_pid=${thread.ownerPid}`
+        + `:owner_pid=${getThreadOwnerPid(thread)}`
         + `:handle_pid=${handle.pid}`
         + `:generation=${msg.generation}`
         + `:status=${status}`,
     );
-    if (!(status === faultStatus && suspiciousLowStateDebug && handle.lastDebugMessage)) {
-      handle.lastDebugMessage = msg.debug;
+    if (!(status === faultStatus && suspiciousLowStateDebug && processLastDebugMessage(handle))) {
+      setProcessLastDebugMessage(handle, msg.debug);
     }
     deps.appendWorkerDebugLog(
       handle,
@@ -271,17 +295,16 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
 
-    const isRunningWorker = handle.runningWorker === worker;
+    const isRunningWorker = hostExecutionState(handle).runningWorker === worker;
     if (!isRunningWorker) {
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "statusNotRunning",
         `status-not-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
     }
-    const deferLocalPipeDrain = statusKernelWorkerOwnsPipeState(handle);
     const adoptPreSnapshots: ThreadRegisterSnapshot[] = [];
-    for (const candidate of handle.workers) {
+    for (const candidate of processWorkers(handle)) {
       const candidateThread = deps.threadWorkerStates.get(candidate);
       if (!candidateThread) {
         continue;
@@ -293,21 +316,17 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         s11: handle.kernel.thread_s11?.(candidateThread.vmPtr) ?? 0n,
       });
     }
-    const shouldAdoptThreadKernelState = (
-      status !== handle.kernel.abi_status_clone_spawn()
-      && statusStateBelongsToHandle
-    );
-    if (shouldAdoptThreadKernelState) {
+    if (routeActions.adoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       applyThreadKernelMemoryWrites(
         handle,
         msg,
         deps.appendRuntimeLifecycleEvent,
-        { skipFsRingWrites: status === handle.kernel.abi_status_fs() },
+        { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-      applyStatusPipeSlots(
+      applyThreadPipeSlots(
         handle,
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
@@ -333,16 +352,45 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           `status_adopt_break:src=0x${thread.vmPtr.toString(16)} target=0x${pre.vmPtr.toString(16)} pre_pc=0x${pre.pc.toString(16)} pre_sp=0x${pre.sp.toString(16)} pre_s11=0x${pre.s11.toString(16)} post_pc=0x${postPc.toString(16)} post_sp=0x${postSp.toString(16)} post_s11=0x${postS11.toString(16)} incoming_sig_slots=0x${msg.kernelState.sigSlotsPtr.toString(16)} incoming_process_pending=0x${msg.kernelState.processPendingPtr.toString(16)} incoming_process_runtime=0x${msg.kernelState.processRuntimeStatePtr.toString(16)}`,
         );
       }
-    } else if (status === handle.kernel.abi_status_fs()) {
+    } else if (routeActions.applyFsMemoryWrites) {
       applyThreadKernelMemoryWrites(
         handle,
         msg,
         deps.appendRuntimeLifecycleEvent,
-        { skipFsRingWrites: true },
+        { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
     }
+    const submitShadowThreadEvent = (
+      shadowMsg: ThreadWorkerStatusMessage,
+      shadowStatus: number,
+      completedSyncEffects: number,
+    ): void => {
+      const shadowThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
+        sequence: activity.statusCount,
+        vmPtr: shadowMsg.vmPtr,
+        pid: handle.pid,
+        tid: handle.kernel.thread_tid?.(shadowMsg.vmPtr) ?? 0,
+        status: shadowStatus,
+        syncEffects: completedSyncEffects,
+        blockedReason: shadowMsg.syscallNr === undefined
+          ? 0
+          : Number(shadowMsg.syscallNr & 0xffff_ffffn),
+        pc: shadowMsg.pc,
+        sp: shadowMsg.sp ?? 0n,
+      });
+      if (shadowThreadEventResult !== undefined && shadowThreadEventResult < 0) {
+        deps.appendWorkerDebugLog(handle, `supervisor-thread-event:submit-error:${shadowThreadEventResult}`);
+      }
+    };
     if (msg.waitInWorker) {
+      const waitInWorkerSyncEffects = (
+        status === handle.kernel.abi_status_ok()
+        && msg.syncEffects === undefined
+      )
+        ? syncEffects.statusOkCompletedSyncEffects
+        : (msg.syncEffects ?? 0);
+      submitShadowThreadEvent(msg, status, waitInWorkerSyncEffects);
       handleWaitInWorkerStatus(handle, worker, thread, msg, isRunningWorker);
       return;
     }
@@ -354,15 +402,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     }
     deps.clearBlockedWorker(handle, worker);
     const wroteToPipe = flushStdin(handle);
-    const drainedPipe = deferLocalPipeDrain || statusKernelWorkerOwnsPipeState(handle)
+    const drainedPipe = routeActions.deferLocalPipeDrain
       ? false
       : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
     if (isRunningWorker) {
-      handle.runningWorker = null;
-      thread.runningGeneration = null;
+      hostExecutionState(handle).runningWorker = null;
+      clearThreadRunningGeneration(thread);
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "statusClearedRunning",
         `status-cleared-running:${handle.pid}:0x${thread.vmPtr.toString(16)}:${status}`,
       );
@@ -372,11 +420,21 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     let transitionMsg = msg;
     if (status === faultStatus && handle.kernel.thread_status) {
       const currentStatus = handle.kernel.thread_status(thread.vmPtr);
-      const currentStatusHasLiveThread = processHasLiveThreads(handle.kernel, thread.vmPtr);
+      let supervisorAllowsCurrentStatus = false;
       if (
         currentStatus !== status
         && currentStatus !== handle.kernel.abi_status_fault()
-        && currentStatusHasLiveThread
+        && !activeVforkWorker
+      ) {
+        const supervisorExitDecision = readSupervisorFaultExitDecision(handle, thread.vmPtr);
+        supervisorAllowsCurrentStatus = supervisorExitDecision !== undefined
+          && supervisorExitDecision.kind !== supervisorFaultExitKindProcessExit(handle.kernel)
+          && supervisorExitDecision.liveThreads !== 0;
+      }
+      if (
+        currentStatus !== status
+        && currentStatus !== handle.kernel.abi_status_fault()
+        && supervisorAllowsCurrentStatus
         && !activeVforkWorker
       ) {
         deps.appendRuntimeLifecycleEvent(
@@ -401,6 +459,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     )
       ? syncEffects.statusOkCompletedSyncEffects
       : (transitionMsg.syncEffects ?? 0);
+    submitShadowThreadEvent(transitionMsg, transitionStatus, completedSyncEffects);
     const continueAfterOwnedStateSync = (): void => {
       handleStatusTransition({
         handle,
@@ -418,20 +477,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       worker,
       thread,
       status: transitionStatus,
-      syscallNr: transitionMsg.syscallNr ?? null,
-      rawSyncEffects: transitionMsg.syncEffects,
       completedSyncEffects,
-      latestFdTrace: transitionMsg.fdTraceSyscallNr === undefined
-        ? null
-        : {
-            nr: transitionMsg.fdTraceSyscallNr,
-            arg0OfdId: transitionMsg.fdTraceArg0OfdId ?? 0,
-            arg0OfdType: transitionMsg.fdTraceArg0OfdType ?? 0,
-            arg1: transitionMsg.fdTraceArg1 ?? null,
-            arg2OfdId: transitionMsg.fdTraceArg2OfdId ?? 0,
-            arg2OfdType: transitionMsg.fdTraceArg2OfdType ?? 0,
-            result: transitionMsg.fdTraceResult ?? null,
-          },
       isRunningWorker,
       wroteToPipe,
       drainedPipe,

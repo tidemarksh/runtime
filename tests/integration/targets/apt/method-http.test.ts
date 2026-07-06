@@ -2907,7 +2907,7 @@ function compactAptMethodExecFailureDebug(summary: string): string {
         line.match(/ready=\d+/)?.[0],
         line.match(/running=\d+/)?.[0],
         line.match(/blocked=\[[^\]]*\]/)?.[0],
-        line.match(/pipe_sync=\d+\/\d+/)?.[0],
+        line.match(/pipe_sync=\d+/)?.[0],
         line.match(/fork_sync=\d+\/\d+/)?.[0],
         line.match(/vfork=\d+/)?.[0],
         line.match(/stdio_pipes=\d+\/\d+\/\d+/)?.[0],
@@ -2977,10 +2977,9 @@ function compactAptExecutionStats(
     processMaxMemoryBytes: proc.processMaxMemoryBytes,
     forkProcessMaxMemoryBytes: proc.forkProcessMaxMemoryBytes,
     guestBase: proc.guestBase,
-    readyWorkers: proc.readyWorkers,
-    blockedWorkers: proc.blockedWorkers,
+    vforkReadyWorkers: proc.vforkReadyWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
     activeChildren: proc.activeChildren,
-    pendingChildExitRecords: proc.pendingChildExitRecords,
     pendingChildSpawnRecords: proc.pendingChildSpawnRecords,
     runtimeBridgeDebugStage: proc.runtimeBridgeDebugStage,
     workerMessageDebugStats: proc.workerMessageDebugStats,
@@ -3053,20 +3052,20 @@ function compactAptProcessCounts(
   stats: ReturnType<Awaited<ReturnType<typeof Runtime.create>>["debugExecutionStats"]>,
 ): string {
   let workers = 0;
-  let readyWorkers = 0;
-  let blockedWorkers = 0;
+  let vforkReadyWorkers = 0;
+  let hostBlockedWorkers = 0;
   let activeChildren = 0;
   for (const proc of stats) {
     workers += proc.workers.length;
-    readyWorkers += proc.readyWorkers;
-    blockedWorkers += proc.blockedWorkers;
+    vforkReadyWorkers += proc.vforkReadyWorkers;
+    hostBlockedWorkers += proc.hostBlockedWorkers;
     activeChildren += proc.activeChildren;
   }
   return JSON.stringify({
     processes: stats.length,
     workers,
-    readyWorkers,
-    blockedWorkers,
+    vforkReadyWorkers,
+    hostBlockedWorkers,
     activeChildren,
   });
 }

@@ -1,4 +1,5 @@
 import type { ProcessHandle } from "../types.js";
+import { recordRegularFileOfdOffsetSnapshot } from "../regular-file-ofd-offset-state.js";
 import {
   FD_ENTRY_BYTES,
   FD_ENTRY_OFD_ID_OFFSET,
@@ -7,7 +8,6 @@ import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
-  OFD_REFCOUNT_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../../layout/ofd.js";
 import {
@@ -33,111 +33,160 @@ interface StatusMessageLike {
   trustRegularFileOfdOffsets?: boolean;
 }
 
-const maxRegularFileOffsetByHandle = new WeakMap<ProcessHandle, Map<number, {
+const SUPERVISOR_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
+
+interface OfdSlotCandidate {
+  type: number;
   hostFd: number;
   ino: number;
   offset: bigint;
-}>>();
-
-export function explicitPipeFdEntryWouldRollBack(
-  handle: ProcessHandle,
-  explicitOfdId: number | undefined,
-  currentOfdId: number,
-  candidateOfdId: number,
-): boolean {
-  const maxFds = handle.kernel.abi_max_fds();
-  if (
-    explicitOfdId === undefined
-    || currentOfdId <= 0
-    || currentOfdId >= maxFds
-    || candidateOfdId === currentOfdId
-    || explicitOfdId !== currentOfdId
-  ) {
-    return false;
-  }
-  const currentType = handle.kernel.kernel_ofd_fd_type(currentOfdId);
-  return currentType === handle.kernel.abi_fd_type_pipe()
-    || currentType === handle.kernel.abi_fd_type_pty_master?.()
-    || currentType === handle.kernel.abi_fd_type_pty_slave?.();
 }
 
-export function regularFileFdEntryWouldRollBack(
-  handle: ProcessHandle,
-  fileType: number,
-  currentOfdId: number,
-  candidateOfdId: number,
-): boolean {
-  const maxFds = handle.kernel.abi_max_fds();
-  if (
-    currentOfdId <= 0
-    || candidateOfdId <= 0
-    || currentOfdId >= maxFds
-    || candidateOfdId >= maxFds
-    || currentOfdId === candidateOfdId
-  ) {
-    return false;
-  }
-  return handle.kernel.kernel_ofd_fd_type(currentOfdId) === fileType
-    && handle.kernel.kernel_ofd_fd_type(candidateOfdId) === fileType
-    && handle.kernel.kernel_ofd_host_fd(currentOfdId) === handle.kernel.kernel_ofd_host_fd(candidateOfdId)
-    && handle.kernel.kernel_ofd_ino(currentOfdId) === handle.kernel.kernel_ofd_ino(candidateOfdId)
-    && handle.kernel.kernel_ofd_refcount(currentOfdId) > 0
-    && handle.kernel.kernel_ofd_offset(candidateOfdId) < handle.kernel.kernel_ofd_offset(currentOfdId);
+function readOfdSlotCandidate(slot: Uint8Array): OfdSlotCandidate {
+  const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
+  return {
+    type: view.getInt32(OFD_TYPE_OFFSET, true),
+    hostFd: view.getInt32(OFD_HOST_FD_OFFSET, true),
+    ino: view.getUint32(OFD_INO_OFFSET, true),
+    offset: view.getBigInt64(OFD_OFFSET_OFFSET, true),
+  };
 }
 
-export function ofdSlotWriteWouldClobberIdentityOrRollBack(
+function requireSupervisorRestoreActionSkip(handle: ProcessHandle): number {
+  const skip = handle.kernel.supervisor_fd_entry_restore_action_skip;
+  if (!skip) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_skip");
+  }
+  return skip.call(handle.kernel);
+}
+
+function requireSupervisorFdEntryGuestWriteAction(
   handle: ProcessHandle,
-  currentSlot: Uint8Array,
+): (vmPtr: number, fd: number, candidateOfdId: number, explicitOfdId: number) => number {
+  const decide = handle.kernel.supervisor_fd_entry_guest_write_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_guest_write_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
+function requireSupervisorOfdSlotWriteAction(
+  handle: ProcessHandle,
+): (
+  ofdId: number,
+  candidateType: number,
+  candidateHostFd: number,
+  candidateIno: number,
+  candidateOffset: bigint | number,
+) => number {
+  const decide = handle.kernel.supervisor_ofd_slot_write_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_write_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
+function requireSupervisorOfdSlotRestoreAction(
+  handle: ProcessHandle,
+): (
+  ofdId: number,
+  candidateType: number,
+  candidateHostFd: number,
+  candidateIno: number,
+  candidateOffset: bigint | number,
+  syscallNr: bigint | number,
+  flags: number,
+) => number {
+  const decide = handle.kernel.supervisor_ofd_slot_restore_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_restore_action");
+  }
+  return decide.bind(handle.kernel);
+}
+
+function supervisorOfdSlotRestoreFlags(
+  handle: ProcessHandle,
+  referencedByFdEntry: boolean,
+  trustRegularFileOfdOffsets: boolean,
+): number {
+  let flags = 0;
+  if (referencedByFdEntry) {
+    const flag = handle.kernel.supervisor_ofd_slot_restore_flag_referenced_by_fd_entry;
+    if (!flag) {
+      throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_restore_flag_referenced_by_fd_entry");
+    }
+    flags |= flag.call(handle.kernel);
+  }
+  if (trustRegularFileOfdOffsets) {
+    const flag = handle.kernel.supervisor_ofd_slot_restore_flag_trust_regular_file_offset;
+    if (!flag) {
+      throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_restore_flag_trust_regular_file_offset");
+    }
+    flags |= flag.call(handle.kernel);
+  }
+  return flags;
+}
+
+function ofdSnapshotReferencedByFdEntry(
+  fdEntries: readonly FdEntryLike[] | undefined,
+  ofdId: number,
+): boolean {
+  return (fdEntries ?? []).some((entry) => entry.ofdId === ofdId);
+}
+
+function candidateOfdIdFromFdEntry(entry: Uint8Array): number {
+  return new DataView(
+    entry.buffer,
+    entry.byteOffset,
+    entry.byteLength,
+  ).getUint32(FD_ENTRY_OFD_ID_OFFSET, true);
+}
+
+function ofdSlotWriteShouldBeSkipped(
+  ofdId: number,
   candidateSlot: Uint8Array,
+  decide: ReturnType<typeof requireSupervisorOfdSlotWriteAction>,
+  skipAction: number,
 ): boolean {
-  const currentView = new DataView(currentSlot.buffer, currentSlot.byteOffset, currentSlot.byteLength);
   const candidateView = new DataView(candidateSlot.buffer, candidateSlot.byteOffset, candidateSlot.byteLength);
-  const currentType = currentView.getInt32(OFD_TYPE_OFFSET, true);
-  const candidateType = candidateView.getInt32(OFD_TYPE_OFFSET, true);
-  if (currentType === 0) {
-    return false;
-  }
-  if (currentView.getInt32(OFD_REFCOUNT_OFFSET, true) <= 0) {
-    return false;
-  }
-  if (candidateType === 0 || candidateType !== currentType) {
-    return true;
-  }
-  if (
-    currentView.getInt32(OFD_HOST_FD_OFFSET, true) !== candidateView.getInt32(OFD_HOST_FD_OFFSET, true)
-    || currentView.getUint32(OFD_INO_OFFSET, true) !== candidateView.getUint32(OFD_INO_OFFSET, true)
-  ) {
-    return true;
-  }
-  return currentType === handle.kernel.abi_fd_type_file?.()
-    && candidateView.getBigInt64(OFD_OFFSET_OFFSET, true) < currentView.getBigInt64(OFD_OFFSET_OFFSET, true);
+  return decide(
+    ofdId,
+    candidateView.getInt32(OFD_TYPE_OFFSET, true),
+    candidateView.getInt32(OFD_HOST_FD_OFFSET, true),
+    candidateView.getUint32(OFD_INO_OFFSET, true),
+    candidateView.getBigInt64(OFD_OFFSET_OFFSET, true),
+  ) === skipAction;
 }
 
-export function ofdSnapshotWouldClobberExistingSlot(
+function ofdSnapshotWouldClobberExistingSlot(
   handle: ProcessHandle,
   fdEntries: readonly FdEntryLike[] | undefined,
   snapshot: OfdSlotSnapshotLike,
   slotBytes: number,
+  decide: ReturnType<typeof requireSupervisorOfdSlotRestoreAction>,
+  skipAction: number,
+  trustRegularFileOfdOffsets: boolean,
+  syscallNr: bigint | number,
 ): boolean {
   const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
   if (targetOffset < 0 || targetOffset + slotBytes > handle.memory.buffer.byteLength) {
     return true;
   }
-  if ((fdEntries ?? []).some((entry) => entry.ofdId === snapshot.ofdId)) {
-    return false;
-  }
-  const targetView = new DataView(handle.memory.buffer, targetOffset, slotBytes);
-  const targetType = targetView.getInt32(OFD_TYPE_OFFSET, true);
-  if (targetType === 0 || targetView.getInt32(OFD_REFCOUNT_OFFSET, true) <= 0) {
-    return false;
-  }
-  const sourceView = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
-  const sourceType = sourceView.getInt32(OFD_TYPE_OFFSET, true);
-  if (sourceType === 0 || sourceType !== targetType) {
-    return true;
-  }
-  return sourceView.getInt32(OFD_HOST_FD_OFFSET, true) !== targetView.getInt32(OFD_HOST_FD_OFFSET, true)
-    || sourceView.getUint32(OFD_INO_OFFSET, true) !== targetView.getUint32(OFD_INO_OFFSET, true);
+  const candidate = readOfdSlotCandidate(snapshot.slot);
+  const flags = supervisorOfdSlotRestoreFlags(
+    handle,
+    ofdSnapshotReferencedByFdEntry(fdEntries, snapshot.ofdId),
+    trustRegularFileOfdOffsets,
+  );
+  return decide(
+    snapshot.ofdId,
+    candidate.type,
+    candidate.hostFd,
+    candidate.ino,
+    candidate.offset,
+    syscallNr,
+    flags,
+  ) === skipAction;
 }
 
 export function maskRegularFileFdEntryRollbackGuestWrite(
@@ -146,11 +195,12 @@ export function maskRegularFileFdEntryRollbackGuestWrite(
   guestPtr: number,
   bytes: Uint8Array,
 ): Uint8Array {
-  const fileType = handle.kernel.abi_fd_type_file?.();
   const processPtr = msg.vmPtr === 0 ? 0 : handle.kernel.thread_process_ptr?.(msg.vmPtr);
-  if (fileType === undefined || processPtr === undefined || processPtr <= 0) {
+  if (processPtr === undefined || processPtr <= 0) {
     return bytes;
   }
+  const decide = requireSupervisorFdEntryGuestWriteAction(handle);
+  const skipAction = requireSupervisorRestoreActionSkip(handle);
   const maxFds = handle.kernel.abi_max_fds();
   const fdTableStart = processPtr;
   const fdTableEnd = fdTableStart + maxFds * FD_ENTRY_BYTES;
@@ -184,20 +234,10 @@ export function maskRegularFileFdEntryRollbackGuestWrite(
       bytes.subarray(overlapStart - writeStart, overlapEnd - writeStart),
       overlapStart - entryStart,
     );
-    const currentOfdId = new DataView(
-      currentEntry.buffer,
-      currentEntry.byteOffset,
-      currentEntry.byteLength,
-    ).getUint32(FD_ENTRY_OFD_ID_OFFSET, true);
-    const candidateOfdId = new DataView(
-      candidateEntry.buffer,
-      candidateEntry.byteOffset,
-      candidateEntry.byteLength,
-    ).getUint32(FD_ENTRY_OFD_ID_OFFSET, true);
+    const candidateOfdId = candidateOfdIdFromFdEntry(candidateEntry);
     const explicitFdEntry = msg.fdEntries?.find((entry) => entry.fd === fd);
     if (
-      !regularFileFdEntryWouldRollBack(handle, fileType, currentOfdId, candidateOfdId)
-      && !explicitPipeFdEntryWouldRollBack(handle, explicitFdEntry?.ofdId, currentOfdId, candidateOfdId)
+      decide(msg.vmPtr, fd, candidateOfdId, explicitFdEntry?.ofdId ?? 0) !== skipAction
     ) {
       continue;
     }
@@ -232,6 +272,8 @@ export function maskIncompatibleOfdSlotKernelWrite(
   }
 
   let masked: Uint8Array | null = null;
+  const decide = requireSupervisorOfdSlotWriteAction(handle);
+  const skipAction = requireSupervisorRestoreActionSkip(handle);
   const firstOfdId = Math.max(1, Math.floor((Math.max(writeStart, tableStart) - tableStart) / slotBytes));
   const lastOfdId = Math.min(
     maxFds - 1,
@@ -251,7 +293,7 @@ export function maskIncompatibleOfdSlotKernelWrite(
       bytes.subarray(overlapStart - writeStart, overlapEnd - writeStart),
       overlapStart - slotStart,
     );
-    if (!ofdSlotWriteWouldClobberIdentityOrRollBack(handle, currentSlot, candidateSlot)) {
+    if (!ofdSlotWriteShouldBeSkipped(ofdId, candidateSlot, decide, skipAction)) {
       continue;
     }
     if (masked === null) {
@@ -265,72 +307,7 @@ export function maskIncompatibleOfdSlotKernelWrite(
   return masked ?? bytes;
 }
 
-export function ofdSnapshotWouldRollBackRegularFileOffset(
-  handle: ProcessHandle,
-  msg: StatusMessageLike,
-  snapshot: OfdSlotSnapshotLike,
-  slotBytes: number,
-): boolean {
-  const fileType = handle.kernel.abi_fd_type_file?.();
-  if (fileType === undefined) {
-    return false;
-  }
-  const sourceView = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
-  const sourceType = sourceView.getInt32(OFD_TYPE_OFFSET, true);
-  if (sourceType !== fileType) {
-    return false;
-  }
-  const targetType = handle.kernel.kernel_ofd_fd_type(snapshot.ofdId);
-  if (targetType !== fileType) {
-    return false;
-  }
-  if (msg.trustRegularFileOfdOffsets === true) {
-    return false;
-  }
-  const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
-  const targetView = new DataView(handle.memory.buffer, targetOffset, slotBytes);
-  const targetRefcount = targetView.getInt32(OFD_REFCOUNT_OFFSET, true);
-  if (targetRefcount <= 0) {
-    return false;
-  }
-  const sourceHostFd = sourceView.getInt32(OFD_HOST_FD_OFFSET, true);
-  const targetHostFd = targetView.getInt32(OFD_HOST_FD_OFFSET, true);
-  const sourceIno = sourceView.getUint32(OFD_INO_OFFSET, true);
-  const targetIno = targetView.getUint32(OFD_INO_OFFSET, true);
-  if (sourceHostFd !== targetHostFd || sourceIno !== targetIno) {
-    return false;
-  }
-  const sourceOffset = sourceView.getBigInt64(OFD_OFFSET_OFFSET, true);
-  const targetCurrentOffset = targetView.getBigInt64(OFD_OFFSET_OFFSET, true);
-  let maxOffsets = maxRegularFileOffsetByHandle.get(handle);
-  if (maxOffsets === undefined) {
-    maxOffsets = new Map();
-    maxRegularFileOffsetByHandle.set(handle, maxOffsets);
-  }
-  const maxSeen = maxOffsets.get(snapshot.ofdId);
-  const maxSeenOffset = maxSeen?.hostFd === sourceHostFd && maxSeen.ino === sourceIno
-    ? maxSeen.offset
-    : targetCurrentOffset;
-  const nextMaxOffset = sourceOffset > targetCurrentOffset ? sourceOffset : targetCurrentOffset;
-  if (nextMaxOffset > maxSeenOffset) {
-    maxOffsets.set(snapshot.ofdId, {
-      hostFd: sourceHostFd,
-      ino: sourceIno,
-      offset: nextMaxOffset,
-    });
-  }
-  if (sourceOffset < maxSeenOffset) {
-    return true;
-  }
-  if (sourceOffset >= targetCurrentOffset) {
-    return false;
-  }
-  const syscallNr = msg.syscallNr;
-  const lseekNr = handle.kernel.abi_sys_lseek?.();
-  return syscallNr === undefined || syscallNr !== BigInt(lseekNr ?? 62);
-}
-
-export function recordRegularFileOfdOffsets(
+function recordRegularFileOfdOffsets(
   handle: ProcessHandle,
   msg: StatusMessageLike,
   slotBytes: number,
@@ -351,13 +328,11 @@ export function recordRegularFileOfdOffsets(
     if (view.getInt32(OFD_TYPE_OFFSET, true) !== fileType) {
       continue;
     }
-    const offsets = handle.regularFileOfdOffsets ?? new Map<number, { ino: number; hostFd: number; offset: bigint }>();
-    offsets.set(snapshot.ofdId, {
+    recordRegularFileOfdOffsetSnapshot(handle, snapshot.ofdId, {
       ino: view.getUint32(OFD_INO_OFFSET, true),
       hostFd: view.getInt32(OFD_HOST_FD_OFFSET, true),
       offset: view.getBigInt64(OFD_OFFSET_OFFSET, true),
     });
-    handle.regularFileOfdOffsets = offsets;
   }
 }
 
@@ -378,6 +353,10 @@ export function applyThreadOfdSlots(
     return;
   }
   const memory = new Uint8Array(handle.memory.buffer);
+  const decide = requireSupervisorOfdSlotRestoreAction(handle);
+  const skipAction = requireSupervisorRestoreActionSkip(handle);
+  const syscallNr = msg.syscallNr ?? SUPERVISOR_RESTORE_SYSCALL_NONE;
+  const trustRegularFileOfdOffsets = msg.trustRegularFileOfdOffsets === true;
   for (const snapshot of msg.ofdSlots) {
     if (
       snapshot.ofdId <= 0
@@ -389,10 +368,18 @@ export function applyThreadOfdSlots(
     if (protectedNetworkOfds.has(snapshot.ofdId)) {
       continue;
     }
-    if (ofdSnapshotWouldClobberExistingSlot(handle, msg.fdEntries, snapshot, slotBytes)) {
-      continue;
-    }
-    if (ofdSnapshotWouldRollBackRegularFileOffset(handle, msg, snapshot, slotBytes)) {
+    if (
+      ofdSnapshotWouldClobberExistingSlot(
+        handle,
+        msg.fdEntries,
+        snapshot,
+        slotBytes,
+        decide,
+        skipAction,
+        trustRegularFileOfdOffsets,
+        syscallNr,
+      )
+    ) {
       continue;
     }
     memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);

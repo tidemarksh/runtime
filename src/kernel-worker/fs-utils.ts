@@ -1,4 +1,14 @@
-import { readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import {
+  readKernelRuntimeState,
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdStatusFlags,
+  supervisorProcessOfdForFd,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../abi.js";
 import { publishInode } from "../fs/sab-page-cache.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import {
@@ -96,7 +106,12 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     if (targetVmPtr === undefined || targetVmPtr === 0) {
       return 0n;
     }
-    return targetExports.thread_guest_memory_policy_limit?.(targetVmPtr) ?? 0n;
+    const read = targetExports.thread_guest_memory_policy_limit;
+    if (typeof read !== "function") {
+      throw new Error("kernel ABI missing thread_guest_memory_policy_limit");
+    }
+    const limit = read(targetVmPtr);
+    return limit < 0n ? 0n : limit;
   }
 
   function copyCanonicalMemfsToProcess(
@@ -131,14 +146,14 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       parts.push(`process_ptr=0x${processExports.thread_process_ptr(vmPtr).toString(16)}`);
       parts.push(`ofd_table_ptr=0x${processExports.kernel_ofd_table_ptr().toString(16)}`);
       if (fd >= 0) {
-        const ofdId = processExports.process_fd_ofd_id(vmPtr, fd);
+        const ofdId = supervisorProcessOfdForFd(processExports, vmPtr, fd);
         parts.push(`ofd_id=${ofdId}`);
         if (ofdId > 0) {
-          parts.push(`ofd_type=${processExports.kernel_ofd_fd_type(ofdId)}`);
-          parts.push(`ofd_host_fd=${processExports.kernel_ofd_host_fd(ofdId)}`);
-          parts.push(`ofd_flags=${processExports.kernel_ofd_status_flags(ofdId)}`);
-          parts.push(`ofd_ino=${processExports.kernel_ofd_ino(ofdId)}`);
-          parts.push(`ofd_offset=${processExports.kernel_ofd_offset(ofdId).toString()}`);
+          parts.push(`ofd_type=${supervisorOfdFdType(processExports, ofdId)}`);
+          parts.push(`ofd_host_fd=${supervisorOfdHostFd(processExports, ofdId)}`);
+          parts.push(`ofd_flags=${supervisorOfdStatusFlags(processExports, ofdId)}`);
+          parts.push(`ofd_ino=${supervisorOfdIno(processExports, ofdId)}`);
+          parts.push(`ofd_offset=${supervisorOfdOffset(processExports, ofdId).toString()}`);
         }
       }
     } catch {
@@ -153,11 +168,11 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
       parts.push(`blocked_fd=${blockedFd}`);
       parts.push(`blocked_ofd_id=${blockedOfdId}`);
       if (blockedOfdId > 0) {
-        parts.push(`blocked_ofd_type=${processExports.kernel_ofd_fd_type(blockedOfdId)}`);
-        parts.push(`blocked_ofd_host_fd=${processExports.kernel_ofd_host_fd(blockedOfdId)}`);
-        parts.push(`blocked_ofd_flags=${processExports.kernel_ofd_status_flags(blockedOfdId)}`);
-        parts.push(`blocked_ofd_ino=${processExports.kernel_ofd_ino(blockedOfdId)}`);
-        parts.push(`blocked_ofd_offset=${processExports.kernel_ofd_offset(blockedOfdId).toString()}`);
+        parts.push(`blocked_ofd_type=${supervisorOfdFdType(processExports, blockedOfdId)}`);
+        parts.push(`blocked_ofd_host_fd=${supervisorOfdHostFd(processExports, blockedOfdId)}`);
+        parts.push(`blocked_ofd_flags=${supervisorOfdStatusFlags(processExports, blockedOfdId)}`);
+        parts.push(`blocked_ofd_ino=${supervisorOfdIno(processExports, blockedOfdId)}`);
+        parts.push(`blocked_ofd_offset=${supervisorOfdOffset(processExports, blockedOfdId).toString()}`);
       }
     } catch {
       parts.push("blocked_ofd=unavailable");

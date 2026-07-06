@@ -1,4 +1,9 @@
-import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorOfdFdType,
+  supervisorProcessOfdForFd,
+} from "../../abi.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -34,7 +39,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
         continue;
       }
-      const previousOfdId = processExports.process_fd_ofd_id(vmPtr, entry.fd);
+      const previousOfdId = supervisorProcessOfdForFd(processExports, vmPtr, entry.fd);
       if (entry.ofdId !== 0 && trackedOfdIds.has(entry.ofdId)) {
         processExports.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
       } else if (previousOfdId !== 0 && trackedOfdIds.has(previousOfdId)) {
@@ -179,7 +184,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     } = deps.recomputeCanonicalPipeControlState();
     attachKernelRuntimeState(processExports, sourceState);
     const sourceRehydrateOfdIds = ofdIds.filter(
-      (ofdId) => processExports.kernel_ofd_fd_type(ofdId) !== processExports.abi_fd_type_file(),
+      (ofdId) => supervisorOfdFdType(processExports, ofdId) !== processExports.abi_fd_type_file(),
     );
     deps.copySelectedOfdState(canonicalExports, reconciledCanonicalState, processExports, sourceState, sourceRehydrateOfdIds);
     deps.applyPipeControlState(

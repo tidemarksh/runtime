@@ -1,7 +1,20 @@
+import { hostExecutionState } from "./host-execution-state.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
+import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "./process-stdio-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
 import { removeWorkerFromPool } from "./pool.js";
-import { releaseSharedHostStdioLocal } from "./stdio.js";
+import { processOnExit } from "./process-callback-state.js";
+import { processDebugCommand } from "./process-debug-state.js";
+import {
+  clearProcessWorkers,
+  processWorkerList,
+} from "./process-worker-state.js";
+import { setProcessExitInProgress } from "./process-lifecycle-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "./types.js";
 
 interface WorkerDestroyDeps {
@@ -11,6 +24,7 @@ interface WorkerDestroyDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   clearVforkSnapshot(handle: ProcessHandle): void;
+  releaseSharedHostStdio(handle: ProcessHandle): Promise<void>;
   unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void>;
 }
 
@@ -23,30 +37,43 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
   }
 
   function destroyProcessHandle(handle: ProcessHandle, signal: number, notifyExit: boolean): void {
-    handle.exitInProgress = true;
-    for (const worker of [...handle.blockedWorkers.keys()]) {
+    setProcessExitInProgress(handle, true);
+    for (const worker of [...hostExecutionState(handle).hostBlockedWorkers.keys()]) {
       deps.clearBlockedWorker(handle, worker);
     }
-    handle.readyWorkers.length = 0;
-    handle.runningWorker = null;
+    hostExecutionState(handle).vforkReadyWorkers.length = 0;
+    hostExecutionState(handle).runningWorker = null;
     deps.clearVforkSnapshot(handle);
 
-    const workers = new Set(handle.workers);
+    const workers = new Set(processWorkerList(handle));
     workers.add(handle.worker);
     for (const worker of workers) {
       terminateTrackedWorker(worker);
     }
-    handle.workers.clear();
+    clearProcessWorkers(handle);
 
-    void deps.unregisterProcessWithKernelWorker(handle).catch(() => {});
-    releaseSharedHostStdioLocal(handle);
+    const hadLocalHostStdio = processStdinPipe(handle) !== 0 || processStdoutPipe(handle) !== 0 || processStderrPipe(handle) !== 0;
+    void (async () => {
+      try {
+        if (hadLocalHostStdio) {
+          await deps.releaseSharedHostStdio(handle);
+        }
+      } finally {
+        if (processHasKernelWorkerOwnership(handle)) {
+          await deps.unregisterProcessWithKernelWorker(handle);
+        }
+      }
+    })().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `destroy-kernel-worker-cleanup-error:${handle.pid}:${JSON.stringify(message)}`);
+    });
     detachKernelShare(handle);
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) === handle) {
       deps.processHandles.delete(handle.pid);
     }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `destroy:${handle.pid}:${JSON.stringify(handle.debugCommand)}:${signal}:${notifyExit ? 1 : 0}`,
+      `destroy:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${signal}:${notifyExit ? 1 : 0}`,
     );
     const dirtyHandles = deps.runtimeFsDirtyHandles.get(handle.runtimeId);
     dirtyHandles?.delete(handle);
@@ -55,7 +82,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
     }
 
     if (notifyExit) {
-      handle.onExit?.(128 + signal);
+      processOnExit(handle)?.(128 + signal);
     }
   }
 

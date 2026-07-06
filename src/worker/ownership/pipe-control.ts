@@ -1,3 +1,4 @@
+import { supervisorPipeReconcileControl } from "../../abi.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import {
   PIPE_BUFFER_BYTES,
@@ -13,59 +14,116 @@ import {
   PIPE_TAIL_OFFSET,
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
-import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
+import type { ProcessHandle } from "../types.js";
+import { kernelShareMemberList } from "../kernel-share.js";
+import { appendPendingPipeSlotSnapshots } from "../pending-pipe-slot-state.js";
 import {
   collectProcessHeldOfds,
   syncPipeOfdGenerationsForSlot,
 } from "./ofd-table.js";
+import {
+  supervisorOfdPipeSlotMask,
+  supervisorOfdPipeSlots,
+  supervisorProcessPipeOfdForFd,
+} from "./pipe-slot.js";
+import {
+  pipeSlotSnapshotActionHas,
+  pipeSlotSnapshotActionSet,
+  pipeSlotSnapshotMergeAction,
+} from "../../supervisor-pipe-snapshot.js";
 
-export function kernelWorkerOwnsPipeState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
+const PIPE_CONTROL_END_OFFSET = PIPE_WRITE_OPEN_OFFSET + 4;
+
+function supervisorMaskToBigInt(mask: bigint | number): bigint {
+  return typeof mask === "bigint" ? mask : BigInt(mask);
 }
 
-export function hostStdioPipeSlotsForFd(handle: ProcessHandle, fd: 0 | 1 | 2): Set<number> {
-  const owner = handle.stdioOwner;
-  const slotsByFd = fd === 0
-    ? [
-        handle.stdinPipe,
-        handle.hostStdio.stdinPipe,
-        owner?.stdinPipe ?? 0,
-        owner?.hostStdio.stdinPipe ?? 0,
-      ]
-    : fd === 1
-      ? [
-          handle.stdoutPipe,
-          handle.hostStdio.stdoutPipe,
-          owner?.stdoutPipe ?? 0,
-          owner?.hostStdio.stdoutPipe ?? 0,
-        ]
-      : [
-          handle.stderrPipe,
-          handle.hostStdio.stderrPipe,
-          owner?.stderrPipe ?? 0,
-          owner?.hostStdio.stderrPipe ?? 0,
-        ];
-  return new Set(slotsByFd.filter((slot) => slot > 0));
+function requireSupervisorPipeMask(
+  handle: ProcessHandle,
+  exportName:
+    | "supervisor_process_private_pipe_slot_mask"
+    | "supervisor_process_pipe_used_mask",
+): (vmPtr: number) => bigint | number {
+  const readMask = handle.kernel[exportName];
+  if (!readMask) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return readMask.bind(handle.kernel);
 }
 
-export function hostStdioPipeSlots(handle: ProcessHandle): Set<number> {
-  return new Set([
-    ...hostStdioPipeSlotsForFd(handle, 0),
-    ...hostStdioPipeSlotsForFd(handle, 1),
-    ...hostStdioPipeSlotsForFd(handle, 2),
-  ]);
+function requireSupervisorPipeCount(
+  handle: ProcessHandle,
+  exportName:
+    | "supervisor_process_pipe_read_open_count"
+    | "supervisor_process_pipe_write_open_count",
+): (vmPtr: number, pipeSlot: number) => number {
+  const readCount = handle.kernel[exportName];
+  if (!readCount) {
+    throw new Error(`kernel supervisor ABI missing ${exportName}`);
+  }
+  return readCount.bind(handle.kernel);
+}
+
+export function applySupervisorPipeControl(
+  handle: ProcessHandle,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): void {
+  const applied = supervisorPipeReconcileControl(handle.kernel, pipeSlot, readOpen, writeOpen);
+  if (applied === 0) {
+    throw new Error(`kernel supervisor rejected pipe control reconciliation for slot ${pipeSlot}`);
+  }
+}
+
+export function copyPipeSlotDataPlane(
+  memory: Uint8Array,
+  sourceSlot: Uint8Array,
+  targetOffset: number,
+  slotBytes: number,
+): void {
+  memory.set(sourceSlot.subarray(0, PIPE_READ_OPEN_OFFSET), targetOffset);
+  memory.set(
+    sourceSlot.subarray(PIPE_CONTROL_END_OFFSET, slotBytes),
+    targetOffset + PIPE_CONTROL_END_OFFSET,
+  );
+}
+
+export function applyPipeSlotSnapshot(
+  handle: ProcessHandle,
+  memory: Uint8Array,
+  sourceSlot: Uint8Array,
+  targetOffset: number,
+  slotBytes: number,
+  pipeSlot: number,
+  readOpen: number,
+  writeOpen: number,
+): void {
+  copyPipeSlotDataPlane(memory, sourceSlot, targetOffset, slotBytes);
+  applySupervisorPipeControl(handle, pipeSlot, readOpen, writeOpen);
+}
+
+function processPrivatePipeSlotMask(handle: ProcessHandle, vmPtr: number): bigint {
+  if (vmPtr === 0) {
+    return 0n;
+  }
+  return supervisorMaskToBigInt(
+    requireSupervisorPipeMask(handle, "supervisor_process_private_pipe_slot_mask")(vmPtr),
+  );
 }
 
 export function isProcessHostStdioOfd(handle: ProcessHandle, vmPtr: number, ofdId: number): boolean {
+  const privatePipeMask = processPrivatePipeSlotMask(handle, vmPtr);
+  if (privatePipeMask === 0n) {
+    return false;
+  }
+  const ofdPipeMask = supervisorOfdPipeSlotMask(handle, ofdId);
+  if ((ofdPipeMask & privatePipeMask) === 0n) {
+    return false;
+  }
   for (const fd of [0, 1, 2] as const) {
-    const fdOfdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    const stdioPipeSlots = hostStdioPipeSlotsForFd(handle, fd);
-    if (
-      fdOfdId === ofdId
-      && stdioPipeSlots.size > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()
-      && stdioPipeSlots.has(handle.kernel.kernel_ofd_ino(ofdId))
-    ) {
+    const fdOfdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
+    if (fdOfdId === ofdId) {
       return true;
     }
   }
@@ -73,41 +131,22 @@ export function isProcessHostStdioOfd(handle: ProcessHandle, vmPtr: number, ofdI
 }
 
 export function isProcessHostStdioPipeOfd(handle: ProcessHandle, ofdId: number): boolean {
-  if (
-    ofdId <= 0
-    || ofdId >= handle.kernel.abi_max_fds()
-    || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-  ) {
-    return false;
-  }
-  const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-  return pipeSlot > 0 && hostStdioPipeSlots(handle).has(pipeSlot);
+  return (supervisorOfdPipeSlotMask(handle, ofdId) & processPrivatePipeSlotMask(handle, handle.vmPtr)) !== 0n;
 }
 
 export function expandPipePeerOfdIds(handle: ProcessHandle, ofdIds: Iterable<number>): number[] {
-  const pipeSlots = new Set<number>();
+  let pipeSlotMask = 0n;
   for (const ofdId of ofdIds) {
-    if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
-      continue;
-    }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_pipe()) {
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot > 0) {
-        pipeSlots.add(pipeSlot);
-      }
-    }
+    pipeSlotMask |= supervisorOfdPipeSlotMask(handle, ofdId);
   }
-  if (pipeSlots.size === 0) {
+  if (pipeSlotMask === 0n) {
     return [];
   }
 
   const peers = new Set<number>();
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     for (const ofdId of collectProcessHeldOfds(member)) {
-      if (
-        member.kernel.kernel_ofd_fd_type(ofdId) === member.kernel.abi_fd_type_pipe()
-        && pipeSlots.has(member.kernel.kernel_ofd_ino(ofdId))
-      ) {
+      if ((supervisorOfdPipeSlotMask(member, ofdId) & pipeSlotMask) !== 0n) {
         peers.add(ofdId);
       }
     }
@@ -116,29 +155,20 @@ export function expandPipePeerOfdIds(handle: ProcessHandle, ofdIds: Iterable<num
 }
 
 export function pipeSlotForOfd(handle: ProcessHandle, ofdId: number): number {
-  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
-    return 0;
-  }
-  if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()) {
-    return 0;
-  }
-  return handle.kernel.kernel_ofd_ino(ofdId);
+  return supervisorOfdPipeSlots(handle, ofdId)[0] ?? 0;
 }
 
 export function hasPipePeerInOtherKernelShareMember(handle: ProcessHandle, ofdId: number): boolean {
-  const pipeSlot = pipeSlotForOfd(handle, ofdId);
-  if (pipeSlot <= 0) {
+  const pipeSlotMask = supervisorOfdPipeSlotMask(handle, ofdId);
+  if (pipeSlotMask === 0n) {
     return false;
   }
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     if (member === handle) {
       continue;
     }
     for (const peerOfdId of collectProcessHeldOfds(member)) {
-      if (
-        member.kernel.kernel_ofd_fd_type(peerOfdId) === member.kernel.abi_fd_type_pipe()
-        && member.kernel.kernel_ofd_ino(peerOfdId) === pipeSlot
-      ) {
+      if ((supervisorOfdPipeSlotMask(member, peerOfdId) & pipeSlotMask) !== 0n) {
         return true;
       }
     }
@@ -150,42 +180,18 @@ export function liveProcessPipeUsedBits(handle: ProcessHandle): bigint {
   if (handle.vmPtr === 0) {
     return 0n;
   }
-  let pipeUsed = 0n;
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 64;
-  if (
-    maxFds > 0
-    && typeof handle.kernel.process_fd_ofd_id === "function"
-    && typeof handle.kernel.kernel_ofd_fd_type === "function"
-    && typeof handle.kernel.abi_fd_type_pipe === "function"
-    && typeof handle.kernel.kernel_ofd_ino === "function"
-  ) {
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-      if (
-        ofdId <= 0
-        || ofdId >= maxFds
-        || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-      ) {
-        continue;
-      }
-      const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-      if (pipeSlot > 0 && pipeSlot < maxPipes) {
-        pipeUsed |= 1n << BigInt(pipeSlot);
-      }
-    }
-  }
-  return pipeUsed;
+  const supervisorPipeUsedMask = requireSupervisorPipeMask(handle, "supervisor_process_pipe_used_mask");
+  const mask = supervisorPipeUsedMask(handle.vmPtr);
+  return supervisorMaskToBigInt(mask);
 }
 
 export function composeHandlePipeUsed(handle: ProcessHandle, sharedPipeUsed: bigint): bigint {
-  let pipeUsed = sharedPipeUsed | 1n;
-  for (const pipeSlot of hostStdioPipeSlots(handle)) {
-    if (pipeSlot > 0) {
-      pipeUsed |= 1n << BigInt(pipeSlot);
-    }
+  if (handle.vmPtr === 0) {
+    return sharedPipeUsed | 1n;
   }
-  return pipeUsed;
+  const supervisorPipeUsedMask = requireSupervisorPipeMask(handle, "supervisor_process_pipe_used_mask");
+  const mask = supervisorPipeUsedMask(handle.vmPtr);
+  return sharedPipeUsed | 1n | supervisorMaskToBigInt(mask);
 }
 
 export const PIPE_WAIT_GUEST_MEMORY_WRITE_BYTES = PIPE_BUFFER_BYTES;
@@ -281,53 +287,6 @@ export function formatPipeSlotControlDebug(handle: ProcessHandle, pipeSlot: numb
     + formatPipeWaitDataDebug(handle, counters.base, counters.head, counters.tail);
 }
 
-export function preserveHostStdioPipeControlForStep(handle: ProcessHandle, vmPtr: number): void {
-  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
-  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
-  if (!Number.isInteger(slotBytes) || slotBytes <= PIPE_HEADER_BYTES) {
-    return;
-  }
-  const view = new DataView(handle.memory.buffer);
-  const preserve = (pipeSlot: number, readOpenMin: number, writeOpenMin: number): void => {
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-      return;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (readOpenMin > 0) {
-      const readOpen = view.getInt32(offset + PIPE_READ_OPEN_OFFSET, true);
-      if (readOpen < readOpenMin) {
-        view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpenMin, true);
-      }
-    }
-    if (writeOpenMin > 0) {
-      const writeOpen = view.getInt32(offset + PIPE_WRITE_OPEN_OFFSET, true);
-      if (writeOpen < writeOpenMin) {
-        view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpenMin, true);
-      }
-    }
-  };
-
-  for (const [fd, readOpenMin, writeOpenMin] of [
-    [0, 0, 1],
-    [1, 1, 0],
-    [2, 1, 0],
-  ] as const) {
-    const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-    if (
-      ofdId <= 0
-      || ofdId >= handle.kernel.abi_max_fds()
-      || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_pipe()
-    ) {
-      continue;
-    }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
-    if (hostStdioPipeSlotsForFd(handle, fd).has(pipeSlot)) {
-      preserve(pipeSlot, readOpenMin, writeOpenMin);
-    }
-  }
-}
-
 export function applyThreadPipeSlots(
   handle: ProcessHandle,
   pipeSlots: readonly KernelWorkerPipeSlotSnapshot[] | undefined,
@@ -343,21 +302,7 @@ export function applyThreadPipeSlots(
     return;
   }
   const pipeBufferBytes = slotBytes - PIPE_HEADER_BYTES;
-  const counterAhead = (sourceValue: number, targetValue: number): boolean =>
-    sourceValue > targetValue
-    || (
-      sourceValue < targetValue
-      && targetValue > pipeBufferBytes / 2
-      && sourceValue < pipeBufferBytes / 2
-    );
-  const generationAhead = (sourceValue: number, targetValue: number): boolean =>
-    targetValue === 0
-    || sourceValue > targetValue
-    || (
-      sourceValue < targetValue
-      && targetValue > 0x80000000
-      && sourceValue < 0x80000000
-    );
+  const actionSet = pipeSlotSnapshotActionSet(handle);
   const memory = new Uint8Array(handle.memory.buffer);
   const view = new DataView(handle.memory.buffer);
   const appliedSnapshots: KernelWorkerPipeSlotSnapshot[] = [];
@@ -397,8 +342,8 @@ export function applyThreadPipeSlots(
     const sourceTail = snapshotView.getUint32(PIPE_TAIL_OFFSET, true);
     const sourceReadOpen = snapshotView.getInt32(PIPE_READ_OPEN_OFFSET, true);
     const sourceWriteOpen = snapshotView.getInt32(PIPE_WRITE_OPEN_OFFSET, true);
-    let targetHead = view.getUint32(targetOffset + PIPE_HEAD_OFFSET, true);
-    let targetTail = view.getUint32(targetOffset + PIPE_TAIL_OFFSET, true);
+    const targetHead = view.getUint32(targetOffset + PIPE_HEAD_OFFSET, true);
+    const targetTail = view.getUint32(targetOffset + PIPE_TAIL_OFFSET, true);
     const targetReadOpen = view.getInt32(targetOffset + PIPE_READ_OPEN_OFFSET, true);
     const targetWriteOpen = view.getInt32(targetOffset + PIPE_WRITE_OPEN_OFFSET, true);
     const mode = snapshot.mode ?? (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE | PIPE_SLOT_MODE_CONTROL);
@@ -418,151 +363,80 @@ export function applyThreadPipeSlots(
           + `:data=${JSON.stringify(ascii)}`,
       );
     }
-    if (
-      sourceGeneration !== 0
-      && sourceGeneration !== targetGeneration
-    ) {
-      if (
-        sourceHead === 0
-        && sourceTail === 0
-        && targetHead !== targetTail
-        && snapshot.fresh !== true
-        && !generationAhead(sourceGeneration, targetGeneration)
-      ) {
-        continue;
-      }
-      if (
-        snapshot.fresh === true
-        || generationAhead(sourceGeneration, targetGeneration)
-        || (targetReadOpen <= 0 && targetWriteOpen <= 0)
-      ) {
-        memory.set(snapshot.slot, targetOffset);
-        appliedSnapshots.push({
-          pipeSlot: snapshot.pipeSlot,
-          slot: memory.slice(targetOffset, targetOffset + slotBytes),
-          mode,
-          fresh: snapshot.fresh,
-        });
-        syncPipeOfdGenerationsForSlot(handle, snapshot.pipeSlot);
-      }
+    const action = pipeSlotSnapshotMergeAction(handle, {
+      context: actionSet.threadStepContext,
+      mode,
+      fresh: snapshot.fresh === true,
+      sourceHead,
+      sourceTail,
+      sourceReadOpen,
+      sourceWriteOpen,
+      sourceGeneration,
+      targetHead,
+      targetTail,
+      targetReadOpen,
+      targetWriteOpen,
+      targetGeneration,
+    });
+    if (pipeSlotSnapshotActionHas(action, actionSet.skip)) {
       continue;
     }
-    if (
-      snapshot.fresh === true
-      && sourceHead === 0
-      && sourceTail === 0
-      && targetHead === targetTail
-      && sourceReadOpen > 0
-      && sourceWriteOpen > 0
-      && (mode & (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)) === (PIPE_SLOT_MODE_READ | PIPE_SLOT_MODE_WRITE)
-    ) {
-      memory.set(snapshot.slot, targetOffset);
+    const appliedWholeSnapshot = pipeSlotSnapshotActionHas(action, actionSet.applySlot);
+    if (appliedWholeSnapshot) {
+      applyPipeSlotSnapshot(
+        handle,
+        memory,
+        snapshot.slot,
+        targetOffset,
+        slotBytes,
+        snapshot.pipeSlot,
+        sourceReadOpen,
+        sourceWriteOpen,
+      );
       appliedSnapshots.push({
         pipeSlot: snapshot.pipeSlot,
         slot: memory.slice(targetOffset, targetOffset + slotBytes),
         mode,
         fresh: snapshot.fresh,
       });
-      syncPipeOfdGenerationsForSlot(handle, snapshot.pipeSlot);
-      continue;
     }
-    if (
-      targetReadOpen <= 0
-      && targetWriteOpen <= 0
-      && targetHead === targetTail
-      && (sourceReadOpen > 0 || sourceWriteOpen > 0)
-      && ((mode & (PIPE_SLOT_MODE_WRITE | PIPE_SLOT_MODE_CONTROL)) !== 0)
-    ) {
-      memory.set(snapshot.slot, targetOffset);
-      appliedSnapshots.push({
-        pipeSlot: snapshot.pipeSlot,
-        slot: memory.slice(targetOffset, targetOffset + slotBytes),
-        mode,
-        fresh: snapshot.fresh,
-      });
-      syncPipeOfdGenerationsForSlot(handle, snapshot.pipeSlot);
-      continue;
+    if (pipeSlotSnapshotActionHas(action, actionSet.applyControl)) {
+      applySupervisorPipeControl(handle, snapshot.pipeSlot, sourceReadOpen, sourceWriteOpen);
     }
-    if ((mode & PIPE_SLOT_MODE_CONTROL) !== 0) {
-      view.setInt32(targetOffset + PIPE_READ_OPEN_OFFSET, sourceReadOpen, true);
-      view.setInt32(targetOffset + PIPE_WRITE_OPEN_OFFSET, sourceWriteOpen, true);
-    }
-    if (
-      (mode & PIPE_SLOT_MODE_READ) !== 0
-      && (mode & PIPE_SLOT_MODE_WRITE) === 0
-      && sourceHead !== 0
-      && sourceHead === sourceTail
-      && targetTail !== sourceTail
-      && counterAhead(sourceTail, targetTail)
-    ) {
+    if (pipeSlotSnapshotActionHas(action, actionSet.setHeadToSource)) {
       view.setUint32(targetOffset + PIPE_HEAD_OFFSET, sourceHead, true);
-      view.setUint32(targetOffset + PIPE_TAIL_OFFSET, sourceTail, true);
-      targetHead = sourceHead;
-      targetTail = sourceTail;
     }
-    if (
-      (mode & PIPE_SLOT_MODE_WRITE) !== 0
-      && (mode & PIPE_SLOT_MODE_READ) === 0
-      && sourceHead === 0
-      && sourceTail !== 0
-      && targetHead !== 0
-      && (targetHead === targetTail || targetTail === 0)
-      && counterAhead(sourceTail, targetTail)
-    ) {
+    if (pipeSlotSnapshotActionHas(action, actionSet.setTailToSource)) {
+      view.setUint32(targetOffset + PIPE_TAIL_OFFSET, sourceTail, true);
+    }
+    if (pipeSlotSnapshotActionHas(action, actionSet.setHeadZero)) {
       view.setUint32(targetOffset + PIPE_HEAD_OFFSET, 0, true);
-      targetHead = 0;
     }
-    if (
-      (mode & PIPE_SLOT_MODE_READ) !== 0
-      && counterAhead(sourceHead, targetHead)
-      && (sourceHead !== sourceTail || targetTail === sourceTail)
-    ) {
-      view.setUint32(targetOffset + PIPE_HEAD_OFFSET, sourceHead, true);
-    }
-    if ((mode & PIPE_SLOT_MODE_WRITE) !== 0 && counterAhead(sourceTail, targetTail)) {
-      view.setUint32(targetOffset + PIPE_TAIL_OFFSET, sourceTail, true);
+    if (pipeSlotSnapshotActionHas(action, actionSet.copyTailDelta)) {
       copyPipeDataTailDelta(snapshot.slot, targetOffset + PIPE_HEADER_BYTES, targetTail, sourceTail);
-    } else if (
-      (mode & PIPE_SLOT_MODE_WRITE) !== 0
-      && sourceTail === targetTail
-      && sourceHead !== sourceTail
-      && !((mode & PIPE_SLOT_MODE_READ) !== 0 && counterAhead(targetHead, sourceHead))
-    ) {
+    }
+    if (pipeSlotSnapshotActionHas(action, actionSet.copyFull)) {
       memory.set(
         snapshot.slot.subarray(PIPE_HEADER_BYTES, slotBytes),
         targetOffset + PIPE_HEADER_BYTES,
       );
     }
-    appliedSnapshots.push({
-      pipeSlot: snapshot.pipeSlot,
-      slot: memory.slice(targetOffset, targetOffset + slotBytes),
-      mode,
-      fresh: snapshot.fresh,
-    });
-    syncPipeOfdGenerationsForSlot(handle, snapshot.pipeSlot);
-  }
-  handle.pendingPipeSlotSnapshots.push(...appliedSnapshots);
-}
-
-export function processHasPipeFd(handle: ProcessHandle, vmPtr: number): boolean {
-  if (vmPtr === 0) {
-    return false;
-  }
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
-  if (maxFds <= 0 || pipeType === undefined) {
-    return false;
-  }
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-    if (ofdId <= 0) {
+    if (pipeSlotSnapshotActionHas(action, actionSet.syncGeneration)) {
+      syncPipeOfdGenerationsForSlot(handle, snapshot.pipeSlot);
+    }
+    if (pipeSlotSnapshotActionHas(action, actionSet.stop)) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_fd_type?.(ofdId) === pipeType) {
-      return true;
+    if (!appliedWholeSnapshot) {
+      appliedSnapshots.push({
+        pipeSlot: snapshot.pipeSlot,
+        slot: memory.slice(targetOffset, targetOffset + slotBytes),
+        mode,
+        fresh: snapshot.fresh,
+      });
     }
   }
-  return false;
+  appendPendingPipeSlotSnapshots(handle, appliedSnapshots);
 }
 
 export function snapshotProcessPipeSlotsForThreadStep(
@@ -574,12 +448,10 @@ export function snapshotProcessPipeSlotsForThreadStep(
   }
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
   const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
   const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
   if (
     maxFds <= 0
     || maxPipes <= 0
-    || pipeType === undefined
     || !Number.isInteger(slotBytes)
     || slotBytes <= 0
   ) {
@@ -588,39 +460,29 @@ export function snapshotProcessPipeSlotsForThreadStep(
   const memory = new Uint8Array(handle.memory.buffer);
   const snapshots = new Map<number, KernelWorkerPipeSlotSnapshot>();
   for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
-    if (
-      ofdId <= 0
-      || ofdId >= maxFds
-      || handle.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
-    ) {
-      continue;
+    const ofdId = supervisorProcessPipeOfdForFd(handle, vmPtr, fd);
+    for (const pipeSlot of supervisorOfdPipeSlots(handle, ofdId)) {
+      if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
+        continue;
+      }
+      const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+      if (offset < 0 || offset + slotBytes > memory.byteLength) {
+        continue;
+      }
+      snapshots.set(pipeSlot, {
+        pipeSlot,
+        slot: memory.slice(offset, offset + slotBytes),
+      });
     }
-    const pipeSlot = handle.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
-    if (pipeSlot <= 0 || pipeSlot >= maxPipes || snapshots.has(pipeSlot)) {
-      continue;
-    }
-    const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
-    if (offset < 0 || offset + slotBytes > memory.byteLength) {
-      continue;
-    }
-    snapshots.set(pipeSlot, {
-      pipeSlot,
-      slot: memory.slice(offset, offset + slotBytes),
-    });
   }
   return [...snapshots.values()];
 }
 
 export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
-  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
   const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
-  const pipeType = handle.kernel.abi_fd_type_pipe?.();
   const slotBytes = maxPipes > 0 ? handle.kernel.kernel_pipe_region_bytes() / maxPipes : 0;
   if (
-    maxFds <= 0
-    || maxPipes <= 0
-    || pipeType === undefined
+    maxPipes <= 0
     || !Number.isInteger(slotBytes)
     || slotBytes <= 0
   ) {
@@ -628,31 +490,29 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
   }
   const readOpen = new Int32Array(maxPipes);
   const writeOpen = new Int32Array(maxPipes);
-  for (const member of handle.kernelShare.members) {
+  for (const member of kernelShareMemberList(handle)) {
     if (member.vmPtr === 0) {
       continue;
     }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = member.kernel.process_fd_ofd_id?.(member.vmPtr, fd) ?? 0;
-      if (
-        ofdId <= 0
-        || ofdId >= maxFds
-        || member.kernel.kernel_ofd_fd_type?.(ofdId) !== pipeType
-      ) {
-        continue;
+    const supervisorReadOpen = requireSupervisorPipeCount(
+      member,
+      "supervisor_process_pipe_read_open_count",
+    );
+    const supervisorWriteOpen = requireSupervisorPipeCount(
+      member,
+      "supervisor_process_pipe_write_open_count",
+    );
+    for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
+      const readCount = supervisorReadOpen(member.vmPtr, pipeSlot);
+      const writeCount = supervisorWriteOpen(member.vmPtr, pipeSlot);
+      if (readCount > 0) {
+        readOpen[pipeSlot] += readCount;
       }
-      const pipeSlot = member.kernel.kernel_ofd_ino?.(ofdId) ?? 0;
-      if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
-        continue;
-      }
-      if ((member.kernel.kernel_ofd_host_fd?.(ofdId) ?? -1) >= 0) {
-        readOpen[pipeSlot] += 1;
-      } else {
-        writeOpen[pipeSlot] += 1;
+      if (writeCount > 0) {
+        writeOpen[pipeSlot] += writeCount;
       }
     }
   }
-  const view = new DataView(handle.memory.buffer);
   for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
     if (readOpen[pipeSlot] <= 0 && writeOpen[pipeSlot] <= 0) {
       continue;
@@ -661,21 +521,6 @@ export function refreshPipeControlFromKernelShare(handle: ProcessHandle): void {
     if (offset < 0 || offset + 16 > handle.memory.buffer.byteLength) {
       continue;
     }
-    view.setInt32(offset + PIPE_READ_OPEN_OFFSET, readOpen[pipeSlot], true);
-    view.setInt32(offset + PIPE_WRITE_OPEN_OFFSET, writeOpen[pipeSlot], true);
+    applySupervisorPipeControl(handle, pipeSlot, readOpen[pipeSlot], writeOpen[pipeSlot]);
   }
-}
-
-export function shouldRefreshPipeStateBeforeFsResume(handle: ProcessHandle, vmPtr: number): boolean {
-  let hasOtherKernelShareMember = false;
-  for (const member of handle.kernelShare.members) {
-    if (member !== handle) {
-      hasOtherKernelShareMember = true;
-      break;
-    }
-  }
-  return Boolean(handle.kernelWorkerRequest)
-    && handle.pid > 0
-    && hasOtherKernelShareMember
-    && processHasPipeFd(handle, vmPtr);
 }

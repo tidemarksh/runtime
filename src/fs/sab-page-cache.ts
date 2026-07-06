@@ -121,33 +121,42 @@ interface MemoryFileObject {
   generation: number;
 }
 
+interface FileBackingObjectOptions {
+  fileObjectId?: FileObjectId;
+  generation?: number;
+}
+
+interface FileBackingMutationOptions {
+  generation?: number;
+}
+
 export class MemoryFileBackingStore {
   private nextFileObjectId = 1;
   private readonly files = new Map<FileObjectId, MemoryFileObject>();
 
-  createFile(data: Uint8Array = new Uint8Array()): FileBackingStat {
-    const fileObjectId = this.nextFileObjectId++;
+  createFile(data: Uint8Array = new Uint8Array(), options: FileBackingObjectOptions = {}): FileBackingStat {
+    const fileObjectId = this.allocateFileObjectId(options.fileObjectId);
     this.files.set(fileObjectId, {
       data: new Uint8Array(data),
       source: null,
       patches: [],
       sizeOverride: null,
-      generation: 1,
+      generation: this.resolveGeneration(options.generation),
     });
     return this.stat(fileObjectId)!;
   }
 
-  createSourceFile(source: FileBackingSource): FileBackingStat {
+  createSourceFile(source: FileBackingSource, options: FileBackingObjectOptions = {}): FileBackingStat {
     if (!Number.isInteger(source.byteLength) || source.byteLength < 0 || source.byteLength > 0xffffffff) {
       throw new RangeError(`invalid file source size: ${source.byteLength}`);
     }
-    const fileObjectId = this.nextFileObjectId++;
+    const fileObjectId = this.allocateFileObjectId(options.fileObjectId);
     this.files.set(fileObjectId, {
       data: null,
       source,
       patches: [],
       sizeOverride: null,
-      generation: 1,
+      generation: this.resolveGeneration(options.generation),
     });
     return this.stat(fileObjectId)!;
   }
@@ -213,7 +222,7 @@ export class MemoryFileBackingStore {
     return out;
   }
 
-  replace(fileObjectId: FileObjectId, data: Uint8Array): FileBackingStat {
+  replace(fileObjectId: FileObjectId, data: Uint8Array, options: FileBackingMutationOptions = {}): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
@@ -222,11 +231,11 @@ export class MemoryFileBackingStore {
     file.source = null;
     file.patches = [];
     file.sizeOverride = null;
-    file.generation += 1;
+    this.applyMutationGeneration(file, options.generation);
     return this.stat(fileObjectId)!;
   }
 
-  write(fileObjectId: FileObjectId, offset: number, data: Uint8Array): FileBackingStat {
+  write(fileObjectId: FileObjectId, offset: number, data: Uint8Array, options: FileBackingMutationOptions = {}): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
@@ -245,11 +254,11 @@ export class MemoryFileBackingStore {
     if (file.sizeOverride !== null && end > file.sizeOverride) {
       file.sizeOverride = end;
     }
-    file.generation += 1;
+    this.applyMutationGeneration(file, options.generation);
     return this.stat(fileObjectId)!;
   }
 
-  truncate(fileObjectId: FileObjectId, size: number): FileBackingStat {
+  truncate(fileObjectId: FileObjectId, size: number, options: FileBackingMutationOptions = {}): FileBackingStat {
     const file = this.files.get(fileObjectId);
     if (!file) {
       throw new Error(`file object not found: ${fileObjectId}`);
@@ -279,10 +288,40 @@ export class MemoryFileBackingStore {
     }
     file.patches = nextPatches;
     file.sizeOverride = size;
-    if (previousSize !== size || trimmed) {
-      file.generation += 1;
+    if (previousSize !== size || trimmed || options.generation !== undefined) {
+      this.applyMutationGeneration(file, options.generation);
     }
     return this.stat(fileObjectId)!;
+  }
+
+  private allocateFileObjectId(fileObjectId: FileObjectId | undefined): FileObjectId {
+    if (fileObjectId === undefined) {
+      return this.nextFileObjectId++;
+    }
+    if (!Number.isInteger(fileObjectId) || fileObjectId <= 0 || fileObjectId > 0xffffffff) {
+      throw new RangeError(`invalid file object id: ${fileObjectId}`);
+    }
+    if (this.files.has(fileObjectId)) {
+      throw new Error(`file object already exists: ${fileObjectId}`);
+    }
+    this.nextFileObjectId = Math.max(this.nextFileObjectId, fileObjectId + 1);
+    return fileObjectId;
+  }
+
+  private resolveGeneration(generation: number | undefined): number {
+    if (generation === undefined) {
+      return 1;
+    }
+    if (!Number.isInteger(generation) || generation <= 0 || generation > 0xffffffff) {
+      throw new RangeError(`invalid file object generation: ${generation}`);
+    }
+    return generation;
+  }
+
+  private applyMutationGeneration(file: MemoryFileObject, generation: number | undefined): void {
+    file.generation = generation === undefined
+      ? file.generation + 1
+      : this.resolveGeneration(generation);
   }
 
   private fileSize(file: MemoryFileObject): number {
@@ -499,39 +538,67 @@ function findResidentPageRecordIndex(
   return -1;
 }
 
+export interface ResidentPagePublishSlotDecisionInput {
+  existingSlot: number;
+  emptySlot: number;
+  cleanEvictSlot: number;
+}
+
+export type ResidentPageEvictStatus = "evicted" | "dirty-pinned" | "not-found";
+
+export interface ResidentPageEvictionDecisionInput {
+  recordFound: boolean;
+  dirty: boolean;
+}
+
+export interface ResidentPageTableAuthority {
+  selectPublishSlot(input: ResidentPagePublishSlotDecisionInput): number;
+  decideEviction(input: ResidentPageEvictionDecisionInput): ResidentPageEvictStatus;
+}
+
 function allocateResidentPageRecordIndex(
   sab: SharedArrayBuffer,
   fileObjectId: number,
   generation: number,
   pageIndex: number,
+  authority: ResidentPageTableAuthority,
 ): number {
   const existing = findResidentPageRecordIndex(sab, fileObjectId, generation, pageIndex);
-  if (existing >= 0) {
-    return existing;
-  }
   const u32 = new Uint32Array(sab);
   const count = residentPageRecordCount(sab);
+  let emptyIndex = -1;
   let oldestIndex = -1;
   let oldestLastUsed = 0xffffffff;
-  for (let index = 0; index < count; index += 1) {
-    const base32 = residentPageRecordOffset(sab, index) >>> 2;
-    const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-    if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
-      return index;
-    }
-    if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
-      continue;
-    }
-    const lastUsed = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2));
-    if (lastUsed < oldestLastUsed) {
-      oldestIndex = index;
-      oldestLastUsed = lastUsed;
+  if (existing < 0) {
+    for (let index = 0; index < count; index += 1) {
+      const base32 = residentPageRecordOffset(sab, index) >>> 2;
+      const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+      if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
+        emptyIndex = index;
+        break;
+      }
+      if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
+        continue;
+      }
+      const lastUsed = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2));
+      if (lastUsed < oldestLastUsed) {
+        oldestIndex = index;
+        oldestLastUsed = lastUsed;
+      }
     }
   }
-  if (oldestIndex >= 0) {
-    clearResidentPageRecord(sab, oldestIndex);
+  const selected = authority.selectPublishSlot({
+    existingSlot: existing,
+    emptySlot: emptyIndex,
+    cleanEvictSlot: oldestIndex,
+  });
+  if (selected < 0 || selected >= count) {
+    return -1;
   }
-  return oldestIndex;
+  if (selected === oldestIndex && existing < 0 && emptyIndex < 0) {
+    clearResidentPageRecord(sab, selected);
+  }
+  return selected;
 }
 
 function clearResidentPageRecord(sab: SharedArrayBuffer, recordIndex: number): void {
@@ -569,6 +636,7 @@ export function evictResidentPage(
   sab: SharedArrayBuffer,
   ino: number,
   pageIndex: number,
+  authority: ResidentPageTableAuthority,
 ): "evicted" | "dirty-pinned" | "not-found" {
   if (
     !Number.isInteger(ino)
@@ -581,17 +649,21 @@ export function evictResidentPage(
   }
   const meta = readInodeMeta(sab, ino);
   if (!meta || meta.fileObjectId === 0) {
-    return "not-found";
+    return authority.decideEviction({ recordFound: false, dirty: false });
   }
   const recordIndex = findResidentPageRecordIndex(sab, meta.fileObjectId, meta.generation, pageIndex);
   if (recordIndex < 0) {
-    return "not-found";
+    return authority.decideEviction({ recordFound: false, dirty: false });
   }
   const u32 = new Uint32Array(sab);
   const base32 = residentPageRecordOffset(sab, recordIndex) >>> 2;
   const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-  if ((flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
-    return "dirty-pinned";
+  const status = authority.decideEviction({
+    recordFound: true,
+    dirty: (flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0,
+  });
+  if (status !== "evicted") {
+    return status;
   }
   clearResidentPageRecord(sab, recordIndex);
   return "evicted";
@@ -606,7 +678,8 @@ export function publishResidentPage(
     dirty?: boolean;
     dirtyStart?: number;
     dirtyEnd?: number;
-  } = {},
+    authority: ResidentPageTableAuthority;
+  },
 ): boolean {
   if (
     !Number.isInteger(ino)
@@ -623,7 +696,13 @@ export function publishResidentPage(
   if (!meta || meta.fileObjectId === 0) {
     return false;
   }
-  const recordIndex = allocateResidentPageRecordIndex(sab, meta.fileObjectId, meta.generation, pageIndex);
+  const recordIndex = allocateResidentPageRecordIndex(
+    sab,
+    meta.fileObjectId,
+    meta.generation,
+    pageIndex,
+    options.authority,
+  );
   if (recordIndex < 0) {
     return false;
   }
@@ -765,6 +844,40 @@ interface ResidentPageSnapshot {
 export interface DirtyResidentWritebackRange {
   offset: number;
   bytes: Uint8Array;
+}
+
+export interface DirtyResidentWriteDecisionInput {
+  ino: number;
+  offset: number;
+  length: number;
+  currentSize: number;
+  currentFileObjectId: number;
+  currentGeneration: number;
+  existingDirtyPages: number;
+  newDirtyPages: number;
+  residentPageCapacity: number;
+}
+
+export interface DirtyResidentTruncateDecisionInput {
+  ino: number;
+  size: number;
+  currentSize: number;
+  currentFileObjectId: number;
+  currentGeneration: number;
+  retainedDirtyPages: number;
+  residentPageCapacity: number;
+}
+
+export interface DirtyResidentPageDecision {
+  result: number;
+  nextSize: number;
+  fileObjectId: number;
+  generation: number;
+}
+
+export interface ResidentDirtyPageAuthority extends ResidentPageTableAuthority {
+  decideWrite(input: DirtyResidentWriteDecisionInput): DirtyResidentPageDecision;
+  decideTruncate(input: DirtyResidentTruncateDecisionInput): DirtyResidentPageDecision;
 }
 
 function collectResidentPageSnapshots(
@@ -937,6 +1050,7 @@ export function markDirtyResidentFileDataClean(
   ino: number,
   fileObjectId: number,
   generation: number,
+  authority: ResidentPageTableAuthority,
 ): boolean {
   if (
     !Number.isInteger(ino)
@@ -968,7 +1082,7 @@ export function markDirtyResidentFileDataClean(
     if (validBytes <= 0) {
       continue;
     }
-    if (!publishResidentPage(sab, ino, page.pageIndex, page.bytes.subarray(0, validBytes))) {
+    if (!publishResidentPage(sab, ino, page.pageIndex, page.bytes.subarray(0, validBytes), { authority })) {
       return false;
     }
   }
@@ -981,6 +1095,7 @@ export function writeDirtyResidentFileData(
   offset: number,
   data: Uint8Array,
   readBackingRange?: ResidentBackingRangeReader,
+  authority?: ResidentDirtyPageAuthority,
 ): number {
   if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || offset < 0) {
     return -22;
@@ -1038,13 +1153,34 @@ export function writeDirtyResidentFileData(
     touchedPages.add(pageIndex);
   }
 
-  const fileObjectId = record.fileObjectId || ino;
-  const generation = record.fileObjectId === 0 ? record.generation + 1 : record.generation;
   const existingDirtyPageCount = meta ? dirtyResidentPageCount(sab, meta) : 0;
-  if (existingDirtyPageCount + newDirtyPageCount > residentPageRecordCount(sab)) {
-    return -28;
+  if (!authority) {
+    return -95;
   }
-  if (!updateInodeForResidentPages(sab, ino, record, nextSize, fileObjectId, generation)) {
+  const decision = authority.decideWrite({
+    ino,
+    offset,
+    length: data.length,
+    currentSize: record.size,
+    currentFileObjectId: record.fileObjectId,
+    currentGeneration: record.generation,
+    existingDirtyPages: existingDirtyPageCount,
+    newDirtyPages: newDirtyPageCount,
+    residentPageCapacity: residentPageRecordCount(sab),
+  });
+  if (decision.result < 0) {
+    return decision.result;
+  }
+  if (
+    !updateInodeForResidentPages(
+      sab,
+      ino,
+      record,
+      decision.nextSize,
+      decision.fileObjectId,
+      decision.generation,
+    )
+  ) {
     return -28;
   }
   for (const page of residentPages.values()) {
@@ -1055,12 +1191,13 @@ export function writeDirtyResidentFileData(
       dirty: true,
       dirtyStart: page.dirtyStart,
       dirtyEnd: page.dirtyEnd,
+      authority,
     });
     if (!published) {
       return -28;
     }
   }
-  return data.length;
+  return decision.result;
 }
 
 export function truncateDirtyResidentFileData(
@@ -1068,6 +1205,7 @@ export function truncateDirtyResidentFileData(
   ino: number,
   size: number,
   readBackingRange?: ResidentBackingRangeReader,
+  authority?: ResidentDirtyPageAuthority,
 ): number {
   if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES || size < 0 || size > 0xffffffff) {
     return -22;
@@ -1122,13 +1260,32 @@ export function truncateDirtyResidentFileData(
       dirtyEnd: validBytes,
     });
   }
-  const fileObjectId = record.fileObjectId || ino;
-  const generation = record.generation + 1;
   const retainedDirtyPages = [...residentPages.values()].filter((page) => page.pageIndex * DEFAULT_RESIDENT_PAGE_SIZE < size);
-  if (retainedDirtyPages.length > residentPageRecordCount(sab)) {
-    return -28;
+  if (!authority) {
+    return -95;
   }
-  if (!updateInodeForResidentPages(sab, ino, record, size, fileObjectId, generation)) {
+  const decision = authority.decideTruncate({
+    ino,
+    size,
+    currentSize: record.size,
+    currentFileObjectId: record.fileObjectId,
+    currentGeneration: record.generation,
+    retainedDirtyPages: retainedDirtyPages.length,
+    residentPageCapacity: residentPageRecordCount(sab),
+  });
+  if (decision.result < 0) {
+    return decision.result;
+  }
+  if (
+    !updateInodeForResidentPages(
+      sab,
+      ino,
+      record,
+      decision.nextSize,
+      decision.fileObjectId,
+      decision.generation,
+    )
+  ) {
     return -28;
   }
   for (const page of retainedDirtyPages) {
@@ -1144,12 +1301,13 @@ export function truncateDirtyResidentFileData(
       dirty: true,
       dirtyStart: Math.min(page.dirtyStart, validBytes),
       dirtyEnd: Math.min(page.dirtyEnd, validBytes),
+      authority,
     });
     if (!published) {
       return -28;
     }
   }
-  return 0;
+  return decision.result;
 }
 
 export function readDirtyResidentFileData(

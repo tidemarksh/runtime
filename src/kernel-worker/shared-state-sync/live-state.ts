@@ -1,4 +1,9 @@
-import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  readKernelRuntimeState,
+  supervisorOfdFdType,
+  type KernelExports,
+} from "../../abi.js";
 import { copyMemoryRange } from "../common.js";
 import type {
   KernelWorkerFdEntrySnapshot,
@@ -46,7 +51,7 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       if (
         ofdId > 0
         && ofdId < maxFds
-        && sourceExports.kernel_ofd_fd_type(ofdId) === timerfdType
+        && supervisorOfdFdType(sourceExports, ofdId) === timerfdType
       ) {
         return true;
       }

@@ -1,5 +1,4 @@
 import { createWorkerKernelRpcSocketHelpers } from "../socket.js";
-import { createWorkerKernelRpcStdioHelpers } from "../stdio.js";
 import { createWorkerKernelRpcVforkHelpers } from "../vfork.js";
 import { createWorkerKernelRpcWait4Helpers } from "../wait4.js";
 import type {
@@ -21,7 +20,6 @@ export function createWorkerKernelRpcResumeLifecycleHelpers(
 ) {
   return {
     ...createWorkerKernelRpcSocketHelpers(deps),
-    ...createWorkerKernelRpcStdioHelpers(deps),
     ...createWorkerKernelRpcVforkHelpers(deps),
     ...createWorkerKernelRpcWait4Helpers(deps),
   };

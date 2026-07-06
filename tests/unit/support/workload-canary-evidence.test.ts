@@ -44,7 +44,6 @@ const shellAndStdioEvidence = [
   "worker/io/stdio.test.ts",
   "worker/scheduler/liveness.test.ts",
   "worker/status/route.test.ts",
-  "worker/process/child-processes.test.ts",
 ] as const;
 
 const fsEvidence = [

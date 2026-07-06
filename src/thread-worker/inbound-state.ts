@@ -1,5 +1,6 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
 import { attachKernelRuntimeState } from "../abi.js";
+import { kernelNetBufferCount } from "../kernel-socket-layout.js";
 import type {
   GuestMemoryWriteSnapshot,
   GuestWriteWatchRegion,
@@ -20,7 +21,6 @@ export interface ThreadWorkerInboundStatePayload {
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   socketState?: KernelWorkerSocketStateSnapshot;
-  childExitRecords?: Array<{ childPid: number; waitStatus: number; parentPid?: number }>;
   pipeSlots?: KernelWorkerPipeSlotSnapshot[];
   guestMemoryWrites?: GuestMemoryWriteSnapshot[];
   guestWriteWatchRegions?: GuestWriteWatchRegion[];
@@ -72,30 +72,6 @@ export function consumeThreadWorkerInboundGuestWriteDebug(): string[] {
   const entries = inboundGuestWriteDebug.slice();
   inboundGuestWriteDebug.length = 0;
   return entries;
-}
-
-function applyChildExitRecords(
-  kernelExports: KernelExports,
-  records?: Array<{ childPid: number; waitStatus: number; parentPid?: number }>,
-): void {
-  if (!records || records.length === 0) {
-    return;
-  }
-  for (const record of records) {
-    if (
-      record.parentPid !== undefined
-      && record.parentPid > 0
-      && kernelExports.process_record_child_exit_for_parent
-    ) {
-      kernelExports.process_record_child_exit_for_parent(
-        record.parentPid,
-        record.childPid,
-        record.waitStatus,
-      );
-    } else {
-      kernelExports.process_record_child_exit(record.childPid, record.waitStatus);
-    }
-  }
 }
 
 function applyGuestWriteWatchRegions(
@@ -183,7 +159,7 @@ function applySocketState(
   const memory = new Uint8Array(kernelExports.memory.buffer);
   const socketTableBytes = kernelExports.kernel_socket_table_bytes();
   const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
-  const maxBuffers = Math.max(1, Number(kernelExports.abi_max_sockets?.() ?? 32) * 2);
+  const maxBuffers = kernelNetBufferCount(kernelExports);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
   if (
     socketState.socketTable.length !== socketTableBytes
@@ -264,7 +240,6 @@ export function applyThreadWorkerInboundState(
   applyOfdSlots(kernelExports, payload.kernelState, payload.ofdSlots);
   applyFdEntries(kernelExports, payload.targetVmPtr, payload.fdEntries);
   applySocketState(kernelExports, payload.kernelState, payload.socketState);
-  applyChildExitRecords(kernelExports, payload.childExitRecords);
   applyInboundPipeSlots(kernelExports, payload.kernelState, payload.pipeSlots);
   applyThreadWorkerGuestMemoryWrites(context, payload.guestMemoryWrites);
   if (payload.guestWriteWatchRegions !== undefined) {

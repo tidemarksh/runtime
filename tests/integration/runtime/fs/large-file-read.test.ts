@@ -7,6 +7,7 @@ import {
   Runtime,
   logSkip,
   readKernelWasm,
+  runtimeDebugSummary,
 } from "../../../support/runtime-workload.js";
 import { buildSnapshotFromSources } from "../../../support/snapshot-sources.js";
 
@@ -17,6 +18,7 @@ const largeFileReadBytes = Number(process.env.TIDEMARK_TEST_LARGE_FILE_READ_BYTE
 const largeFileReadInput = process.env.TIDEMARK_TEST_LARGE_FILE_READ_INPUT ?? "";
 const largeFilePath = "/work/large-file-read.bin";
 const defaultLargeFileReadTimeoutMs = 180_000;
+const timeoutOutputPreviewBytes = 4096;
 
 function resolveLargeFileReadTimeoutMs(): number {
   const parsed = Number(process.env.TIDEMARK_TEST_LARGE_FILE_READ_TIMEOUT_MS ?? defaultLargeFileReadTimeoutMs);
@@ -229,8 +231,8 @@ function compactExecutionStats(
     cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
     running: proc.running,
     memoryBytes: proc.memoryBytes,
-    readyWorkers: proc.readyWorkers,
-    blockedWorkers: proc.blockedWorkers,
+    vforkReadyWorkers: proc.vforkReadyWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
     transferDebugStats: proc.transferDebugStats,
     cpuDebugStats: proc.cpuDebugStats,
     workers: proc.workers.map((worker) => ({
@@ -281,7 +283,23 @@ async function spawnWithOutputAndStats(
     const exitCode = await Promise.race([
       proc.waitForExit(),
       new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+        timeoutId = setTimeout(() => {
+          void runtimeDebugSummary(runtime)
+            .catch((error) => `runtimeDebugSummaryError=${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
+            .then((runtimeDebug) => {
+              const preview = output.length > timeoutOutputPreviewBytes
+                ? `${output.slice(0, timeoutOutputPreviewBytes)}<truncated ${output.length - timeoutOutputPreviewBytes} chars>`
+                : output;
+              const debugInfo = proc.debugInfo?.();
+              reject(new Error([
+                `timeout after ${timeoutMs}ms`,
+                preview ? `capturedOutput=${JSON.stringify(preview)}` : "",
+                debugInfo ? `debugInfo=${debugInfo}` : "",
+                runtimeDebug ? `runtimeDebug=${runtimeDebug}` : "",
+                `execution=${execution}`,
+              ].filter(Boolean).join("\n")));
+            });
+        }, timeoutMs);
         if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
           timeoutId.unref();
         }

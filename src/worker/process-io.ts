@@ -2,10 +2,34 @@ import { readKernelRuntimeState } from "../abi.js";
 import { publishKernelRuntimeState } from "../bridge/runtime-state.js";
 import { SOCKET_STATE_CONNECTED, SOCKET_STATE_SHUTDOWN } from "../layout/socket.js";
 import type { RuntimeNetworkConnection, RuntimeNetworkEndpoint } from "../bridge/network.js";
+import { requireKernelSocketCount } from "../kernel-socket-layout.js";
 import { ensureMemoryCapacity, ensureKernelMemoryCapacity, kernelScratchBase, writeKernelScratch } from "./kernel-scratch.js";
-import { kernelWorkerOwnsPipeState } from "./ownership/pipe-control.js";
+import { processHasKernelWorkerOwnership } from "./kernel-worker-ownership.js";
+import {
+  kernelSocketOutboundAvailable,
+  supervisorSocketDrainFds,
+  supervisorSocketOfdForFd,
+  supervisorSocketOfdIsSocket,
+} from "./ownership/socket-control.js";
 import { forceNetworkClosedFd, restoreNetworkSocketSlotSnapshot, snapshotNetworkSocketSlot } from "./network-socket-close.js";
-import { createTransferDebugStats, type ProcessHandle } from "./types.js";
+import {
+  networkClosedFds,
+  networkClosedSocketSlots,
+  networkConnectionOfds as networkConnectionOfdsState,
+  networkConnections,
+  networkOfdSlotWatermarks,
+  networkPendingConnectFds,
+  networkRecvHeadWatermarks,
+  networkRecvPayloadWatermarks,
+  networkRecvTailWatermarks,
+  networkSocketSlotWatermarks,
+} from "./network-socket-state.js";
+import { getRuntimeStateSyncPromise, runtimeStateSyncInFlight } from "./state-sync-inflight.js";
+import { setStdinFlushPromise, stdinFlushPromise } from "./stdin-flush-state.js";
+import { stdinQueue } from "./stdio-buffer-state.js";
+import type { ProcessHandle } from "./types.js";
+import { workerDebugLog } from "./worker-debug-log.js";
+import { transferDebugStats } from "./worker-debug-stats.js";
 
 interface WorkerProcessIoDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
@@ -15,7 +39,7 @@ interface WorkerProcessIoDeps {
   flushStdin(handle: ProcessHandle): boolean;
   getActiveHandle?(handle: ProcessHandle): ProcessHandle | undefined;
   isActiveHandle(handle: ProcessHandle): boolean;
-  kickBlockedWorkers(handle: ProcessHandle): void;
+  notifyHostIoProgress(handle: ProcessHandle): void;
   pumpProcess(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
@@ -39,9 +63,9 @@ function appendNetworkLifecycle(handle: ProcessHandle, event: string): void {
   if (!NETWORK_LIFECYCLE_LOG_ENABLED) {
     return;
   }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  workerDebugLog(handle).push(event);
+  if (workerDebugLog(handle).length > 4096) {
+    workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
   }
   depsAppendNetworkLifecycle(handle, event);
 }
@@ -163,13 +187,94 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }>>();
 
   function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
-    handle.networkConnectionOfds ??= new Map();
-    return handle.networkConnectionOfds;
+    return networkConnectionOfdsState(handle);
+  }
+
+  function requireSupervisorSocketCommitExternalConnectResult(handle: ProcessHandle) {
+    const commit = handle.kernel.supervisor_socket_commit_external_connect_result;
+    if (typeof commit !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_commit_external_connect_result");
+    }
+    return commit.bind(handle.kernel);
+  }
+
+  function requireSupervisorSocketPrepareExternalPeer(handle: ProcessHandle) {
+    const prepare = handle.kernel.supervisor_socket_prepare_external_peer;
+    if (typeof prepare !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_prepare_external_peer");
+    }
+    return prepare.bind(handle.kernel);
+  }
+
+  function requireSupervisorSocketCloseExternalPeer(handle: ProcessHandle) {
+    const close = handle.kernel.supervisor_socket_close_external_peer;
+    if (typeof close !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_close_external_peer");
+    }
+    return close.bind(handle.kernel);
+  }
+
+  function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
+    const activeFd = handle.kernel.supervisor_socket_bridge_active_fd;
+    if (typeof activeFd !== "function") {
+      throw new Error("kernel supervisor ABI missing supervisor_socket_bridge_active_fd");
+    }
+    return activeFd.bind(handle.kernel);
+  }
+
+  function requireThreadSocketIdxForFd(handle: ProcessHandle) {
+    const socketIdxForFd = handle.kernel.thread_socket_idx_for_fd;
+    if (typeof socketIdxForFd !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_idx_for_fd");
+    }
+    return socketIdxForFd;
+  }
+
+  function requireThreadSocketRecvAvailable(handle: ProcessHandle) {
+    const recvAvailable = handle.kernel.thread_socket_recv_available;
+    if (typeof recvAvailable !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_recv_available");
+    }
+    return recvAvailable;
+  }
+
+  function requireThreadSocketRecvBufIdx(handle: ProcessHandle) {
+    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx;
+    if (typeof recvBufIdx !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_recv_buf_idx");
+    }
+    return recvBufIdx;
+  }
+
+  function requireThreadSocketReadBytes(handle: ProcessHandle) {
+    const readBytes = handle.kernel.thread_socket_read_bytes;
+    if (typeof readBytes !== "function") {
+      throw new Error("kernel supervisor ABI missing thread_socket_read_bytes");
+    }
+    return readBytes;
+  }
+
+  function socketIdxForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+    return requireThreadSocketIdxForFd(handle)(vmPtr, fd);
+  }
+
+  function socketRecvAvailable(handle: ProcessHandle, socketIdx: number): number {
+    return requireThreadSocketRecvAvailable(handle)(socketIdx);
+  }
+
+  function socketRecvBufIdx(handle: ProcessHandle, socketIdx: number): number {
+    return requireThreadSocketRecvBufIdx(handle)(socketIdx);
+  }
+
+  function socketReadBytesSnapshot(handle: ProcessHandle, socketIdx: number): number | undefined {
+    const raw = requireThreadSocketReadBytes(handle)(socketIdx);
+    const readBytes = typeof raw === "bigint" ? Number(raw) : raw;
+    return Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
   }
 
   function recordNetworkPendingInbound(handle: ProcessHandle, bytes: Uint8Array<ArrayBuffer> | null): void {
-    if (bytes !== null && bytes.length > handle.transferDebugStats.networkPendingInboundBytesMax) {
-      handle.transferDebugStats.networkPendingInboundBytesMax = bytes.length;
+    if (bytes !== null && bytes.length > transferDebugStats(handle).networkPendingInboundBytesMax) {
+      transferDebugStats(handle).networkPendingInboundBytesMax = bytes.length;
     }
   }
 
@@ -186,8 +291,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (value === undefined || value === null) {
       return;
     }
-    handle.transferDebugStats.networkBridgeReadCalls += 1;
-    handle.transferDebugStats.networkBridgeReadBytes += value.length;
+    transferDebugStats(handle).networkBridgeReadCalls += 1;
+    transferDebugStats(handle).networkBridgeReadBytes += value.length;
   }
 
   function recordGuestSocketReadProgress(handle: ProcessHandle, socketIdx: number | undefined): void {
@@ -211,10 +316,10 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return;
     }
     if (current.calls > previous.calls) {
-      handle.transferDebugStats.networkGuestSocketReadCalls += current.calls - previous.calls;
+      transferDebugStats(handle).networkGuestSocketReadCalls += current.calls - previous.calls;
     }
     if (current.bytes > previous.bytes) {
-      handle.transferDebugStats.networkGuestSocketReadBytes += Number(current.bytes - previous.bytes);
+      transferDebugStats(handle).networkGuestSocketReadBytes += Number(current.bytes - previous.bytes);
     }
   }
 
@@ -223,15 +328,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function ensureNetworkBookkeeping(handle: ProcessHandle): void {
-    handle.transferDebugStats ??= createTransferDebugStats();
-    handle.networkConnections ??= new Map();
-    handle.networkPendingConnectFds ??= new Set();
-    handle.networkClosedFds ??= new Set();
-    handle.networkClosedSocketSlots ??= new Map();
-    handle.networkSocketSlotWatermarks ??= new Map();
-    handle.networkRecvHeadWatermarks ??= new Map();
-    handle.networkRecvTailWatermarks ??= new Map();
-    handle.networkRecvPayloadWatermarks ??= new Map();
+    transferDebugStats(handle);
+    networkConnections(handle);
   }
 
   function rememberNetworkOfdSlot(handle: ProcessHandle, ofdId: number): void {
@@ -244,63 +342,58 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
       return;
     }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket?.()) {
+    if (!supervisorSocketOfdIsSocket(handle, ofdId)) {
       return;
     }
     const offset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
-    handle.networkOfdSlotWatermarks ??= new Map();
-    handle.networkOfdSlotWatermarks.set(ofdId, new Uint8Array(handle.memory.buffer).slice(offset, offset + slotBytes));
+    networkOfdSlotWatermarks(handle).set(ofdId, new Uint8Array(handle.memory.buffer).slice(offset, offset + slotBytes));
   }
 
   function clearNetworkRecvWatermarks(handle: ProcessHandle, fd: number): void {
     ensureNetworkBookkeeping(handle);
-    if (NETWORK_LIFECYCLE_LOG_ENABLED && handle.networkRecvPayloadWatermarks?.has(fd)) {
+    if (NETWORK_LIFECYCLE_LOG_ENABLED && networkRecvPayloadWatermarks(handle)?.has(fd)) {
       deps.appendWorkerDebugLog(handle, `net-watermark-clear:${handle.pid}:fd=${fd}`);
     }
-    handle.networkRecvHeadWatermarks.delete(fd);
-    handle.networkRecvTailWatermarks.delete(fd);
-    handle.networkRecvPayloadWatermarks ??= new Map();
-    handle.networkRecvPayloadWatermarks.delete(fd);
-    handle.networkSocketSlotWatermarks ??= new Map();
-    handle.networkSocketSlotWatermarks.delete(fd);
+    networkRecvHeadWatermarks(handle).delete(fd);
+    networkRecvTailWatermarks(handle).delete(fd);
+    networkRecvPayloadWatermarks(handle).delete(fd);
+    networkSocketSlotWatermarks(handle).delete(fd);
   }
 
   function moveNetworkRecvWatermarks(handle: ProcessHandle, fromFd: number, toFd: number): void {
     if (fromFd === toFd) {
       return;
     }
-    const head = handle.networkRecvHeadWatermarks.get(fromFd);
-    const tail = handle.networkRecvTailWatermarks.get(fromFd);
-    handle.networkRecvPayloadWatermarks ??= new Map();
-    const payload = handle.networkRecvPayloadWatermarks.get(fromFd);
-    handle.networkSocketSlotWatermarks ??= new Map();
-    const socketSlot = handle.networkSocketSlotWatermarks.get(fromFd);
+    const head = networkRecvHeadWatermarks(handle).get(fromFd);
+    const tail = networkRecvTailWatermarks(handle).get(fromFd);
+    const payload = networkRecvPayloadWatermarks(handle).get(fromFd);
+    const socketSlot = networkSocketSlotWatermarks(handle).get(fromFd);
     clearNetworkRecvWatermarks(handle, fromFd);
     if (head !== undefined) {
-      handle.networkRecvHeadWatermarks.set(toFd, head);
+      networkRecvHeadWatermarks(handle).set(toFd, head);
     }
     if (tail !== undefined) {
-      handle.networkRecvTailWatermarks.set(toFd, tail);
+      networkRecvTailWatermarks(handle).set(toFd, tail);
     }
     if (payload !== undefined) {
-      handle.networkRecvPayloadWatermarks.set(toFd, payload);
+      networkRecvPayloadWatermarks(handle).set(toFd, payload);
     }
     if (socketSlot !== undefined) {
-      handle.networkSocketSlotWatermarks.set(toFd, socketSlot);
+      networkSocketSlotWatermarks(handle).set(toFd, socketSlot);
     }
   }
 
   function copyNetworkRecvWatermarks(source: ProcessHandle, target: ProcessHandle, fd: number): void {
-    const head = source.networkRecvHeadWatermarks.get(fd);
-    if (head !== undefined && !target.networkRecvHeadWatermarks.has(fd)) {
-      target.networkRecvHeadWatermarks.set(fd, head);
+    const head = networkRecvHeadWatermarks(source).get(fd);
+    if (head !== undefined && !networkRecvHeadWatermarks(target).has(fd)) {
+      networkRecvHeadWatermarks(target).set(fd, head);
     }
-    const tail = source.networkRecvTailWatermarks.get(fd);
-    if (tail !== undefined && !target.networkRecvTailWatermarks.has(fd)) {
-      target.networkRecvTailWatermarks.set(fd, tail);
+    const tail = networkRecvTailWatermarks(source).get(fd);
+    if (tail !== undefined && !networkRecvTailWatermarks(target).has(fd)) {
+      networkRecvTailWatermarks(target).set(fd, tail);
     }
-    const payload = source.networkRecvPayloadWatermarks.get(fd);
-    const targetPayload = target.networkRecvPayloadWatermarks.get(fd);
+    const payload = networkRecvPayloadWatermarks(source).get(fd);
+    const targetPayload = networkRecvPayloadWatermarks(target).get(fd);
     const payloadProgress = (snapshot: typeof payload): number => {
       if (snapshot === undefined) {
         return -1;
@@ -321,7 +414,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         || payloadProgress(payload) > payloadProgress(targetPayload)
       )
     ) {
-      target.networkRecvPayloadWatermarks.set(fd, {
+      networkRecvPayloadWatermarks(target).set(fd, {
         recvBufIdx: payload.recvBufIdx,
         head: payload.head,
         tail: payload.tail,
@@ -332,9 +425,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         data: payload.data.slice(),
       });
     }
-    const socketSlot = source.networkSocketSlotWatermarks.get(fd);
-    if (socketSlot !== undefined && !target.networkSocketSlotWatermarks.has(fd)) {
-      target.networkSocketSlotWatermarks.set(fd, {
+    const socketSlot = networkSocketSlotWatermarks(source).get(fd);
+    if (socketSlot !== undefined && !networkSocketSlotWatermarks(target).has(fd)) {
+      networkSocketSlotWatermarks(target).set(fd, {
         offset: socketSlot.offset,
         data: socketSlot.data.slice(),
       });
@@ -342,20 +435,16 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function rememberNetworkRecvPayload(handle: ProcessHandle, vmPtr: number, fd: number, writtenBytes?: number): void {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
-    handle.networkRecvPayloadWatermarks ??= new Map();
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       return;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx < 0) {
       return;
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return;
-    }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16) {
@@ -367,9 +456,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const head = view.getUint32(0, true);
     const tail = view.getUint32(4, true);
     const capacity = netBufferBytes - 16;
-    const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-    const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-    const availableBytes = handle.kernel.thread_socket_recv_available?.(socketIdx);
+    const readBytes = socketReadBytesSnapshot(handle, socketIdx);
+    const availableBytes = socketRecvAvailable(handle, socketIdx);
     const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
     const safeAvailableBytes = Number.isSafeInteger(availableBytes) && availableBytes !== undefined && availableBytes >= 0
       ? availableBytes
@@ -377,7 +465,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const observedDeliveredBytes = safeReadBytes !== undefined && safeAvailableBytes !== undefined
       ? safeReadBytes + safeAvailableBytes
       : undefined;
-    const previousPayload = handle.networkRecvPayloadWatermarks.get(fd);
+    const previousPayload = networkRecvPayloadWatermarks(handle).get(fd);
     const previousDeliveredBytes = previousPayload === undefined
       ? undefined
       : networkRecvPayloadDeliveredBytes(previousPayload);
@@ -386,12 +474,11 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       : observedDeliveredBytes;
     const socketSlot = snapshotNetworkSocketSlot(handle, vmPtr, fd);
     if (socketSlot !== null) {
-      handle.networkSocketSlotWatermarks ??= new Map();
-      handle.networkSocketSlotWatermarks.set(fd, socketSlot);
+      networkSocketSlotWatermarks(handle).set(fd, socketSlot);
     }
-    handle.networkRecvHeadWatermarks.set(fd, head);
-    handle.networkRecvTailWatermarks.set(fd, tail);
-    handle.networkRecvPayloadWatermarks.set(fd, {
+    networkRecvHeadWatermarks(handle).set(fd, head);
+    networkRecvTailWatermarks(handle).set(fd, tail);
+    networkRecvPayloadWatermarks(handle).set(fd, {
       recvBufIdx,
       head,
       tail,
@@ -438,33 +525,33 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     fd: number,
     options: { allowPartialReadProgress?: boolean } = {},
   ): boolean {
-    const payload = handle.networkRecvPayloadWatermarks.get(fd);
+    const payload = networkRecvPayloadWatermarks(handle).get(fd);
     if (!payload) {
       if (NETWORK_LIFECYCLE_LOG_ENABLED) {
         deps.appendWorkerDebugLog(handle, `net-watermark-unread:${handle.pid}:fd=${fd}:missing`);
       }
       return false;
     }
-    let socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    let socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
-      const socketSlot = handle.networkSocketSlotWatermarks.get(fd);
+      const socketSlot = networkSocketSlotWatermarks(handle).get(fd);
       if (!socketSlot) {
         return false;
       }
       restoreNetworkSocketSlotSnapshot(handle, socketSlot);
-      socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+      socketIdx = socketIdxForFd(handle, vmPtr, fd);
       if (socketIdx < 0) {
         return false;
       }
     }
-    let recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    let recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx !== payload.recvBufIdx) {
-      const socketSlot = handle.networkSocketSlotWatermarks.get(fd);
+      const socketSlot = networkSocketSlotWatermarks(handle).get(fd);
       if (!socketSlot) {
         return false;
       }
       restoreNetworkSocketSlotSnapshot(handle, socketSlot);
-      recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+      recvBufIdx = socketRecvBufIdx(handle, socketIdx);
       if (recvBufIdx !== payload.recvBufIdx) {
         return false;
       }
@@ -476,13 +563,12 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       payload.readBytes !== undefined
       && payload.availableBytes !== undefined
     ) {
-      const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-      const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
+      const readBytes = socketReadBytesSnapshot(handle, socketIdx);
       const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
       if (
         Number.isSafeInteger(readBytes)
       ) {
-        const availableBytes = handle.kernel.thread_socket_recv_available?.(socketIdx);
+        const availableBytes = socketRecvAvailable(handle, socketIdx);
         const readProgress = (readBytes as number) - payload.readBytes;
         const deliveredRemaining = deliveredBytes === undefined
           ? undefined
@@ -555,11 +641,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         }
       }
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return false;
-    }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || payload.data.length !== netBufferBytes - 16) {
@@ -617,17 +700,15 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     vmPtr: number,
     fd: number,
   ): boolean {
-    const payload = handle.networkRecvPayloadWatermarks.get(fd);
+    const payload = networkRecvPayloadWatermarks(handle).get(fd);
     if (!payload) {
       return false;
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
-      return handle.networkConnections.has(fd);
+      return false;
     }
-    const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-    const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-    const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
+    const safeReadBytes = socketReadBytesSnapshot(handle, socketIdx);
     if (
       payload.readBytes !== undefined
       && payload.availableBytes !== undefined
@@ -636,10 +717,10 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         if (NETWORK_LIFECYCLE_LOG_ENABLED) {
           deps.appendWorkerDebugLog(
             handle,
-            `net-watermark-unread:${handle.pid}:fd=${fd}:read=unknown:base=${payload.readBytes}:avail=${payload.availableBytes}:unread=1`,
+            `net-watermark-unread:${handle.pid}:fd=${fd}:read=unknown:base=${payload.readBytes}:avail=${payload.availableBytes}:unread=0`,
           );
         }
-        return true;
+        return false;
       }
       const unread = safeReadBytes - payload.readBytes < payload.availableBytes;
       if (NETWORK_LIFECYCLE_LOG_ENABLED) {
@@ -650,19 +731,16 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
       return unread;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx !== payload.recvBufIdx) {
-      return handle.networkConnections.has(fd);
+      return false;
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return handle.networkConnections.has(fd);
-    }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16) {
-      return handle.networkConnections.has(fd);
+      return false;
     }
     const absolute = handle.kernelState.netBufBase + recvBufIdx * netBufferBytes;
     const view = new DataView(handle.memory.buffer, absolute, 16);
@@ -671,93 +749,83 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function hasBufferedNetworkRecv(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
-    const payload = handle.networkRecvPayloadWatermarks.get(fd);
-    if (payload && handle.networkConnections.has(fd)) {
-      const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
-      const readBytesRaw = socketIdx >= 0 ? handle.kernel.thread_socket_read_bytes?.(socketIdx) : undefined;
-      const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-      const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
+    const payload = networkRecvPayloadWatermarks(handle).get(fd);
+    if (payload && networkConnections(handle).has(fd)) {
+      const socketIdx = socketIdxForFd(handle, vmPtr, fd);
+      const safeReadBytes = socketIdx >= 0 ? socketReadBytesSnapshot(handle, socketIdx) : undefined;
       if (
-        safeReadBytes === undefined
-        || payload.readBytes === undefined
-        || payload.availableBytes === undefined
-        || safeReadBytes - payload.readBytes < payload.availableBytes
+        safeReadBytes !== undefined
+        && payload.readBytes !== undefined
+        && payload.availableBytes !== undefined
+        && safeReadBytes - payload.readBytes < payload.availableBytes
       ) {
         restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd);
         appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:payload-watermark`);
         return true;
       }
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx >= 0) {
-      const available = handle.kernel.thread_socket_recv_available?.(socketIdx);
-      if (available !== undefined) {
-        const readBytesRaw = handle.kernel.thread_socket_read_bytes?.(socketIdx);
-        const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
-        const safeReadBytes = Number.isSafeInteger(readBytes) ? readBytes as number : undefined;
-        if (payload && safeReadBytes !== undefined) {
-          const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
-          if (deliveredBytes !== undefined && safeReadBytes >= deliveredBytes) {
-            restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd, { allowPartialReadProgress: true });
-            const restoredAvailable = handle.kernel.thread_socket_recv_available?.(socketIdx);
-            if (restoredAvailable !== undefined && restoredAvailable <= 0) {
-              appendNetworkLifecycle(
-                handle,
-                `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${restoredAvailable}:payload=delivered`,
-              );
-              clearNetworkRecvWatermarks(handle, fd);
-              return false;
-            }
+      const available = socketRecvAvailable(handle, socketIdx);
+      const safeReadBytes = socketReadBytesSnapshot(handle, socketIdx);
+      if (payload && safeReadBytes !== undefined) {
+        const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
+        if (deliveredBytes !== undefined && safeReadBytes >= deliveredBytes) {
+          restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd, { allowPartialReadProgress: true });
+          const restoredAvailable = socketRecvAvailable(handle, socketIdx);
+          if (restoredAvailable <= 0) {
+            appendNetworkLifecycle(
+              handle,
+              `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${restoredAvailable}:payload=delivered`,
+            );
+            clearNetworkRecvWatermarks(handle, fd);
+            return false;
           }
         }
-        if (available > 0) {
-          appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:available=${available}`);
-          return true;
-        }
-        if (restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd)) {
-          appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:restore-watermark`);
-          return true;
-        }
-        if (hasUnreadNetworkRecvWatermark(handle, vmPtr, fd)) {
-          appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:unread-watermark`);
-          return true;
-        }
-        appendNetworkLifecycle(
-          handle,
-          `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${available}:payload=${handle.networkRecvPayloadWatermarks.has(fd) ? 1 : 0}`,
-        );
-        clearNetworkRecvWatermarks(handle, fd);
-        return false;
       }
+      if (available > 0) {
+        appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:available=${available}`);
+        return true;
+      }
+      if (restoreBufferedNetworkRecvFromWatermark(handle, vmPtr, fd)) {
+        appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:restore-watermark`);
+        return true;
+      }
+      if (hasUnreadNetworkRecvWatermark(handle, vmPtr, fd)) {
+        appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:unread-watermark`);
+        return true;
+      }
+      appendNetworkLifecycle(
+        handle,
+        `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}:available=${available}:payload=${networkRecvPayloadWatermarks(handle).has(fd) ? 1 : 0}`,
+      );
+      clearNetworkRecvWatermarks(handle, fd);
+      return false;
     }
-    const head = handle.networkRecvHeadWatermarks.get(fd) ?? 0;
-    const tail = handle.networkRecvTailWatermarks.get(fd) ?? 0;
-    appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:fallback:head=${head}:tail=${tail}`);
-    return tail > head;
+    appendNetworkLifecycle(handle, `net-buffered:${handle.pid}:fd=${fd}:false:socket=${socketIdx}`);
+    clearNetworkRecvWatermarks(handle, fd);
+    return false;
   }
 
   function hasCurrentNetworkRecvAvailable(handle: ProcessHandle, vmPtr: number, fd: number): boolean {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       return false;
     }
-    return (handle.kernel.thread_socket_recv_available?.(socketIdx) ?? 0) > 0;
+    return socketRecvAvailable(handle, socketIdx) > 0;
   }
 
   function clearCurrentNetworkRecvBuffer(handle: ProcessHandle, vmPtr: number, fd: number): void {
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd) ?? -1;
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       return;
     }
-    const recvBufIdx = handle.kernel.thread_socket_recv_buf_idx?.(socketIdx) ?? -1;
+    const recvBufIdx = socketRecvBufIdx(handle, socketIdx);
     if (recvBufIdx < 0) {
       return;
     }
-    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.();
-    if (netBufPoolBytes === undefined) {
-      return;
-    }
-    const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+    const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+    const maxSockets = requireKernelSocketCount(handle.kernel);
     const netBufferCount = maxSockets * 2;
     const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
     if (!Number.isInteger(netBufferBytes) || netBufferBytes <= 16 || recvBufIdx >= netBufferCount) {
@@ -767,8 +835,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const view = new DataView(handle.memory.buffer, absolute, 16);
     const head = view.getUint32(0, true);
     view.setUint32(4, head, true);
-    handle.networkRecvHeadWatermarks.set(fd, head);
-    handle.networkRecvTailWatermarks.set(fd, head);
+    networkRecvHeadWatermarks(handle).set(fd, head);
+    networkRecvTailWatermarks(handle).set(fd, head);
   }
 
   function queueNetworkReadPromise(
@@ -782,7 +850,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       deps.appendWorkerDebugLog(handle, `net-read-skip:${handle.pid}:vm=0x${vmPtr.toString(16)}`);
       return;
     }
-    handle.transferDebugStats.networkBridgeReadQueued += 1;
+    transferDebugStats(handle).networkBridgeReadQueued += 1;
     deps.appendWorkerDebugLog(handle, `net-read-queue:${handle.pid}:vm=0x${vmPtr.toString(16)}`);
     appendNetworkLifecycle(handle, `net-read-queue:${handle.pid}:0x${vmPtr.toString(16)}`);
     const pending = Promise.resolve(read)
@@ -819,7 +887,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             if (!activeHandle) {
               return;
             }
-            const pendingSocketSync = activeHandle.socketSyncPromise;
+            const pendingSocketSync = getRuntimeStateSyncPromise(activeHandle, "socket");
             if (pendingSocketSync != null) {
               deps.appendWorkerDebugLog(activeHandle, `net-read-await-socket-sync:${activeHandle.pid}:vm=0x${vmPtr.toString(16)}`);
               await pendingSocketSync;
@@ -833,7 +901,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
               await deps.requestSocketStateSync(syncedHandle, true);
               await deps.requestPipeStateSync(syncedHandle, false);
             }
-            deps.kickBlockedWorkers(syncedHandle);
+            deps.notifyHostIoProgress(syncedHandle);
             deps.pumpProcess(syncedHandle);
           })().catch((error) => {
             const activeHandle = deps.getActiveHandle?.(handle) ?? handle;
@@ -863,7 +931,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
               await deps.requestSocketStateSync(activeHandle, true);
               await deps.requestPipeStateSync(activeHandle, false);
             }
-            deps.kickBlockedWorkers(activeHandle);
+            deps.notifyHostIoProgress(activeHandle);
             deps.pumpProcess(activeHandle);
           })().catch((error) => {
             const activeHandle = deps.getActiveHandle?.(handle) ?? handle;
@@ -910,15 +978,15 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     }
     ensureNetworkBookkeeping(activeHandle);
     activeHandle.networkBridge ??= handle.networkBridge;
-    activeHandle.networkClosedFds.delete(fd);
-    activeHandle.networkClosedSocketSlots.delete(fd);
-    activeHandle.networkPendingConnectFds.delete(fd);
+    networkClosedFds(activeHandle).delete(fd);
+    networkClosedSocketSlots(activeHandle).delete(fd);
+    networkPendingConnectFds(activeHandle).delete(fd);
     clearNetworkRecvWatermarks(activeHandle, fd);
     copyNetworkRecvWatermarks(handle, activeHandle, fd);
-    if (activeHandle.networkConnections.get(fd) !== connection) {
-      activeHandle.networkConnections.set(fd, connection);
+    if (networkConnections(activeHandle).get(fd) !== connection) {
+      networkConnections(activeHandle).set(fd, connection);
     }
-    const ofdId = activeHandle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const ofdId = supervisorSocketOfdForFd(activeHandle, vmPtr, fd);
     networkConnectionOfds(activeHandle).set(fd, ofdId);
     rememberNetworkOfdSlot(activeHandle, ofdId);
     deps.appendWorkerDebugLog(activeHandle, `net-read-adopt-active:${activeHandle.pid}:fd=${fd}:vm=0x${vmPtr.toString(16)}`);
@@ -926,11 +994,11 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   }
 
   function scheduleQueuedStdinFlush(handle: ProcessHandle): void {
-    if (handle.stdinFlushPromise !== null) {
+    if (stdinFlushPromise(handle) !== null) {
       return;
     }
-    handle.stdinFlushPromise = (async () => {
-      const pendingPipeSync = handle.pipeSyncPromise;
+    const promise = (async () => {
+      const pendingPipeSync = getRuntimeStateSyncPromise(handle, "pipe");
       if (pendingPipeSync !== null) {
         await pendingPipeSync;
       }
@@ -947,22 +1015,23 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
     }).finally(() => {
-      handle.stdinFlushPromise = null;
-      if (deps.isActiveHandle(handle) && handle.stdinQueue.length > 0) {
+      setStdinFlushPromise(handle, null);
+      if (deps.isActiveHandle(handle) && stdinQueue(handle).length > 0) {
         scheduleQueuedStdinFlush(handle);
       }
     });
+    setStdinFlushPromise(handle, promise);
   }
 
   function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {
     deps.writeProcessStdin(handle, data);
-    if (handle.pipeSyncPromise !== null) {
+    if (runtimeStateSyncInFlight(handle, "pipe")) {
       scheduleQueuedStdinFlush(handle);
       return;
     }
     const changed = deps.flushStdin(handle);
     if (!changed) {
-      if (kernelWorkerOwnsPipeState(handle)) {
+      if (processHasKernelWorkerOwnership(handle)) {
         void deps.requestPipeStateSync(handle, true).catch((error) => {
           if (deps.isActiveHandle(handle)) {
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -1004,7 +1073,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const deadline = Date.now() + 10_000;
     try {
       for (;;) {
-        deps.kickBlockedWorkers(handle);
+        deps.notifyHostIoProgress(handle);
         deps.drainProcessOutput(handle);
 
         const n = handle.kernel.process_read_http_response(
@@ -1088,65 +1157,31 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       addrLen,
     );
 
-    const blockedSyscallNr = handle.kernel.thread_blocked_syscall_nr?.(vmPtr);
-    const connectSyscallNr = handle.kernel.abi_sys_connect?.();
-    if (
-      blockedSyscallNr !== undefined
-      && connectSyscallNr !== undefined
-      && BigInt(blockedSyscallNr) === BigInt(connectSyscallNr)
-      && handle.kernel.thread_blocked_syscall_arg
-    ) {
-      const fd = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 0)));
-      const addr = BigInt(handle.kernel.thread_blocked_syscall_arg(vmPtr, 1));
-      const addrLen = Number(BigInt.asUintN(32, handle.kernel.thread_blocked_syscall_arg(vmPtr, 2)));
-      const startBig = BigInt(handle.guestBase) + addr;
-      const endBig = startBig + BigInt(addrLen);
-      if (
-        fd >= 0
-        && addrLen > 0
-        && addr >= 0n
-        && startBig <= BigInt(Number.MAX_SAFE_INTEGER)
-        && endBig <= BigInt(handle.memory.buffer.byteLength)
-      ) {
-        const start = Number(startBig);
-        const endpoint = endpointFromBytes(
-          fd,
-          new Uint8Array(handle.memory.buffer, start, addrLen),
-          addrLen,
-        );
+    const readPeerAddr = handle.kernel.supervisor_socket_connect_peer_addr;
+    const readConnectFd = handle.kernel.supervisor_socket_connect_fd;
+    if (readPeerAddr && readConnectFd) {
+      const addrLen = readPeerAddr.call(handle.kernel, vmPtr, scratch, 28);
+      const endpoint = endpointFromScratch(readConnectFd.call(handle.kernel, vmPtr), addrLen);
+      if (endpoint) {
+        return endpoint;
+      }
+    }
+
+    const readPeerAddrForFd = handle.kernel.supervisor_socket_connect_peer_addr_for_fd;
+    if (readPeerAddrForFd) {
+      const maxFds = handle.kernel.abi_max_fds();
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        if (supervisorSocketOfdForFd(handle, vmPtr, fd) <= 0) {
+          continue;
+        }
+        const addrLen = readPeerAddrForFd.call(handle.kernel, vmPtr, fd, scratch, 28);
+        const endpoint = endpointFromScratch(fd, addrLen);
         if (endpoint) {
           return endpoint;
         }
       }
     }
 
-    const readPeerAddr = handle.kernel.thread_connect_peer_addr;
-    const readConnectFd = handle.kernel.thread_connect_fd;
-    if (readPeerAddr && readConnectFd) {
-      const addrLen = readPeerAddr(vmPtr, scratch, 28);
-      const endpoint = endpointFromScratch(readConnectFd(vmPtr), addrLen);
-      if (endpoint) {
-        return endpoint;
-      }
-    }
-
-    const readPeerAddrForFd = handle.kernel.thread_connect_peer_addr_for_fd;
-    if (!readPeerAddrForFd) {
-      return null;
-    }
-    const maxFds = handle.kernel.abi_max_fds();
-    const socketFdType = handle.kernel.abi_fd_type_socket();
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-      if (ofdId <= 0 || handle.kernel.kernel_ofd_fd_type(ofdId) !== socketFdType) {
-        continue;
-      }
-      const addrLen = readPeerAddrForFd(vmPtr, fd, scratch, 28);
-      const endpoint = endpointFromScratch(fd, addrLen);
-      if (endpoint) {
-        return endpoint;
-      }
-    }
     return null;
   }
 
@@ -1168,7 +1203,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       );
       return BigInt(-handle.kernel.abi_econnrefused());
     }
-    handle.networkPendingConnectFds.add(connect.fd);
+    networkPendingConnectFds(handle).add(connect.fd);
     try {
       const result = await handle.networkBridge.connect({
         pid: handle.pid,
@@ -1188,7 +1223,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             connection: result.connection,
           });
         } else {
-          handle.networkPendingConnectFds.delete(connect.fd);
+          networkPendingConnectFds(handle).delete(connect.fd);
         }
         deps.appendWorkerDebugLog(
           handle,
@@ -1202,7 +1237,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         `net-connect:${handle.pid}:fd=${connect.fd}:${connect.endpoint.family}:${connect.endpoint.address}:${connect.endpoint.port}:errno=${errno}`,
       );
       logNetworkDebug(`connect pid=${handle.pid} fd=${connect.fd} ${connect.endpoint.family} ${connect.endpoint.address}:${connect.endpoint.port} errno=${errno}`);
-      handle.networkPendingConnectFds.delete(connect.fd);
+      networkPendingConnectFds(handle).delete(connect.fd);
       return BigInt(errno < 0 ? errno : -errno);
     } catch {
       deps.appendWorkerDebugLog(
@@ -1210,7 +1245,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         `net-connect:${handle.pid}:fd=${connect.fd}:${connect.endpoint.family}:${connect.endpoint.address}:${connect.endpoint.port}:throw`,
       );
       logNetworkDebug(`connect pid=${handle.pid} fd=${connect.fd} ${connect.endpoint.family} ${connect.endpoint.address}:${connect.endpoint.port} throw`);
-      handle.networkPendingConnectFds.delete(connect.fd);
+      networkPendingConnectFds(handle).delete(connect.fd);
       return BigInt(-handle.kernel.abi_econnrefused());
     }
   }
@@ -1226,37 +1261,31 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     if (pending.size === 0) {
       pendingNetworkConnects.delete(handle);
     }
-    handle.networkPendingConnectFds.delete(connect.fd);
+    networkPendingConnectFds(handle).delete(connect.fd);
 
     const result = BigInt.asIntN(64, connectResult ?? handle.kernel.thread_a0(vmPtr));
-    const einprogress = BigInt(handle.kernel.abi_einprogress?.() ?? -115);
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, connect.fd);
-    let markExternalPeerResult = result === 0n || result === einprogress
-      ? handle.kernel.thread_socket_mark_external_peer?.(vmPtr, connect.fd)
-      : undefined;
-    if (
-      markExternalPeerResult !== 0
-      && (result === 0n || result === einprogress)
-      && handle.kernel.thread_socket_commit_external_connect
-    ) {
-      markExternalPeerResult = handle.kernel.thread_socket_commit_external_connect(vmPtr, connect.fd);
-    }
+    const supervisorCommitResult = requireSupervisorSocketCommitExternalConnectResult(handle)(
+      vmPtr,
+      connect.fd,
+      result,
+    );
+    const markExternalPeerResult = supervisorCommitResult === 1 ? 0 : -1;
     const status = handle.kernel.thread_status(vmPtr);
-    const shouldCommit = (result === 0n || result === einprogress)
-      && (status === handle.kernel.abi_status_ok() || markExternalPeerResult === 0);
+    const shouldCommit = supervisorCommitResult === 1;
     if (shouldCommit) {
-      const existing = handle.networkConnections.get(connect.fd);
+      const existing = networkConnections(handle).get(connect.fd);
       if (existing && existing !== connect.connection) {
         await existing.close?.();
         pendingNetworkInbound.delete(existing);
         pendingNetworkReads.delete(existing);
       }
-      handle.networkClosedFds.delete(connect.fd);
-      handle.networkClosedSocketSlots.delete(connect.fd);
+      networkClosedFds(handle).delete(connect.fd);
+      networkClosedSocketSlots(handle).delete(connect.fd);
       clearCurrentNetworkRecvBuffer(handle, vmPtr, connect.fd);
       clearNetworkRecvWatermarks(handle, connect.fd);
-      handle.networkConnections.set(connect.fd, connect.connection);
-      const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, connect.fd);
+      networkConnections(handle).set(connect.fd, connect.connection);
+      const ofdId = supervisorSocketOfdForFd(handle, vmPtr, connect.fd);
       networkConnectionOfds(handle).set(connect.fd, ofdId);
       rememberNetworkOfdSlot(handle, ofdId);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
@@ -1274,8 +1303,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return;
     }
     logNetworkDebug(`connect-drop pid=${handle.pid} fd=${connect.fd} result=${result.toString()} status=${status} mark=${markExternalPeerResult ?? "n/a"}`);
-    if (handle.networkConnections.get(connect.fd) === connect.connection) {
-      handle.networkConnections.delete(connect.fd);
+    if (networkConnections(handle).get(connect.fd) === connect.connection) {
+      networkConnections(handle).delete(connect.fd);
     }
     await connect.connection.close?.();
   }
@@ -1283,21 +1312,20 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
   async function pumpNetworkConnections(handle: ProcessHandle, vmPtr = handle.vmPtr): Promise<boolean> {
     const pumpStartedAtMs = Date.now();
     ensureNetworkBookkeeping(handle);
-    handle.transferDebugStats.networkPumpCalls += 1;
+    transferDebugStats(handle).networkPumpCalls += 1;
     const drainOutbound = handle.kernel.thread_socket_drain_outbound;
     const injectInbound = handle.kernel.thread_socket_inject_inbound;
-    const markExternalPeer = handle.kernel.thread_socket_mark_external_peer;
-    const commitExternalConnect = handle.kernel.thread_socket_commit_external_connect;
-    const closeExternalPeer = handle.kernel.thread_socket_close_external_peer;
+    const prepareExternalPeer = requireSupervisorSocketPrepareExternalPeer(handle);
+    const closeExternalPeer = requireSupervisorSocketCloseExternalPeer(handle);
     let changed = false;
     const finishPump = (): boolean => {
       if (changed) {
-        handle.transferDebugStats.networkPumpChangedCalls += 1;
+        transferDebugStats(handle).networkPumpChangedCalls += 1;
       }
-      handle.transferDebugStats.networkPumpElapsedMs += Date.now() - pumpStartedAtMs;
+      transferDebugStats(handle).networkPumpElapsedMs += Date.now() - pumpStartedAtMs;
       return changed;
     };
-    if (!drainOutbound || !injectInbound || handle.networkConnections.size === 0) {
+    if (!drainOutbound || !injectInbound || networkConnections(handle).size === 0) {
       return finishPump();
     }
     const scratch = kernelScratchBase(handle.kernel) + 0x24000;
@@ -1332,13 +1360,13 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       networkDrainMisses.delete(connection);
       networkEofDeferrals.delete(connection);
       networkConnectionOfds(handle).delete(fd);
-      handle.networkConnections.delete(fd);
+      networkConnections(handle).delete(fd);
       if (!hasPendingConnectForFd(fd)) {
-        handle.networkPendingConnectFds.delete(fd);
+        networkPendingConnectFds(handle).delete(fd);
       }
       clearNetworkRecvWatermarks(handle, fd);
       if (forceFd) {
-        handle.networkClosedFds.add(fd);
+        networkClosedFds(handle).add(fd);
       }
       changed = true;
       await connection.close?.();
@@ -1364,7 +1392,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       clearCurrentNetworkRecvBuffer(handle, vmPtr, fd);
       const closedSlot = snapshotNetworkSocketSlot(handle, vmPtr, fd);
       if (closedSlot !== null) {
-        handle.networkClosedSocketSlots.set(fd, closedSlot);
+        networkClosedSocketSlots(handle).set(fd, closedSlot);
       }
       const afterClose = formatSocketStateForFd(fd);
       pendingNetworkInbound.delete(connection);
@@ -1382,17 +1410,23 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const enotsock = handle.kernel.abi_enotsock?.() ?? -88;
     const enotconn = handle.kernel.abi_enotconn?.() ?? -107;
 
-    const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
-      const maxFds = handle.kernel.abi_max_fds();
-      if (ofdId > 0 && handle.kernel.process_fd_ofd_id(vmPtr, preferredFd) === ofdId) {
-        return preferredFd;
+    const findFdForOfd = (ofdId: number, preferredFd: number): {
+      fd: number | null;
+      supervisor: boolean;
+    } => {
+      if (ofdId <= 0) {
+        return { fd: null, supervisor: false };
       }
-      for (let candidate = 0; candidate < maxFds; candidate += 1) {
-        if (candidate !== preferredFd && handle.kernel.process_fd_ofd_id(vmPtr, candidate) === ofdId) {
-          return candidate;
-        }
-      }
-      return null;
+      const supervisorActiveFd = requireSupervisorSocketBridgeActiveFd(handle)(
+        vmPtr,
+        preferredFd,
+        ofdId,
+        hasPendingConnectForFd(preferredFd) ? 1 : 0,
+      );
+      return {
+        fd: supervisorActiveFd >= 0 ? supervisorActiveFd : null,
+        supervisor: true,
+      };
     };
 
     const rekeyNetworkConnection = (
@@ -1408,8 +1442,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         changed = true;
         return;
       }
-      handle.networkConnections.delete(fromFd);
-      handle.networkConnections.set(toFd, connection);
+      networkConnections(handle).delete(fromFd);
+      networkConnections(handle).set(toFd, connection);
       ofds?.delete(fromFd);
       ofds?.set(toFd, ofdId);
       moveNetworkRecvWatermarks(handle, fromFd, toFd);
@@ -1431,33 +1465,14 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     };
 
     const socketDrainCandidates = (connectedFd: number): number[] => {
-      const candidates = [connectedFd];
-      const connectedOfd = handle.kernel.process_fd_ofd_id(vmPtr, connectedFd);
-      if (connectedOfd <= 0) {
-        return candidates;
-      }
-      const maxFds = handle.kernel.abi_max_fds();
-      for (let fd = 0; fd < maxFds; fd += 1) {
-        if (fd === connectedFd) {
-          continue;
-        }
-        const ofdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
-        if (
-          ofdId > 0
-          && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()
-          && ofdId === connectedOfd
-        ) {
-          candidates.push(fd);
-        }
-      }
-      return candidates;
+      return supervisorSocketDrainFds(handle, vmPtr, connectedFd);
     };
 
     const pendingOutboundAvailable = (connectedFd: number): number => {
       let total = 0;
       for (const fd of socketDrainCandidates(connectedFd)) {
-        const available = handle.kernel.thread_socket_outbound_available?.(vmPtr, fd);
-        if (available !== undefined && available > 0) {
+        const available = kernelSocketOutboundAvailable(handle, vmPtr, fd);
+        if (available > 0) {
           total += available;
         }
       }
@@ -1507,7 +1522,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       if (slot === null) {
         return;
       }
-      handle.networkClosedSocketSlots.set(fd, slot);
+      networkClosedSocketSlots(handle).set(fd, slot);
     };
 
     const repairExternalPeerForFd = (fd: number, reason: string): boolean => {
@@ -1519,10 +1534,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         return false;
       }
       const before = formatSocketStateForFd(fd);
-      let markResult = markExternalPeer?.(vmPtr, fd);
-      if (markResult !== undefined && markResult !== 0 && commitExternalConnect) {
-        markResult = commitExternalConnect(vmPtr, fd);
-      }
+      const markResult = prepareExternalPeer?.(vmPtr, fd);
       if (markResult !== 0) {
         return false;
       }
@@ -1600,29 +1612,23 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         const inboundSocketState = inboundSocketIdx !== undefined && inboundSocketIdx >= 0
           ? handle.kernel.thread_socket_state?.(inboundSocketIdx)
           : undefined;
-        let inboundMarkResult = inboundSocketState === SOCKET_STATE_SHUTDOWN
-          ? undefined
-          : markExternalPeer?.(vmPtr, fd);
-        if (inboundMarkResult !== undefined && inboundMarkResult !== 0 && commitExternalConnect) {
-          inboundMarkResult = commitExternalConnect(vmPtr, fd);
+        if (inboundSocketState !== SOCKET_STATE_SHUTDOWN) {
+          prepareExternalPeer?.(vmPtr, fd);
         }
         let written = injectInbound(vmPtr, fd, scratch, injection.length);
         if (
           written === enotconn
           && inboundSocketState !== SOCKET_STATE_SHUTDOWN
-          && (
-            markExternalPeer?.(vmPtr, fd) === 0
-            || commitExternalConnect?.(vmPtr, fd) === 0
-          )
+          && prepareExternalPeer?.(vmPtr, fd) === 0
         ) {
             written = injectInbound(vmPtr, fd, scratch, injection.length);
         }
         deps.appendWorkerDebugLog(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         appendNetworkLifecycle(handle, `net-inject-result:${handle.pid}:fd=${fd}:written=${written}:after=${formatSocketStateForFd(fd)}`);
         if (written > 0) {
-          handle.transferDebugStats.networkInboundInjectCalls += 1;
-          handle.transferDebugStats.networkInboundInjectedBytes += written;
-          rememberNetworkOfdSlot(handle, handle.kernel.process_fd_ofd_id(vmPtr, fd));
+          transferDebugStats(handle).networkInboundInjectCalls += 1;
+          transferDebugStats(handle).networkInboundInjectedBytes += written;
+          rememberNetworkOfdSlot(handle, supervisorSocketOfdForFd(handle, vmPtr, fd));
           rememberNetworkRecvPayload(handle, vmPtr, fd, written);
           networkDrainMisses.delete(connection);
           networkEofDeferrals.delete(connection);
@@ -1650,7 +1656,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           return "closed";
         }
         if (written <= 0) {
-          handle.transferDebugStats.networkInboundBlockedCalls += 1;
+          transferDebugStats(handle).networkInboundBlockedCalls += 1;
           deps.appendWorkerDebugLog(handle, `net-inject:${handle.pid}:fd=${fd}:blocked=${written}:pending=${owned.length}`);
           appendNetworkLifecycle(handle, `net-inject-blocked:${handle.pid}:fd=${fd}:written=${written}:pending=${owned.length}`);
           logNetworkDebug(`inject-blocked pid=${handle.pid} fd=${fd} written=${written} pending=${owned.length}`);
@@ -1661,17 +1667,20 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       }
     };
 
-    for (const [fd, connection] of [...handle.networkConnections]) {
+    for (const [fd, connection] of [...networkConnections(handle)]) {
       let activeFd = fd;
       const expectedOfd = networkConnectionOfds(handle).get(fd);
-      const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+      const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);
       if (expectedOfd !== undefined && currentOfd !== expectedOfd) {
-        const replacementFd = findFdForOfd(expectedOfd, fd);
-        if (replacementFd === null) {
+        const replacement = findFdForOfd(expectedOfd, fd);
+        if (replacement.fd === null) {
           if (
-            currentOfd > 0
-            && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
-            && !hasPendingConnectForFd(fd)
+            !replacement.supervisor
+            && (
+              currentOfd > 0
+              && supervisorSocketOfdIsSocket(handle, currentOfd)
+              && !hasPendingConnectForFd(fd)
+            )
           ) {
             rekeyNetworkConnection(fd, fd, currentOfd, connection);
             activeFd = fd;
@@ -1680,9 +1689,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             continue;
           }
         }
-        if (replacementFd !== null) {
-          rekeyNetworkConnection(fd, replacementFd, expectedOfd, connection);
-          activeFd = replacementFd;
+        if (replacement.fd !== null) {
+          rekeyNetworkConnection(fd, replacement.fd, expectedOfd, connection);
+          activeFd = replacement.fd;
         }
       }
       recordGuestSocketReadProgressForFd(handle, vmPtr, activeFd);
@@ -1740,12 +1749,9 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             ? handle.kernel.thread_socket_recv_available?.(peerIdx)
             : undefined;
           if (drainFd === activeFd) {
-            let markResult = socketState === SOCKET_STATE_SHUTDOWN
+            const markResult = socketState === SOCKET_STATE_SHUTDOWN
               ? undefined
-              : markExternalPeer?.(vmPtr, activeFd);
-            if (markResult !== undefined && markResult !== 0 && commitExternalConnect) {
-              markResult = commitExternalConnect(vmPtr, activeFd);
-            }
+              : prepareExternalPeer?.(vmPtr, activeFd);
             const repairedExternalPeer = markResult === 0
               && (
                 (socketState !== undefined && socketState !== SOCKET_STATE_CONNECTED)
@@ -1764,10 +1770,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
             drainFd === activeFd
             && n === enotconn
             && socketState !== SOCKET_STATE_SHUTDOWN
-            && (
-              markExternalPeer?.(vmPtr, activeFd) === 0
-              || commitExternalConnect?.(vmPtr, activeFd) === 0
-            )
+            && prepareExternalPeer?.(vmPtr, activeFd) === 0
           ) {
             n = drainOutbound(vmPtr, drainFd, scratch, chunkSize);
           }
@@ -1798,8 +1801,8 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           }
           const outbound = new Uint8Array(handle.memory.buffer.slice(scratch, scratch + n));
           await connection.write(outbound);
-          handle.transferDebugStats.networkOutboundDrainCalls += 1;
-          handle.transferDebugStats.networkOutboundDrainedBytes += n;
+          transferDebugStats(handle).networkOutboundDrainCalls += 1;
+          transferDebugStats(handle).networkOutboundDrainedBytes += n;
           await Promise.resolve();
           if (pendingNetworkReads.has(connection)) {
             retryNetworkReadAfterPending.add(connection);

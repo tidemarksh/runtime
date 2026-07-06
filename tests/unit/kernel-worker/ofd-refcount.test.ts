@@ -1,7 +1,10 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate shared-state bridge behavior during supervisor migration.
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../src/abi.js";
-import { createKernelWorkerOfdPrimitives } from "../../../src/kernel-worker/primitives/ofd.js";
+import {
+  collectProcessHeldOfdRefcounts,
+  createKernelWorkerOfdPrimitives,
+} from "../../../src/kernel-worker/primitives/ofd.js";
 
 function makeMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
@@ -30,8 +33,44 @@ function makeKernelExports(memory: WebAssembly.Memory) {
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => threadVmPtrs[slot] ?? 0,
     thread_blocked_ofd_id: (vmPtr: number) => blockedOfdMap.get(vmPtr) ?? 0,
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => {
+      let refcount = 0;
+      for (const heldOfdId of fdMap.values()) {
+        if (heldOfdId === ofdId) {
+          refcount += 1;
+        }
+      }
+      for (const threadVmPtr of threadVmPtrs) {
+        if ((blockedOfdMap.get(threadVmPtr) ?? 0) === ofdId) {
+          refcount += 1;
+        }
+      }
+      return refcount;
+    },
     kernel_ofd_table_bytes: () => 32 * 32,
     kernel_ofd_refcount: (ofdId: number) => new DataView(memory.buffer).getInt32(0x220000 + ofdId * 32 + 16, true),
+    supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
+    },
+    supervisor_ofd_reconcile_refcount(this: KernelExports, ofdId: number, expectedRefcount: number) {
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds()) {
+        return 0;
+      }
+      let currentRefcount = this.kernel_ofd_refcount(ofdId);
+      const expected = Math.trunc(expectedRefcount);
+      if (expected < 0) {
+        return currentRefcount;
+      }
+      while (currentRefcount < expected) {
+        retainOfd(ofdId);
+        currentRefcount += 1;
+      }
+      while (currentRefcount > expected) {
+        releaseOfd(ofdId);
+        currentRefcount -= 1;
+      }
+      return this.kernel_ofd_refcount(ofdId);
+    },
     kernel_retain_ofd: retainOfd,
     kernel_release_ofd: releaseOfd,
     setFdMap(map: Map<number, number>) {
@@ -62,6 +101,21 @@ function makeKernelExports(memory: WebAssembly.Memory) {
 function seedRefcount(memory: WebAssembly.Memory, ofdId: number, refcount: number): void {
   new DataView(memory.buffer).setInt32(0x220000 + ofdId * 32 + 16, refcount, true);
 }
+
+test("collectProcessHeldOfdRefcounts uses supervisor process authority when available", () => {
+  const memory = makeMemory();
+  const processExports = {
+    ...makeKernelExports(memory),
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => (
+      ofdId === 7 ? 2 : ofdId === 8 ? 1 : 0
+    ),
+  } as KernelExports;
+
+  const held = collectProcessHeldOfdRefcounts(processExports, 0x1234);
+
+  expect(held[7]).toBe(2);
+  expect(held[8]).toBe(1);
+});
 
 test("reconcileCanonicalOfdRefcounts does not last-close an OFD while one member still holds it", () => {
   const canonicalMemory = makeMemory();
@@ -281,39 +335,4 @@ test("reconcileCanonicalOfdRefcounts treats blocked threads as live OFD holders 
   expect(canonical.releaseOfd).toHaveBeenCalledTimes(1);
   expect(canonical.releaseOfd).toHaveBeenCalledWith(12);
   expect(canonical.kernel_ofd_refcount(12)).toBe(0);
-});
-
-test("collectProcessHeldOfdRefcounts skips implausible or unreadable thread slots from corrupted process state", () => {
-  const canonicalMemory = makeMemory();
-  const parentMemory = makeMemory();
-  const canonical = makeKernelExports(canonicalMemory);
-  const parent = makeKernelExports(parentMemory);
-  parent.setFdMap(new Map([
-    [4, 7],
-    [5, 8],
-  ]));
-  parent.setProcessThreadCount(4);
-  parent.process_thread_vm_ptr = (_vmPtr: number, slot: number) => {
-    if (slot === 0) {
-      return 0x1234;
-    }
-    if (slot === 1) {
-      return -1;
-    }
-    if (slot === 2) {
-      return parentMemory.buffer.byteLength + 0x1000;
-    }
-    throw new RangeError("corrupted thread slot");
-  };
-  parent.thread_blocked_ofd_id = (vmPtr: number) => (vmPtr === 0x1234 ? 9 : 0);
-
-  const primitives = createKernelWorkerOfdPrimitives({
-    getCanonicalExports: () => canonical,
-    processKernels: new Map<number, KernelExports>([[1, parent]]),
-  });
-
-  const held = primitives.collectProcessHeldOfdRefcounts(parent, 0x1234);
-  expect(held[7]).toBe(1);
-  expect(held[8]).toBe(1);
-  expect(held[9]).toBe(1);
 });

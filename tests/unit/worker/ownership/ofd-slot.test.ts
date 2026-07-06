@@ -30,16 +30,82 @@ function writeRegularFileSlot(
 }
 
 function makeHandle(memory: WebAssembly.Memory): ProcessHandle {
+  const offsetFloors = new Map<number, { hostFd: number; ino: number; offset: bigint }>();
+  const slotView = (ofdId: number): DataView =>
+    new DataView(memory.buffer, ofdTablePtr + ofdId * slotBytes, slotBytes);
+  const kernel = {
+    abi_max_fds: () => 16,
+    abi_fd_type_file: () => 3,
+    abi_sys_lseek: () => 62n,
+    kernel_ofd_table_bytes: () => 16 * slotBytes,
+    kernel_ofd_fd_type: (ofdId: number) => ofdId === 4 ? slotView(ofdId).getInt32(OFD_TYPE_OFFSET, true) : 0,
+    kernel_ofd_host_fd: (ofdId: number) => slotView(ofdId).getInt32(OFD_HOST_FD_OFFSET, true),
+    kernel_ofd_ino: (ofdId: number) => slotView(ofdId).getUint32(OFD_INO_OFFSET, true),
+    kernel_ofd_refcount: (ofdId: number) => slotView(ofdId).getInt32(OFD_REFCOUNT_OFFSET, true),
+    kernel_ofd_offset: (ofdId: number) => slotView(ofdId).getBigInt64(OFD_OFFSET_OFFSET, true),
+    supervisor_fd_entry_restore_action_apply: () => 1,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_restore_flag_referenced_by_fd_entry: () => 1,
+    supervisor_ofd_slot_restore_flag_trust_regular_file_offset: () => 2,
+    supervisor_ofd_slot_restore_action: (
+      ofdId: number,
+      candidateType: number,
+      candidateHostFd: number,
+      candidateIno: number,
+      candidateOffset: bigint | number,
+      syscallNr: bigint | number,
+      flags: number,
+    ) => {
+      if (ofdId !== 4) {
+        return 2;
+      }
+      const current = slotView(ofdId);
+      const currentType = current.getInt32(OFD_TYPE_OFFSET, true);
+      const currentRefcount = current.getInt32(OFD_REFCOUNT_OFFSET, true);
+      if (currentType === 0 || currentRefcount <= 0) {
+        return 1;
+      }
+      const referencedByFdEntry = (flags & 1) !== 0;
+      if (!referencedByFdEntry) {
+        if (candidateType === 0 || candidateType !== currentType) {
+          return 2;
+        }
+        if (
+          candidateHostFd !== current.getInt32(OFD_HOST_FD_OFFSET, true)
+          || candidateIno !== current.getUint32(OFD_INO_OFFSET, true)
+        ) {
+          return 2;
+        }
+      }
+      if ((flags & 2) !== 0 || currentType !== 3 || candidateType !== 3) {
+        return 1;
+      }
+      const currentHostFd = current.getInt32(OFD_HOST_FD_OFFSET, true);
+      const currentIno = current.getUint32(OFD_INO_OFFSET, true);
+      if (candidateHostFd !== currentHostFd || candidateIno !== currentIno) {
+        return 1;
+      }
+      const currentOffset = current.getBigInt64(OFD_OFFSET_OFFSET, true);
+      const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(candidateOffset);
+      const floor = offsetFloors.get(ofdId);
+      const maxSeen = floor?.hostFd === currentHostFd && floor.ino === currentIno ? floor.offset : currentOffset;
+      const nextMax = candidate > currentOffset ? candidate : currentOffset;
+      if (nextMax > maxSeen) {
+        offsetFloors.set(ofdId, { hostFd: currentHostFd, ino: currentIno, offset: nextMax });
+      }
+      if (candidate < maxSeen) {
+        return 2;
+      }
+      if (candidate >= currentOffset) {
+        return 1;
+      }
+      return syscallNr === 62n ? 1 : 2;
+    },
+  };
   return {
     memory,
     kernelState: { ofdTablePtr },
-    kernel: {
-      abi_max_fds: () => 16,
-      abi_fd_type_file: () => 3,
-      abi_sys_lseek: () => 62n,
-      kernel_ofd_table_bytes: () => 16 * slotBytes,
-      kernel_ofd_fd_type: (ofdId: number) => ofdId === 4 ? 3 : 0,
-    },
+    kernel,
   } as unknown as ProcessHandle;
 }
 

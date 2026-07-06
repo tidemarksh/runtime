@@ -1,5 +1,15 @@
 import type { ProcessHandle } from "../../types.js";
+import {
+  processStdioOwner,
+} from "../../process-stdio-state.js";
 import type { ThreadWorkerStatusMessage } from "../types.js";
+import { workerDebugLog } from "../../worker-debug-log.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+} from "../../ownership/ofd-metadata.js";
 
 export const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
@@ -8,9 +18,9 @@ export function appendStatusSocketDebug(handle: ProcessHandle, event: string): v
   if (!STATUS_SOCKET_DEBUG_LOG_ENABLED) {
     return;
   }
-  handle.workerDebugLog.push(event);
-  if (handle.workerDebugLog.length > 4096) {
-    handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+  workerDebugLog(handle).push(event);
+  if (workerDebugLog(handle).length > 4096) {
+    workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
   }
 }
 
@@ -57,12 +67,10 @@ export function formatStatusFdEntries(
     .filter((entry) => entry.fd >= 0 && entry.fd < limit && entry.ofdId !== 0)
     .map((entry) => {
       const hasValidOfd = entry.ofdId > 0 && entry.ofdId < maxFds;
-      const type = hasValidOfd ? handle.kernel.kernel_ofd_fd_type(entry.ofdId) : -1;
-      const ino = hasValidOfd ? handle.kernel.kernel_ofd_ino(entry.ofdId) : -1;
-      const hostFd = hasValidOfd ? handle.kernel.kernel_ofd_host_fd(entry.ofdId) : -1;
-      const offset = hasValidOfd && handle.kernel.kernel_ofd_offset
-        ? handle.kernel.kernel_ofd_offset(entry.ofdId)
-        : -1n;
+      const type = hasValidOfd ? supervisorOfdFdType(handle, entry.ofdId) : -1;
+      const ino = hasValidOfd ? supervisorOfdIno(handle, entry.ofdId) : -1;
+      const hostFd = hasValidOfd ? supervisorOfdHostFd(handle, entry.ofdId) : -1;
+      const offset = hasValidOfd ? supervisorOfdOffset(handle, entry.ofdId) : -1n;
       return `${entry.fd}->${entry.ofdId}/${entry.fdFlags}/${type}/${ino}/${hostFd}/${offset.toString()}`;
     })
     .join(" ");
@@ -82,7 +90,7 @@ export function shouldRecordStatusFdLifecycle(
   if (
     status === handle.kernel.abi_status_pipe_wait()
     || status === handle.kernel.abi_status_wait4()
-    || handle.stdioOwner !== null
+    || processStdioOwner(handle) !== null
   ) {
     return true;
   }

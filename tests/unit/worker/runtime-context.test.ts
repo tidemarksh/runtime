@@ -1,8 +1,28 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../src/worker/kernel-share.js";
 import { expect, test } from "vite-plus/test";
 import { createWorkerRuntimeContext } from "../../../src/worker/runtime-context.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../../../src/worker/process-debug-state.js";
+import { setProcessMemoryOwnership } from "../../../src/worker/memory-ownership-state.js";
+import { setProcessMemfsDirty } from "../../../src/worker/process-memfs-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(runtimeId: number, pid: number): ProcessHandle {
+  const memoryOwnership = {
+    guestAddressProfile: 2,
+    guestAddressLimitBytes: "9223372036489871359",
+    guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
+    processMaxMemoryBytes: 2048 * 65536,
+    forkProcessMaxMemoryBytes: 4096 * 65536,
+    pageCacheDataCapacityBytes: 8 * 1024 * 1024,
+    publishedMetadataCapacityBytes: 1024,
+    fsRpcRingCapacityBytes: 4096,
+    kernelWorkerPrivateMemoryBytes: 512 * 1024 * 1024,
+    artifactMaterializationBudgetBytes: 16 * 1024 * 1024,
+    artifactMaterializedBytes: 4 * 1024 * 1024,
+  };
   const handle = {
     runtimeId,
     pid,
@@ -41,42 +61,19 @@ function makeHandle(runtimeId: number, pid: number): ProcessHandle {
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "runtime-context",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
-    memoryOwnership: {
-      guestAddressProfile: 2,
-      guestAddressLimitBytes: "9223372036489871359",
-      guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
-      processMaxMemoryBytes: 2048 * 65536,
-      forkProcessMaxMemoryBytes: 4096 * 65536,
-      pageCacheDataCapacityBytes: 8 * 1024 * 1024,
-      publishedMetadataCapacityBytes: 1024,
-      fsRpcRingCapacityBytes: 4096,
-      kernelWorkerPrivateMemoryBytes: 512 * 1024 * 1024,
-      artifactMaterializationBudgetBytes: 16 * 1024 * 1024,
-      artifactMaterializedBytes: 4 * 1024 * 1024,
-    },
   } as unknown as ProcessHandle;
-  handle.kernelShare.members.add(handle);
+  setProcessMemoryOwnership(handle, memoryOwnership);
+  setProcessDebugCommand(handle, "runtime-context");
+  addKernelShareMember(handle);
   return handle;
 }
 
@@ -143,8 +140,8 @@ test("flushRuntimeFsStateFromDirtyHandle publishes one snapshot for identical li
   handleA.memory = kernelA.memory;
   handleB.kernel = kernelB;
   handleB.memory = kernelB.memory;
-  handleA.processMemfsDirty = true;
-  handleB.processMemfsDirty = true;
+  setProcessMemfsDirty(handleA, true);
+  setProcessMemfsDirty(handleB, true);
   context.processHandles.set(handleA.pid, handleA);
   context.processHandles.set(handleB.pid, handleB);
   context.markRuntimeFsDirty(handleA);
@@ -168,8 +165,8 @@ test("captureRuntimeFailureSnapshot stores and clears the last runtime failure",
     formatPipeCounterDebug: () => "fd-debug",
   });
   const handle = makeHandle(9, 91);
-  handle.debugCommand = "go version";
-  handle.lastDebugMessage = "child-debug";
+  setProcessDebugCommand(handle, "go version");
+  setProcessLastDebugMessage(handle, "child-debug");
   context.processHandles.set(handle.pid, handle);
 
   context.captureRuntimeFailureSnapshot(handle, 2, 11);

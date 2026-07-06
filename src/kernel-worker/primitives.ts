@@ -5,8 +5,6 @@ import { createKernelWorkerObjectStatePrimitives } from "./primitives/object-sta
 import { createKernelWorkerOfdPrimitives } from "./primitives/ofd.js";
 import { createKernelWorkerPipePrimitives } from "./primitives/pipe.js";
 
-export const KERNEL_WORKER_PRIMITIVES_OWNERSHIP = "transitional-runtime-owner" as const;
-
 interface KernelWorkerPrimitivesDeps {
   getCanonicalExports(): KernelExports;
   processKernels: Map<number, KernelExports>;

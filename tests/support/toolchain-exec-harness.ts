@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { RuntimeStat } from "../../src/fs/types.js";
+import { processLastDebugMessage } from "../../src/worker/process-debug-state.js";
+import type { ProcessHandle } from "../../src/worker/types.js";
 import {
   Runtime,
   type RuntimeInstance,
@@ -74,7 +76,7 @@ export function scaledToolchainTimeoutMs(timeoutMs: number): number {
 }
 
 type RuntimeProcessDebugView = RuntimeInstance & {
-  processes?: Map<number, { lastDebugMessage?: string }>;
+  processes?: Map<number, ProcessHandle>;
 };
 
 export type ToolchainExecFailureBucket =
@@ -139,7 +141,7 @@ export async function runToolchainExecEntry(
       const processes = runtimeView.processes;
       if (processes instanceof Map) {
         for (const handle of processes.values()) {
-          const detail = handle?.lastDebugMessage ?? "";
+          const detail = processLastDebugMessage(handle) ?? "";
           if (
             detail.includes("vfork-execve:handoff-failed")
             || detail.includes("vfork-execve:handoff-trap")

@@ -220,8 +220,8 @@ function compactExecutionStats(
     cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
     running: proc.running,
     memoryBytes: proc.memoryBytes,
-    readyWorkers: proc.readyWorkers,
-    blockedWorkers: proc.blockedWorkers,
+    vforkReadyWorkers: proc.vforkReadyWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
     transferDebugStats: proc.transferDebugStats,
     cpuDebugStats: proc.cpuDebugStats,
     syscallDebugStats: proc.syscallDebugStats,
@@ -300,7 +300,7 @@ async function waitForBlockedWorkerCount(
   while (Date.now() - started < timeoutMs) {
     const stats = runtime.debugExecutionStats();
     execution = compactExecutionStats(stats);
-    const blocked = stats.reduce((sum, proc) => sum + proc.blockedWorkers, 0);
+    const blocked = stats.reduce((sum, proc) => sum + proc.hostBlockedWorkers, 0);
     if (blocked >= expected) {
       return execution;
     }

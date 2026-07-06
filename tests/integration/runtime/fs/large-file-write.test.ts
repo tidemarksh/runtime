@@ -382,8 +382,8 @@ function compactExecutionStats(
     cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
     running: proc.running,
     memoryBytes: proc.memoryBytes,
-    readyWorkers: proc.readyWorkers,
-    blockedWorkers: proc.blockedWorkers,
+    vforkReadyWorkers: proc.vforkReadyWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
     transferDebugStats: proc.transferDebugStats,
     cpuDebugStats: proc.cpuDebugStats,
     workers: proc.workers.map((worker) => ({

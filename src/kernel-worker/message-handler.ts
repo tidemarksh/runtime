@@ -35,7 +35,7 @@ interface KernelWorkerMessageHandlerDeps {
   initKernel(
     wasmModule: WebAssembly.Module,
     sabPageCache: SharedArrayBuffer,
-    maxMemoryPages?: number,
+    maxMemoryPages: number,
   ): Promise<KernelRuntimeState>;
   writeFile(path: string, data: Uint8Array, mode?: number, fanout?: boolean): void;
   writeFiles(entries: Array<{ path: string; data: Uint8Array; mode?: number }>): void;
@@ -95,7 +95,6 @@ interface KernelWorkerMessageHandlerDeps {
     connectFd?: number,
   ): KernelRuntimeState;
   resumeWait4(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
-  resumeBlockedSyscall(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   resumeVforkParent(
     pid: number,
     vmPtr: number,
@@ -107,7 +106,7 @@ interface KernelWorkerMessageHandlerDeps {
     vmPtr: number,
     provisionalChildPid: number,
     kernelState: KernelRuntimeState,
-  ): { childPid: number; nextPid: number; pgid: number; sid: number; kernelState: KernelRuntimeState };
+  ): { childPid: number; ppid: number; nextPid: number; pgid: number; sid: number; kernelState: KernelRuntimeState };
   initializeProcessLifecycle(
     pid: number,
     vmPtr: number,
@@ -124,6 +123,12 @@ interface KernelWorkerMessageHandlerDeps {
     childPid: number,
     kernelState: KernelRuntimeState,
   ): KernelRuntimeState;
+  rollbackVforkExecveHandoff(
+    pid: number,
+    vmPtr: number,
+    childPid: number,
+    kernelState: KernelRuntimeState,
+  ): { waitStatus: number; kernelState: KernelRuntimeState };
   syncProcessLifecycle(pid: number, vmPtr: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncProcessMemfs(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   syncPipeState(
@@ -383,13 +388,6 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             kernelState: deps.resumeWait4(msg.pid, msg.vmPtr, msg.kernelState),
           });
           break;
-        case "resume-blocked-syscall":
-          deps.postResponse({
-            type: "blocked-syscall-resumed",
-            requestId: msg.requestId,
-            kernelState: deps.resumeBlockedSyscall(msg.pid, msg.vmPtr, msg.kernelState),
-          });
-          break;
         case "resume-vfork-parent": {
           const { childPid, kernelState } = deps.resumeVforkParent(
             msg.pid,
@@ -406,7 +404,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           break;
         }
         case "canonicalize-child-pid": {
-          const { childPid, nextPid, pgid, sid, kernelState } = deps.canonicalizeChildPid(
+          const { childPid, ppid, nextPid, pgid, sid, kernelState } = deps.canonicalizeChildPid(
             msg.pid,
             msg.vmPtr,
             msg.provisionalChildPid,
@@ -416,6 +414,7 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             type: "child-pid-canonicalized",
             requestId: msg.requestId,
             childPid,
+            ppid,
             nextPid,
             pgid,
             sid,
@@ -446,6 +445,21 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
             kernelState: deps.resumeVforkExecveParent(msg.pid, msg.vmPtr, msg.childPid, msg.kernelState),
           });
           break;
+        case "rollback-vfork-execve-handoff": {
+          const { waitStatus, kernelState } = deps.rollbackVforkExecveHandoff(
+            msg.pid,
+            msg.vmPtr,
+            msg.childPid,
+            msg.kernelState,
+          );
+          deps.postResponse({
+            type: "vfork-execve-handoff-rolled-back",
+            requestId: msg.requestId,
+            waitStatus,
+            kernelState,
+          });
+          break;
+        }
         case "sync-process-lifecycle":
           deps.postResponse({
             type: "process-lifecycle-synced",

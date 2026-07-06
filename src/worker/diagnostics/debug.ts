@@ -1,10 +1,23 @@
+import { hostExecutionState } from "../host-execution-state.js";
+import {
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+} from "../process-stdio-state.js";
+import {
+  processWorkerCount,
+  processWorkerList,
+  processWorkers,
+} from "../process-worker-state.js";
 import type {
   ProcessHandle,
   RuntimeMemoryOwnership,
   ThreadWorkerState,
   TransferDebugStats,
+  WorkerMessageDebugStats,
 } from "../types.js";
 import { readRuntimeBridgeDebugStage } from "../../bridge/runtime-state.js";
+import { kernelSocketCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_HEAD_OFFSET,
   NET_BUFFER_HEADER_BYTES,
@@ -15,6 +28,47 @@ import {
   PIPE_SLOT_BYTES,
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
+import {
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdStatusFlags,
+} from "../ownership/ofd-metadata.js";
+import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
+import { networkConnections } from "../network-socket-state.js";
+import { workerDebugLog } from "../worker-debug-log.js";
+import { transferDebugStats, workerMessageDebugStats } from "../worker-debug-stats.js";
+import { processMemoryOwnership } from "../memory-ownership-state.js";
+import {
+  processDebugCommand,
+  processLastDebugMessage,
+} from "../process-debug-state.js";
+import {
+  getHandleForkSharedSync,
+  getProcessKernelShareForkSharedSync,
+} from "../fork-shared-sync-state.js";
+import { kernelShareSharedOfdIdList } from "../kernel-share.js";
+import {
+  getThreadGeneration,
+  getThreadOwnerAsyncStatus,
+  getThreadOwnerPid,
+  getThreadRunningGeneration,
+  getThreadWaitingInWorkerStatus,
+  isThreadInitialized,
+  threadResumeWorkersOnReadyCount,
+} from "../thread-host-state.js";
+import { getThreadActivityState } from "../thread-activity-state.js";
+import {
+  pendingGuestMemoryWritesForNextStepCount,
+  pendingPipeSlotsForNextStepCount,
+} from "../thread-step-payload.js";
+import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
+import { networkClosedFds } from "../network-socket-state.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -116,13 +170,12 @@ export interface ProcessExecutionStats {
   artifactMaterializedBytes: number | null;
   memoryOwnership?: RuntimeMemoryOwnership;
   guestBase: number;
-  readyWorkers: number;
-  blockedWorkers: number;
-  pendingChildExitRecords: number;
+  vforkReadyWorkers: number;
+  hostBlockedWorkers: number;
   pendingChildSpawnRecords: number;
   activeChildren: number;
   runtimeBridgeDebugStage: { stage: number; value: number };
-  workerMessageDebugStats: ProcessHandle["workerMessageDebugStats"];
+  workerMessageDebugStats: WorkerMessageDebugStats;
   transferDebugStats: TransferDebugStats;
   memoryLogTail: string[];
   memoryVmas: Array<{
@@ -188,26 +241,28 @@ function formatU64Decimal(value: bigint | number | undefined): string {
 }
 
 function readWorkerOwnerState(
-  handle: Pick<ProcessHandle, "runningWorker" | "readyWorkers" | "blockedWorkers">,
+  handle: ProcessHandle,
   worker: Worker,
   state: ThreadWorkerState,
 ): string {
-  if (handle.runningWorker === worker) {
+  if (hostExecutionState(handle).runningWorker === worker) {
     return "running";
   }
-  if (handle.readyWorkers.includes(worker)) {
+  if (hostExecutionState(handle).vforkReadyWorkers.includes(worker)) {
     return "ready";
   }
-  if (handle.blockedWorkers.has(worker)) {
+  if (hostExecutionState(handle).hostBlockedWorkers.has(worker)) {
     return "blocked";
   }
-  if (state.waitingInWorkerStatus !== null) {
-    return `wait:${state.waitingInWorkerStatus}`;
+  const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
+  if (waitingInWorkerStatus !== null) {
+    return `wait:${waitingInWorkerStatus}`;
   }
-  if (state.ownerAsyncStatus !== null) {
-    return `async:${state.ownerAsyncStatus}`;
+  const ownerAsyncStatus = getThreadOwnerAsyncStatus(state);
+  if (ownerAsyncStatus !== null) {
+    return `async:${ownerAsyncStatus}`;
   }
-  if (!state.initialized) {
+  if (!isThreadInitialized(state)) {
     return "init";
   }
   return "idle";
@@ -215,6 +270,7 @@ function readWorkerOwnerState(
 
 function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, state: ThreadWorkerState): string {
   const ownerState = readWorkerOwnerState(handle, worker, state);
+  const activity = getThreadActivityState(state);
   const threadStatus = handle.kernel.thread_status?.(state.vmPtr);
   const processPtr = handle.kernel.thread_process_ptr?.(state.vmPtr);
   const currentPid = handle.kernel.process_current_pid?.(state.vmPtr);
@@ -228,13 +284,13 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
   const stepExecTrace = formatWorkerStepExecTraceSummary(handle, state.vmPtr);
   const execTrace = formatWorkerExecTrace(handle, state.vmPtr)?.replaceAll(" ", "|") ?? null;
   const nowMs = Date.now();
-  const recentSteps = (state.recentSteps ?? [])
+  const recentSteps = activity.recentSteps
     .map((entry, index) => {
       const ageMs = Math.max(0, nowMs - entry.atMs);
       return `${index}:pc=0x${entry.pc.toString(16)}:sp=0x${entry.sp.toString(16)}:s11=0x${entry.s11.toString(16)}:ageMs=${ageMs}`;
     })
     .join("|");
-  const recentStatuses = (state.recentStatuses ?? [])
+  const recentStatuses = activity.recentStatuses
     .map((entry, index) => {
       const ageMs = Math.max(0, nowMs - entry.atMs);
       const syscallNr = entry.syscallNr === null ? "null" : entry.syscallNr.toString();
@@ -245,21 +301,23 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
       return `${index}:status=${entry.status}:pc=0x${entry.pc.toString(16)}:sys=${syscallNr}:fdSys=${fdTraceSyscallNr}:fdRet=${fdTraceResult}:futex=${futexWaitAddr}:blocked=${futexBlockedAddr}:ageMs=${ageMs}`;
     })
     .join("|");
-  const lastStepAgeMs = state.lastStepAtMs === null ? "null" : Math.max(0, nowMs - state.lastStepAtMs);
-  const lastStatusAgeMs = state.lastStatusAtMs === null ? "null" : Math.max(0, nowMs - state.lastStatusAtMs);
-  const statusCounts = Object.entries(state.statusCounts)
+  const lastStepAgeMs = activity.lastStepAtMs === null ? "null" : Math.max(0, nowMs - activity.lastStepAtMs);
+  const lastStatusAgeMs = activity.lastStatusAtMs === null ? "null" : Math.max(0, nowMs - activity.lastStatusAtMs);
+  const statusCounts = Object.entries(activity.statusCounts)
     .sort(([left], [right]) => Number(left) - Number(right))
     .map(([status, count]) => `${status}=${count}`)
     .join(",");
+  const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
+  const ownerAsyncStatus = getThreadOwnerAsyncStatus(state);
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
-    `ownerPid=${state.ownerPid}`,
-    `gen=${state.generation}`,
-    `runGen=${state.runningGeneration ?? "null"}`,
-    `init=${state.initialized ? 1 : 0}`,
-    `wait=${state.waitingInWorkerStatus ?? "null"}`,
-    `async=${state.ownerAsyncStatus ?? "null"}`,
+    `ownerPid=${getThreadOwnerPid(state)}`,
+    `gen=${getThreadGeneration(state)}`,
+    `runGen=${getThreadRunningGeneration(state) ?? "null"}`,
+    `init=${isThreadInitialized(state) ? 1 : 0}`,
+    `wait=${waitingInWorkerStatus ?? "null"}`,
+    `async=${ownerAsyncStatus ?? "null"}`,
     `kernelStatus=${threadStatus ?? "n/a"}`,
     `currentPid=${currentPid ?? "n/a"}`,
     `tid=${tid ?? "n/a"}`,
@@ -269,20 +327,20 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `spawnKind=${spawnKind ?? "n/a"}`,
     `spawnChild=${spawnChildPid ?? "n/a"}`,
     `process=0x${(processPtr ?? 0).toString(16)}`,
-    `steps=${state.stepCount}`,
-    `statuses=${state.statusCount}`,
+    `steps=${activity.stepCount}`,
+    `statuses=${activity.statusCount}`,
     `counts=${statusCounts}`,
-    `unansweredStep=${state.stepCount > state.statusCount ? 1 : 0}`,
+    `unansweredStep=${activity.stepCount > activity.statusCount ? 1 : 0}`,
     `lastStepAgeMs=${lastStepAgeMs}`,
     `lastStatusAgeMs=${lastStatusAgeMs}`,
     `activeStepVm=${activeStepVmPtr === undefined ? "n/a" : `0x${activeStepVmPtr.toString(16)}`}`,
     `activeStepSelf=${activeStepVmPtr === undefined ? "n/a" : activeStepVmPtr === state.vmPtr ? 1 : 0}`,
-    `last=${state.lastStatus ?? "null"}`,
-    `lastPc=${state.lastStatusPc === null ? "null" : `0x${state.lastStatusPc.toString(16)}`}`,
-    `lastStepPc=${state.lastStepPc === null ? "null" : `0x${state.lastStepPc.toString(16)}`}`,
-    `pendingPipeSlots=${state.pendingPipeSlotsForNextStep.length}`,
-    `pendingGuestWrites=${state.pendingGuestMemoryWrites.length}`,
-    `resumeReady=${state.resumeWorkersOnReady.length}`,
+    `last=${activity.lastStatus ?? "null"}`,
+    `lastPc=${activity.lastStatusPc === null ? "null" : `0x${activity.lastStatusPc.toString(16)}`}`,
+    `lastStepPc=${activity.lastStepPc === null ? "null" : `0x${activity.lastStepPc.toString(16)}`}`,
+    `pendingPipeSlots=${pendingPipeSlotsForNextStepCount(state)}`,
+    `pendingGuestWrites=${pendingGuestMemoryWritesForNextStepCount(state)}`,
+    `resumeReady=${threadResumeWorkersOnReadyCount(state)}`,
     ...(recentSteps.length === 0 ? [] : [`recentSteps=${recentSteps}`]),
     ...(recentStatuses.length === 0 ? [] : [`recentStatuses=${recentStatuses}`]),
     ...(stepExecTrace === null ? [] : [`stepExecTrace=${stepExecTrace}`]),
@@ -726,18 +784,10 @@ function formatWorkerThreadState(
 }
 
 export function summarizeProcessWorkerLogFocus(
-  handle: Pick<
-    ProcessHandle,
-    | "workers"
-    | "runningWorker"
-    | "readyWorkers"
-    | "blockedWorkers"
-    | "workerDebugLog"
-    | "kernel"
-  >,
+  handle: ProcessHandle,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
 ): WorkerLogFocus[] {
-  const attachedStates = [...handle.workers]
+  const attachedStates = processWorkerList(handle)
     .map((worker) => {
       const state = threadWorkerStates.get(worker);
       if (!state || state.vmPtr === 0) {
@@ -746,7 +796,7 @@ export function summarizeProcessWorkerLogFocus(
       return {
         vmPtr: state.vmPtr,
         ownerState: readWorkerOwnerState(handle, worker, state),
-        waitingInWorkerStatus: state.waitingInWorkerStatus,
+        waitingInWorkerStatus: getThreadWaitingInWorkerStatus(state),
       };
     })
     .filter((entry): entry is {
@@ -755,7 +805,7 @@ export function summarizeProcessWorkerLogFocus(
       waitingInWorkerStatus: number | null;
     } => entry !== null);
   const attachedVmPtrs = new Set(attachedStates.map((entry) => entry.vmPtr));
-  const detachedStates = collectLoggedWorkerVmPtrs(handle.workerDebugLog)
+  const detachedStates = collectLoggedWorkerVmPtrs(workerDebugLog(handle))
     .filter((vmPtr) => !attachedVmPtrs.has(vmPtr))
     .map((vmPtr) => ({
       vmPtr,
@@ -765,25 +815,25 @@ export function summarizeProcessWorkerLogFocus(
 
   return [...attachedStates, ...detachedStates]
     .map((state) => {
-      const eventTail = collectWorkerEventTail(handle.workerDebugLog, state.vmPtr);
-      const statusTail = collectWorkerStatusTail(handle.workerDebugLog, state.vmPtr);
+      const eventTail = collectWorkerEventTail(workerDebugLog(handle), state.vmPtr);
+      const statusTail = collectWorkerStatusTail(workerDebugLog(handle), state.vmPtr);
       return {
         vmPtr: state.vmPtr,
         ownerState: state.ownerState,
         waitingInWorkerStatus: state.waitingInWorkerStatus,
         threadState: formatWorkerThreadState(handle, state.vmPtr),
-        lastCredibleState: findLastCredibleWorkerState(handle.workerDebugLog, state.vmPtr),
-        lastStatus: findLastWorkerLogEntry(handle.workerDebugLog, "status", state.vmPtr),
-        lastStatusDebug: findLastWorkerLogEntry(handle.workerDebugLog, "status_debug", state.vmPtr),
-        lastReady: findLastWorkerLogEntry(handle.workerDebugLog, "ready", state.vmPtr),
-        lastReadyDebug: findLastWorkerLogEntry(handle.workerDebugLog, "ready-debug", state.vmPtr),
-        lastStep: findLastWorkerLogEntry(handle.workerDebugLog, "step", state.vmPtr),
-        lastWait20: findLastWorkerLogEntry(handle.workerDebugLog, "wait", state.vmPtr),
-        lastResume20: findLastWorkerLogEntry(handle.workerDebugLog, "resume", state.vmPtr),
-        lastWrite: findLastWorkerLogEntry(handle.workerDebugLog, "write", state.vmPtr),
-        lastSleep: findLastWorkerLogEntry(handle.workerDebugLog, "sleep", state.vmPtr),
-        lastYield: findLastWorkerLogEntry(handle.workerDebugLog, "yield", state.vmPtr),
-        lastFaultDebug: findLastWorkerLogEntry(handle.workerDebugLog, "fault_debug", state.vmPtr),
+        lastCredibleState: findLastCredibleWorkerState(workerDebugLog(handle), state.vmPtr),
+        lastStatus: findLastWorkerLogEntry(workerDebugLog(handle), "status", state.vmPtr),
+        lastStatusDebug: findLastWorkerLogEntry(workerDebugLog(handle), "status_debug", state.vmPtr),
+        lastReady: findLastWorkerLogEntry(workerDebugLog(handle), "ready", state.vmPtr),
+        lastReadyDebug: findLastWorkerLogEntry(workerDebugLog(handle), "ready-debug", state.vmPtr),
+        lastStep: findLastWorkerLogEntry(workerDebugLog(handle), "step", state.vmPtr),
+        lastWait20: findLastWorkerLogEntry(workerDebugLog(handle), "wait", state.vmPtr),
+        lastResume20: findLastWorkerLogEntry(workerDebugLog(handle), "resume", state.vmPtr),
+        lastWrite: findLastWorkerLogEntry(workerDebugLog(handle), "write", state.vmPtr),
+        lastSleep: findLastWorkerLogEntry(workerDebugLog(handle), "sleep", state.vmPtr),
+        lastYield: findLastWorkerLogEntry(workerDebugLog(handle), "yield", state.vmPtr),
+        lastFaultDebug: findLastWorkerLogEntry(workerDebugLog(handle), "fault_debug", state.vmPtr),
         execTrace: formatWorkerExecTrace(handle, state.vmPtr),
         eventTail,
         statusTail,
@@ -803,7 +853,7 @@ export function debugRuntimeWorkerLogFocus(
     .sort((left, right) => left.pid - right.pid)
     .map((handle) => ({
       pid: handle.pid,
-      cmd: handle.debugCommand,
+      cmd: processDebugCommand(handle),
       workers: summarizeProcessWorkerLogFocus(handle, threadWorkerStates),
     }));
 }
@@ -883,14 +933,14 @@ export function debugRuntimeExecutionStats(
     .sort((left, right) => left.pid - right.pid)
     .map((handle) => {
       const statusNames = readStatusNames(handle);
-      const ownership = handle.memoryOwnership;
+      const ownership = processMemoryOwnership(handle);
       const processCommittedBytes = Math.max(0, handle.memory.buffer.byteLength - handle.guestBase);
       const processMaxMemoryBytes = handle.maxMemoryPages * 65536;
       const forkProcessMaxMemoryBytes = handle.forkMaxMemoryPages * 65536;
       return {
         pid: handle.pid,
-        cmd: handle.debugCommand,
-        running: handle.runningWorker !== null,
+        cmd: processDebugCommand(handle),
+        running: hostExecutionState(handle).runningWorker !== null,
         memoryBytes: handle.memory.buffer.byteLength,
         guestMemoryPolicyLimitBytes: handle.guestMemoryPolicyLimitBytes.toString(),
         processCommittedBytes,
@@ -904,20 +954,19 @@ export function debugRuntimeExecutionStats(
         kernelWorkerPrivateMemoryBytes: ownership?.kernelWorkerPrivateMemoryBytes ?? null,
         artifactMaterializationBudgetBytes: ownership?.artifactMaterializationBudgetBytes ?? null,
         artifactMaterializedBytes: ownership?.artifactMaterializedBytes ?? null,
-        memoryOwnership: handle.memoryOwnership,
+        memoryOwnership: processMemoryOwnership(handle),
         guestBase: handle.guestBase,
-        readyWorkers: handle.readyWorkers.length,
-        blockedWorkers: handle.blockedWorkers.size,
-        pendingChildExitRecords: handle.pendingChildExitRecords,
-        pendingChildSpawnRecords: handle.pendingChildSpawnRecords,
+        vforkReadyWorkers: hostExecutionState(handle).vforkReadyWorkers.length,
+        hostBlockedWorkers: hostExecutionState(handle).hostBlockedWorkers.size,
+        pendingChildSpawnRecords: pendingChildSpawnRecordCount(handle),
         activeChildren: [...processHandles.values()].filter((candidate) => candidate.parentPid === handle.pid).length,
         runtimeBridgeDebugStage: readRuntimeBridgeDebugStage(handle.runtimeBridge),
         workerMessageDebugStats: {
-          ...handle.workerMessageDebugStats,
-          lastEvents: handle.workerMessageDebugStats.lastEvents.slice(-16),
+          ...workerMessageDebugStats(handle),
+          lastEvents: workerMessageDebugStats(handle).lastEvents.slice(-16),
         },
-        transferDebugStats: { ...handle.transferDebugStats },
-        memoryLogTail: handle.workerDebugLog
+        transferDebugStats: { ...transferDebugStats(handle) },
+        memoryLogTail: workerDebugLog(handle)
           .filter((entry) =>
             entry.startsWith("memory-state:")
             || entry.startsWith("plain-fork-memory:")
@@ -926,38 +975,39 @@ export function debugRuntimeExecutionStats(
         memoryVmas: readMemoryVmas(handle),
         cpuDebugStats: readCpuDebugStats(handle),
         syscallDebugStats: readSyscallDebugStats(handle),
-        workers: [...handle.workers]
+        workers: processWorkerList(handle)
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
             if (!state || state.vmPtr === 0) {
               return null;
             }
+            const activity = getThreadActivityState(state);
             return {
               vmPtr: state.vmPtr,
               ownerState: readWorkerOwnerState(handle, worker, state),
-              stepCount: state.stepCount,
-              totalStepBudget: state.totalStepBudget,
-              totalStepWallMs: state.totalStepWallMs,
-              maxStepWallMs: state.maxStepWallMs,
-              lastStepDurationMs: state.lastStepDurationMs,
-              statusCount: state.statusCount,
-              statusCounts: { ...state.statusCounts },
-              statusCountsByName: formatStatusCountsByName(state.statusCounts, statusNames),
-              lastStatus: state.lastStatus,
-              lastStatusName: state.lastStatus === null ? null : statusNames.get(state.lastStatus) ?? String(state.lastStatus),
-              lastStepAtMs: state.lastStepAtMs,
-              lastStatusAtMs: state.lastStatusAtMs,
-              lastStepPc: formatOptionalBigIntHex(state.lastStepPc),
-              lastStepSp: formatOptionalBigIntHex(state.lastStepSp),
-              lastStepS11: formatOptionalBigIntHex(state.lastStepS11),
-              hotStepPcs: formatHotCounters(state.hotStepPcs),
-              recentSteps: (state.recentSteps ?? []).map((entry) => ({
+              stepCount: activity.stepCount,
+              totalStepBudget: activity.totalStepBudget,
+              totalStepWallMs: activity.totalStepWallMs,
+              maxStepWallMs: activity.maxStepWallMs,
+              lastStepDurationMs: activity.lastStepDurationMs,
+              statusCount: activity.statusCount,
+              statusCounts: { ...activity.statusCounts },
+              statusCountsByName: formatStatusCountsByName(activity.statusCounts, statusNames),
+              lastStatus: activity.lastStatus,
+              lastStatusName: activity.lastStatus === null ? null : statusNames.get(activity.lastStatus) ?? String(activity.lastStatus),
+              lastStepAtMs: activity.lastStepAtMs,
+              lastStatusAtMs: activity.lastStatusAtMs,
+              lastStepPc: formatOptionalBigIntHex(activity.lastStepPc),
+              lastStepSp: formatOptionalBigIntHex(activity.lastStepSp),
+              lastStepS11: formatOptionalBigIntHex(activity.lastStepS11),
+              hotStepPcs: formatHotCounters(activity.hotStepPcs),
+              recentSteps: activity.recentSteps.map((entry) => ({
                 pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
                 sp: formatOptionalBigIntHex(entry.sp) ?? "0x0",
                 s11: formatOptionalBigIntHex(entry.s11) ?? "0x0",
                 ageMs: Math.max(0, Date.now() - entry.atMs),
               })),
-              recentStatuses: (state.recentStatuses ?? []).map((entry) => ({
+              recentStatuses: activity.recentStatuses.map((entry) => ({
                 status: entry.status,
                 pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
                 syscallNr: entry.syscallNr === null ? null : entry.syscallNr.toString(),
@@ -967,11 +1017,11 @@ export function debugRuntimeExecutionStats(
                 futexBlockedAddr: formatOptionalBigIntHex(entry.futexBlockedAddr),
                 ageMs: Math.max(0, Date.now() - entry.atMs),
               })),
-              lastStatusPc: formatOptionalBigIntHex(state.lastStatusPc),
-              lastStatusSp: formatOptionalBigIntHex(state.lastStatusSp),
-              lastStatusS11: formatOptionalBigIntHex(state.lastStatusS11),
-              hotStatusPcs: formatHotCounters(state.hotStatusPcs),
-              waitingInWorkerStatus: state.waitingInWorkerStatus,
+              lastStatusPc: formatOptionalBigIntHex(activity.lastStatusPc),
+              lastStatusSp: formatOptionalBigIntHex(activity.lastStatusSp),
+              lastStatusS11: formatOptionalBigIntHex(activity.lastStatusS11),
+              hotStatusPcs: formatHotCounters(activity.hotStatusPcs),
+              waitingInWorkerStatus: getThreadWaitingInWorkerStatus(state),
               threadStepEntry: readThreadStepEntryDebug(handle, state.vmPtr),
               threadStepStatus: readThreadStepStatusDebug(handle, state.vmPtr),
               threadStepPhase: readThreadStepPhaseDebug(handle, state.vmPtr),
@@ -1421,7 +1471,10 @@ function formatSocketRecvBufferHeadTail(handle: ProcessHandle, socketIdx: number
   if (recvBufIdx < 0) {
     return "-1/-1";
   }
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const maxSockets = kernelSocketCount(handle.kernel);
+  if (maxSockets === undefined) {
+    return "-1/-1";
+  }
   const netBufferCount = maxSockets * 2;
   const netBufferBytes = netBufferCount > 0 ? handle.kernel.kernel_net_buf_pool_bytes() / netBufferCount : 0;
   if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
@@ -1446,10 +1499,10 @@ export function debugRuntimeProcessHandles(
     .map((handle) => {
       try {
         const processPtr = handle.kernel.thread_process_ptr(handle.vmPtr);
-        const blocked = [...handle.blockedWorkers.values()]
+        const blocked = [...hostExecutionState(handle).hostBlockedWorkers.values()]
           .map((state) => `${state.status}@0x${state.vmPtr.toString(16)}`)
           .join(",");
-        const workerStates = [...handle.workers]
+        const workerStates = processWorkerList(handle)
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
             if (!state) {
@@ -1459,7 +1512,7 @@ export function debugRuntimeProcessHandles(
           })
           .filter(Boolean)
           .join(",");
-        const workerDetails = [...handle.workers]
+        const workerDetails = processWorkerList(handle)
           .map((worker) => {
             const state = threadWorkerStates.get(worker);
             if (!state) {
@@ -1490,26 +1543,26 @@ export function debugRuntimeProcessHandles(
           return `${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`;
         }).filter(Boolean).join(",");
         const fdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
-          const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+          const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (ofdId === 0) {
             return null;
           }
           return [
             `${fd}->${ofdId}`,
-            `flags=${handle.kernel.process_fd_flags(handle.vmPtr, fd)}`,
-            `type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`,
-            `ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
-            `host=${handle.kernel.kernel_ofd_host_fd(ofdId)}`,
-            `status=${handle.kernel.kernel_ofd_status_flags(ofdId)}`,
-            `offset=${handle.kernel.kernel_ofd_offset(ofdId).toString()}`,
+            `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
+            `type=${supervisorOfdFdType(handle, ofdId)}`,
+            `ino=${supervisorOfdIno(handle, ofdId)}`,
+            `host=${supervisorOfdHostFd(handle, ofdId)}`,
+            `status=${supervisorOfdStatusFlags(handle, ofdId)}`,
+            `offset=${supervisorOfdOffset(handle, ofdId).toString()}`,
           ].join("/");
         }).filter(Boolean).join(" ");
         const networkLogSummary = [
-          `inject=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-inject:")).length}`,
-          `drain_write=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-drain:") && entry.endsWith(":write")).length}`,
-          `drain_empty=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-drain:") && entry.includes(":n=0:")).length}`,
-          `close=${handle.workerDebugLog.filter((entry) => entry.startsWith("net-close:")).length}`,
-          `samples=${handle.workerDebugLog
+          `inject=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-inject:")).length}`,
+          `drain_write=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-drain:") && entry.endsWith(":write")).length}`,
+          `drain_empty=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-drain:") && entry.includes(":n=0:")).length}`,
+          `close=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-close:")).length}`,
+          `samples=${workerDebugLog(handle)
             .filter((entry) => (
               entry.startsWith("net-read-")
               || entry.startsWith("net-inbound:")
@@ -1523,7 +1576,7 @@ export function debugRuntimeProcessHandles(
             .slice(-80)
             .join("|")}`,
         ].join("/");
-        const networkFdSummary = [...handle.networkConnections.keys()]
+        const networkFdSummary = [...networkConnections(handle).keys()]
           .map((fd) => {
             const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(handle.vmPtr, fd) ?? -1;
             const peerIdx = socketIdx >= 0
@@ -1551,10 +1604,10 @@ export function debugRuntimeProcessHandles(
           })
           .join(" ");
         const socketFdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
-          const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+          const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (
             ofdId === 0
-            || handle.kernel.kernel_ofd_fd_type(ofdId) !== handle.kernel.abi_fd_type_socket()
+            || supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_socket()
           ) {
             return null;
           }
@@ -1585,7 +1638,7 @@ export function debugRuntimeProcessHandles(
 
         return [
           `pid=${handle.pid}`,
-          `cmd=${JSON.stringify(handle.debugCommand)}`,
+          `cmd=${JSON.stringify(processDebugCommand(handle))}`,
           `ppid=${handle.parentPid ?? 0}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `process=0x${processPtr.toString(16)}`,
@@ -1593,30 +1646,30 @@ export function debugRuntimeProcessHandles(
             const stage = readRuntimeBridgeDebugStage(handle.runtimeBridge);
             return `${stage.stage}:${stage.value}`;
           })()}`,
-          `workers=${handle.workers.size}`,
+          `workers=${processWorkerCount(handle)}`,
           `worker_states=[${workerStates}]`,
           `worker_details=[${workerDetails}]`,
           `worker_focus=[${workerFocusSummary}]`,
           `thread_states=[${threadStates}]`,
-          `ready=${handle.readyWorkers.length}`,
-          `running=${handle.runningWorker ? "1" : "0"}`,
+          `ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+          `running=${hostExecutionState(handle).runningWorker ? "1" : "0"}`,
           `blocked=[${blocked}]`,
-          `pipe_sync=${handle.pipeSyncPromise === null ? 0 : 1}/${handle.pipeSyncQueued ? 1 : 0}`,
-          `fork_sync=${handle.forkSharedSyncPromise === null ? 0 : 1}/${handle.kernelShare.forkSharedSyncPromise === null ? 0 : 1}`,
-          `vfork=${handle.vforkSnapshot ? "1" : "0"}`,
-          `stdio_pipes=${handle.stdinPipe}/${handle.stdoutPipe}/${handle.stderrPipe}`,
+          `pipe_sync=${runtimeStateSyncInFlight(handle, "pipe") ? 1 : 0}`,
+          `fork_sync=${getHandleForkSharedSync(handle) === null ? 0 : 1}/${getProcessKernelShareForkSharedSync(handle) === null ? 0 : 1}`,
+          `vfork=${hostExecutionState(handle).vforkSnapshot ? "1" : "0"}`,
+          `stdio_pipes=${processStdinPipe(handle)}/${processStdoutPipe(handle)}/${processStderrPipe(handle)}`,
           `process_stdio=${handle.kernel.process_stdin_pipe(handle.vmPtr)}/${handle.kernel.process_stdout_pipe(handle.vmPtr)}/${handle.kernel.process_stderr_pipe(handle.vmPtr)}`,
           `stdio_pipe_counters=[${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             .map((fd) => formatPipeCounterDebug(handle, fd))
             .join(" ")}]`,
-          `shared_ofds=[${[...handle.kernelShare.sharedOfdIds].sort((left, right) => left - right).join(",")}]`,
+          `shared_ofds=[${kernelShareSharedOfdIdList(handle).sort((left, right) => left - right).join(",")}]`,
           `fds=[${fdSummary}]`,
           `worker_net=[${networkLogSummary}]`,
           `network_fds=[${networkFdSummary}]`,
-          `network_closed_fds=[${[...handle.networkClosedFds].sort((left, right) => left - right).join(",")}]`,
+          `network_closed_fds=[${[...networkClosedFds(handle)].sort((left, right) => left - right).join(",")}]`,
           `socket_fds=[${socketFdSummary}]`,
-          `worker_log=[${handle.workerDebugLog.slice(-48).join(", ")}]`,
-          `debug=${handle.lastDebugMessage ?? "n/a"}`,
+          `worker_log=[${workerDebugLog(handle).slice(-48).join(", ")}]`,
+          `debug=${processLastDebugMessage(handle) ?? "n/a"}`,
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `syscall_errors=[${formatProcessSyscallErrorTrace(handle)}]`,
@@ -1631,7 +1684,7 @@ export function debugRuntimeProcessHandles(
         const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
         return [
           `pid=${handle.pid}`,
-          `cmd=${JSON.stringify(handle.debugCommand)}`,
+          `cmd=${JSON.stringify(processDebugCommand(handle))}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `debug_error=${JSON.stringify(detail)}`,
           `execve_error=${formatExecveError(handle)}`,
@@ -1679,7 +1732,7 @@ export function formatAllLiveThreadDebug(
     vmPtrs.add(handle.vmPtr);
   }
   vmPtrs.add(threadWorkerStates.get(handle.worker)?.vmPtr ?? 0);
-  for (const worker of handle.workers) {
+  for (const worker of processWorkers(handle)) {
     vmPtrs.add(threadWorkerStates.get(worker)?.vmPtr ?? 0);
   }
   return [...vmPtrs]
@@ -1698,21 +1751,21 @@ export function assertProcessStandardFdIntegrity(
   formatPipeCounterDebug: (handle: ProcessHandle, fd: number) => string,
 ): void {
   const selfFdSummary = (): string => Array.from({ length: 16 }, (_value, fd) => {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId === 0) {
       return null;
     }
-    return `${fd}->${ofdId}/${handle.kernel.process_fd_flags(handle.vmPtr, fd)}/${handle.kernel.kernel_ofd_fd_type(ofdId)}/${handle.kernel.kernel_ofd_ino(ofdId)}`;
+    return `${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}/${supervisorOfdFdType(handle, ofdId)}/${supervisorOfdIno(handle, ofdId)}`;
   }).filter(Boolean).join(" ");
   if (handle.pid <= 0) {
     return;
   }
   for (const fd of [0, 1, 2]) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
+    const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
     if (ofdId === 0) {
       continue;
     }
-    const type = handle.kernel.kernel_ofd_fd_type(ofdId);
+    const type = supervisorOfdFdType(handle, ofdId);
     if (type <= 0 || type > 64) {
       throw new Error(
         `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}`
@@ -1724,7 +1777,7 @@ export function assertProcessStandardFdIntegrity(
     if (type !== handle.kernel.abi_fd_type_pipe()) {
       continue;
     }
-    const pipeSlot = handle.kernel.kernel_ofd_ino(ofdId);
+    const pipeSlot = supervisorOfdIno(handle, ofdId);
     const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
     const i32 = new Int32Array(handle.memory.buffer);
     const readOpen = Atomics.load(i32, (base + PIPE_READ_OPEN_OFFSET) >>> 2);

@@ -1,5 +1,32 @@
+import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  addProcessWorker,
+  processHasWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
-import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/transitions.js";
+import { createWorkerStatusTransitionHandler } from "../../../../src/worker/message-handler/status/transitions.js";
+import {
+  networkConnectionOfds,
+  networkConnections,
+} from "../../../../src/worker/network-socket-state.js";
+import { setProcessLastDebugMessage } from "../../../../src/worker/process-debug-state.js";
+import {
+  clearThreadOwnerAsyncStatus,
+  getThreadOwnerAsyncStatus,
+  getThreadWaitingInWorkerStatus,
+  setThreadHostIdentity,
+  setThreadOwnerAsyncStatus,
+  setThreadOwnerPid,
+  snapshotThreadResumeWorkersOnReady,
+} from "../../../../src/worker/thread-host-state.js";
+import {
+  makeSupervisorAbiStubs,
+  writeSupervisorArmHostTimerHostOpRecord,
+  writeSupervisorFaultExitDecisionRecord,
+} from "../support/supervisor-abi.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeKernelState() {
   return {
@@ -27,15 +54,179 @@ function makeKernelState() {
   };
 }
 
+function writeU32(view: DataView, offset: number, value: number): void {
+  view.setUint32(offset, value, true);
+}
+
+function writeU64(view: DataView, offset: number, value: bigint): void {
+  view.setBigUint64(offset, value, true);
+}
+
+function blockedWaitWakeMaskForSync(source: number): number {
+  switch (source) {
+    case 1:
+      return 1;
+    case 2:
+      return 2;
+    case 3:
+      return 1 | 2 | 4 | 8;
+    case 4:
+      return 1 | 2;
+    default:
+      return -22;
+  }
+}
+
+function blockedWaitWakeTargetForStatus(status: number): number {
+  switch (status) {
+    case 21:
+      return 1;
+    case 22:
+      return 2;
+    case 30:
+      return 4;
+    case 29:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+function blockedWaitStatusMatchesWakeSource(status: number, source: number): number {
+  const mask = blockedWaitWakeMaskForSync(source);
+  if (mask < 0) {
+    return mask;
+  }
+  const target = blockedWaitWakeTargetForStatus(status);
+  return target !== 0 && (mask & target) !== 0 ? 1 : 0;
+}
+
+function writeCloneSpawnHostOpRecord(
+  memory: WebAssembly.Memory,
+  ptr: number,
+  parentVmPtr: number,
+  childVmPtr: number,
+): void {
+  const view = new DataView(memory.buffer, ptr, 64);
+  writeU32(view, 0, 0x4f48_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 64);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, 1n);
+  writeU32(view, 24, parentVmPtr);
+  writeU32(view, 28, childVmPtr);
+  writeU32(view, 32, 2);
+  writeU32(view, 36, 0x5000);
+  writeU32(view, 40, 0);
+  writeU32(view, 44, 0);
+  writeU64(view, 48, 0x50f00n);
+  writeU64(view, 56, 0x8800n);
+}
+
+function installCloneSpawnHostOp(
+  handle: ReturnType<typeof makeHandle>,
+  childVmPtr = 0x2000,
+) {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_spawn_thread_worker: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_spawn_thread_worker = () => 1;
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    writeCloneSpawnHostOpRecord(memory, outPtr, 0x1234, childVmPtr);
+    return 64;
+  });
+  return { kernel, memory };
+}
+
+function writeFdControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
+  const view = new DataView(memory.buffer, ptr, 96);
+  writeU32(view, 0, 0x4446_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 96);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, seq);
+  writeU32(view, 24, 0x1234);
+  writeU32(view, 28, 0x2000);
+  writeU32(view, 32, 9);
+  writeU32(view, 36, 3);
+  writeU32(view, 40, 0);
+  writeU32(view, 44, 11);
+  writeU32(view, 48, 0);
+  writeU32(view, 52, 2);
+  writeU32(view, 56, 5);
+  writeU32(view, 60, 0);
+  writeU64(view, 64, 0n);
+  writeU64(view, 72, 0x800n);
+  writeU64(view, 80, 1n);
+  writeU64(view, 88, 0n);
+}
+
+function writeFsControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
+  const view = new DataView(memory.buffer, ptr, 112);
+  writeU32(view, 0, 0x5346_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 112);
+  writeU32(view, 12, 1);
+  writeU64(view, 16, seq);
+  writeU32(view, 24, 0x1234);
+  writeU32(view, 28, 0x2000);
+  writeU32(view, 32, 9);
+  writeU32(view, 36, 3);
+  writeU32(view, 40, 55);
+  writeU32(view, 44, 1);
+  writeU64(view, 48, 77n);
+  writeU64(view, 56, 2n);
+  writeU64(view, 64, 8192n);
+  writeU64(view, 72, 4096n);
+  view.setBigInt64(80, -2n, true);
+  writeU64(view, 88, 0n);
+  writeU64(view, 96, 16384n);
+  writeU64(view, 104, 0n);
+}
+
+function writeSignalControlRecord(memory: WebAssembly.Memory, ptr: number, seq: bigint): void {
+  const view = new DataView(memory.buffer, ptr, 120);
+  writeU32(view, 0, 0x4753_5354);
+  writeU32(view, 4, 1);
+  writeU32(view, 8, 120);
+  writeU32(view, 12, 2);
+  writeU64(view, 16, seq);
+  writeU32(view, 24, 0x1234);
+  writeU32(view, 28, 0x2000);
+  writeU32(view, 32, 9);
+  writeU32(view, 36, 3);
+  writeU32(view, 40, 10);
+  writeU32(view, 44, 0);
+  view.setInt32(48, -6, true);
+  writeU32(view, 52, 1);
+  writeU64(view, 56, 0x200n);
+  writeU64(view, 64, 0n);
+  writeU64(view, 72, 0n);
+  writeU64(view, 80, 0x200n);
+  writeU64(view, 88, 0n);
+  writeU64(view, 96, 0x91_000n);
+  writeU64(view, 104, 0x91_000n);
+  writeU64(view, 112, 0n);
+}
+
 function makeHandle(worker: Worker) {
-  return {
+  const handle = {
     pid: 0,
     vmPtr: 0x1234,
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
-    kernelWorkerRequest: undefined,
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelState: makeKernelState(),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -43,9 +234,6 @@ function makeHandle(worker: Worker) {
       stateSab: new SharedArrayBuffer(176),
     },
     workerDebugLog: [],
-    lastDebugMessage: undefined,
-    pendingChildSpawnRecords: 0,
-    pendingChildExitRecords: 0,
     vforkSnapshot: null,
     vforkWorker: null,
     runningWorker: null,
@@ -54,13 +242,8 @@ function makeHandle(worker: Worker) {
     stdinPipe: 0,
     stdoutPipe: 0,
     stderrPipe: 0,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
     kernel: {
+      ...makeSupervisorAbiStubs(),
       abi_status_ok: () => 0,
       abi_status_fault: () => 3,
       abi_status_fs: () => 6,
@@ -76,6 +259,85 @@ function makeHandle(worker: Worker) {
       abi_status_socket_recv: () => 30,
       abi_status_wait4: () => 31,
       abi_status_flock_wait: () => 32,
+      supervisor_blocked_status_is_host_wait: (status: number) =>
+        [21, 22, 28, 29, 30, 31, 32].includes(status) ? 1 : 0,
+      supervisor_blocked_status_is_connect_wait: (status: number) =>
+        status === 28 ? 1 : 0,
+      supervisor_blocked_status_is_epoll_wait: (status: number) =>
+        status === 22 ? 1 : 0,
+      supervisor_blocked_status_is_pipe_wait: (status: number) =>
+        status === 21 ? 1 : 0,
+      supervisor_blocked_status_is_wait4: (status: number) =>
+        status === 31 ? 1 : 0,
+      supervisor_blocked_status_is_socket_wait: (status: number) =>
+        [29, 30].includes(status) ? 1 : 0,
+      supervisor_blocked_status_needs_network_sidecar_restore: (status: number) =>
+        [21, 22, 28, 29, 30].includes(status) ? 1 : 0,
+      supervisor_blocked_status_syncs_socket_after_resume: (status: number) =>
+        [28, 29, 30].includes(status) ? 1 : 0,
+      supervisor_blocked_status_uses_fork_shared_state_sync: (status: number) =>
+        [21, 29, 30, 32].includes(status) ? 1 : 0,
+      supervisor_blocked_status_transition_action_block: () => 0,
+      supervisor_blocked_status_transition_action_sync_socket: () => 1,
+      supervisor_blocked_status_transition_action_sync_pipe: () => 2,
+      supervisor_blocked_status_transition_action_sync_fork_shared: () => 3,
+      supervisor_blocked_status_transition_action_sync_pipe_and_fork_shared: () => 4,
+      supervisor_blocked_status_transition_action_sync_socket_and_fork_shared: () => 5,
+      supervisor_blocked_status_transition_flag_kernel_worker_available: () => 1,
+      supervisor_blocked_status_transition_flag_network_connections_available: () => 2,
+      supervisor_blocked_status_transition_action: (_vmPtr: number, status: number, flags: number) => {
+        if ((flags & 1) === 0) {
+          return 0;
+        }
+        if (status === 21 && (flags & 2) !== 0) {
+          return 1;
+        }
+        if (status === 31) {
+          return 2;
+        }
+        if (status === 21) {
+          return 4;
+        }
+        if ([29, 30].includes(status)) {
+          return 5;
+        }
+        if (status === 32) {
+          return 3;
+        }
+        return 0;
+      },
+      supervisor_process_status_is_lifecycle_handoff: (status: number) =>
+        [23, 24, 25].includes(status) ? 1 : 0,
+      supervisor_process_status_is_execve_spawn: (status: number) =>
+        status === 24 ? 1 : 0,
+      supervisor_process_status_is_clone_spawn: (status: number) =>
+        status === 25 ? 1 : 0,
+      supervisor_process_status_is_vfork_wait: (status: number) =>
+        status === 23 ? 1 : 0,
+      supervisor_process_status_allows_pid_mismatch: (status: number) =>
+        [23, 24].includes(status) ? 1 : 0,
+      supervisor_abi_version: () => 1,
+      supervisor_host_op_record_bytes: () => 64,
+      supervisor_host_op_record_magic: () => 0x4f48_5354,
+      supervisor_host_op_kind_spawn_thread_worker: () => 1,
+      supervisor_host_op_kind_arm_host_timer: () => 12,
+      supervisor_next_host_op: undefined,
+      supervisor_next_host_op_kind: undefined,
+      supervisor_host_completion_record_bytes: () => 64,
+      supervisor_host_completion_record_magic: () => 0x4348_5354,
+      supervisor_host_completion_outcome_success: () => 1,
+      supervisor_host_completion_outcome_failure: () => 2,
+      supervisor_blocked_wait_wake_source_pipe_sync: () => 1,
+      supervisor_blocked_wait_wake_source_epoll_sync: () => 2,
+      supervisor_blocked_wait_wake_source_socket_sync: () => 3,
+      supervisor_blocked_wait_wake_source_pipe_and_epoll_sync: () => 4,
+      supervisor_blocked_wait_wake_target_pipe_wait: () => 1,
+      supervisor_blocked_wait_wake_target_epoll_wait: () => 2,
+      supervisor_blocked_wait_wake_target_socket_recv: () => 4,
+      supervisor_blocked_wait_wake_target_socket_send: () => 8,
+      supervisor_blocked_wait_wake_mask_for_sync: blockedWaitWakeMaskForSync,
+      supervisor_blocked_wait_status_matches_wake_source: blockedWaitStatusMatchesWakeSource,
+      supervisor_blocked_wait_timer_required: () => 0,
       abi_eagain: () => -11,
       abi_econnrefused: () => 111,
       kernel_heap_base: () => 0,
@@ -110,12 +372,47 @@ function makeHandle(worker: Worker) {
       thread_process_thread_count: () => 1,
       process_fd_ofd_id: () => 0,
       kernel_ofd_fd_type: () => 0,
+      supervisor_socket_ofd_is_socket(this: Record<string, unknown>, ofdId: number) {
+        const readType = this.kernel_ofd_fd_type as ((ofdId: number) => number) | undefined;
+        const socketType = this.abi_fd_type_socket as (() => number) | undefined;
+        return ofdId > 0 && readType?.(ofdId) === socketType?.() ? 1 : 0;
+      },
+      supervisor_process_socket_ofd_for_fd(this: Record<string, unknown>, vmPtr: number, fd: number) {
+        const readOfd = this.process_fd_ofd_id as ((vmPtr: number, fd: number) => number) | undefined;
+        const isSocket = this.supervisor_socket_ofd_is_socket as ((ofdId: number) => number) | undefined;
+        const ofdId = readOfd?.(vmPtr, fd) ?? 0;
+        return isSocket?.call(this, ofdId) === 1 ? ofdId : 0;
+      },
+      supervisor_process_socket_drain_fd(this: Record<string, unknown>, vmPtr: number, connectedFd: number, index: number) {
+        const maxFds = (this.abi_max_fds as (() => number) | undefined)?.() ?? 0;
+        const socketOfdForFd = this.supervisor_process_socket_ofd_for_fd as (
+          (vmPtr: number, fd: number) => number
+        ) | undefined;
+        const connectedOfd = socketOfdForFd?.call(this, vmPtr, connectedFd) ?? 0;
+        if (connectedOfd <= 0) {
+          return -1;
+        }
+        const candidates = [connectedFd];
+        for (let fd = 0; fd < maxFds; fd += 1) {
+          if (fd !== connectedFd && socketOfdForFd?.call(this, vmPtr, fd) === connectedOfd) {
+            candidates.push(fd);
+          }
+        }
+        return candidates[index] ?? -1;
+      },
+      supervisor_fs_pipe_refresh_action_none: () => 0,
+      supervisor_fs_pipe_refresh_action_request_sync: () => 1,
+      supervisor_fs_pipe_refresh_flag_kernel_worker_available: () => 1,
+      supervisor_fs_pipe_refresh_before_resume_action: () => 0,
       abi_fd_type_socket: () => 8,
       abi_max_fds: () => 8,
       thread_status: () => 0,
       thread_spawn_from_clone: vi.fn(() => 0x2000),
     },
   };
+  seedProcessHandleStateFixture(handle);
+  setProcessLastDebugMessage(handle as never, undefined);
+  return handle;
 }
 
 function makeDeps(worker: Worker) {
@@ -125,16 +422,16 @@ function makeDeps(worker: Worker) {
     ownerAsyncStatus: number | null;
     generation: number;
     waitingInWorkerStatus: number | null;
-    resumeWorkersOnReady: Worker[];
   }>();
-  threadWorkerStates.set(worker, {
+  const thread = {
     vmPtr: 0x1234,
     ownerPid: 0,
     ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
-  });
+  };
+  setThreadHostIdentity(thread as never, 0, 1);
+  threadWorkerStates.set(worker, thread);
 
   return {
     threadWorkerStates,
@@ -152,7 +449,8 @@ function makeDeps(worker: Worker) {
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
     handleExecveSpawn: vi.fn(async () => {}),
-    kickBlockedWorkers: vi.fn(),
+    notifyWorkerStatusProgress: vi.fn(),
+    parkSupervisorFutexWait: vi.fn(),
     pumpProcess: vi.fn(),
     pumpNetworkConnections: vi.fn(async () => false),
     pruneDetachedProcessWorkers: vi.fn(),
@@ -187,13 +485,263 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("STATUS_FAULT selects a worker VM with concrete fault evidence when the process table is stale", () => {
+test("status transitions append supervisor fd-control diagnostics once per sequence", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+  handle.memory = memory;
+  let count = 1n;
+  let seq = 7n;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fd_control_record_bytes: () => number;
+    supervisor_fd_control_record_magic: () => number;
+    supervisor_fd_control_kind_pipe_created: () => number;
+    supervisor_shadow_fd_control_count: () => bigint;
+    supervisor_fd_control_record: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fd_control_record_bytes = () => 96;
+  kernel.supervisor_fd_control_record_magic = () => 0x4446_5354;
+  kernel.supervisor_fd_control_kind_pipe_created = () => 1;
+  kernel.supervisor_shadow_fd_control_count = () => count;
+  kernel.supervisor_fd_control_record = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(96);
+    writeFdControlRecord(memory, outPtr, seq);
+    return 96;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const statusMessage = {
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  };
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  count = 2n;
+  seq = 8n;
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  const fdControlLogs = deps.appendWorkerDebugLog.mock.calls
+    .map(([, event]) => event)
+    .filter((event) => String(event).startsWith("supervisor-fd-control:"));
+  expect(fdControlLogs).toEqual([
+    expect.stringContaining("supervisor-fd-control:kind=1:seq=7"),
+    expect.stringContaining("supervisor-fd-control:kind=1:seq=8"),
+  ]);
+});
+
+test("status transitions append supervisor fs-control diagnostics once per sequence", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+  handle.memory = memory;
+  let count = 1n;
+  let seq = 9n;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fs_control_record_bytes: () => number;
+    supervisor_fs_control_record_magic: () => number;
+    supervisor_fs_control_kind_page_cache_miss: () => number;
+    supervisor_shadow_fs_control_count: () => bigint;
+    supervisor_fs_control_record: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fs_control_record_bytes = () => 112;
+  kernel.supervisor_fs_control_record_magic = () => 0x5346_5354;
+  kernel.supervisor_fs_control_kind_page_cache_miss = () => 1;
+  kernel.supervisor_shadow_fs_control_count = () => count;
+  kernel.supervisor_fs_control_record = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(112);
+    writeFsControlRecord(memory, outPtr, seq);
+    return 112;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const statusMessage = {
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  };
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  count = 2n;
+  seq = 10n;
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  const fsControlLogs = deps.appendWorkerDebugLog.mock.calls
+    .map(([, event]) => event)
+    .filter((event) => String(event).startsWith("supervisor-fs-control:"));
+  expect(fsControlLogs).toEqual([
+    expect.stringContaining("supervisor-fs-control:kind=1:seq=9"),
+    expect.stringContaining("supervisor-fs-control:kind=1:seq=10"),
+  ]);
+});
+
+test("status transitions append supervisor signal-control diagnostics once per sequence", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
+  handle.memory = memory;
+  let count = 1n;
+  let seq = 11n;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_signal_control_record_bytes: () => number;
+    supervisor_signal_control_record_magic: () => number;
+    supervisor_signal_control_kind_boundary_check: () => number;
+    supervisor_signal_control_kind_signal_delivered: () => number;
+    supervisor_signal_control_kind_blocked_wait_interrupted: () => number;
+    supervisor_shadow_signal_control_count: () => bigint;
+    supervisor_signal_control_record: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_signal_control_record_bytes = () => 120;
+  kernel.supervisor_signal_control_record_magic = () => 0x4753_5354;
+  kernel.supervisor_signal_control_kind_boundary_check = () => 1;
+  kernel.supervisor_signal_control_kind_signal_delivered = () => 2;
+  kernel.supervisor_signal_control_kind_blocked_wait_interrupted = () => 3;
+  kernel.supervisor_shadow_signal_control_count = () => count;
+  kernel.supervisor_signal_control_record = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(120);
+    writeSignalControlRecord(memory, outPtr, seq);
+    return 120;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const statusMessage = {
+    type: "status",
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0n,
+    vmPtr: 0x1234,
+    kernelState: makeKernelState(),
+  };
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+  count = 2n;
+  seq = 12n;
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: statusMessage,
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  const signalControlLogs = deps.appendWorkerDebugLog.mock.calls
+    .map(([, event]) => event)
+    .filter((event) => String(event).startsWith("supervisor-signal-control:"));
+  expect(signalControlLogs).toEqual([
+    expect.stringContaining("supervisor-signal-control:kind=2:seq=11"),
+    expect.stringContaining("supervisor-signal-control:kind=2:seq=12"),
+  ]);
+});
+
+test("STATUS_FAULT completes supervisor-selected fault exit VM when the process table is stale", () => {
   const worker = {} as Worker;
   const faultWorker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
-  handle.workers.add(faultWorker);
+  addProcessWorker(handle, faultWorker);
   handle.kernel.process_current_pid = () => 1;
   handle.kernel.process_thread_vm_ptr = () => 0;
   handle.kernel.thread_process_thread_count = () => 0;
@@ -202,15 +750,47 @@ test("STATUS_FAULT selects a worker VM with concrete fault evidence when the pro
   handle.kernel.thread_term_signal = () => 11;
   handle.kernel.thread_fault_pc = (vmPtr: number) => vmPtr === 0x5678 ? 0x72755a8n : 0n;
   handle.kernel.thread_fault_addr = (vmPtr: number) => vmPtr === 0x5678 ? 0x9n : 0n;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fault_exit_decision_bytes: () => number;
+    supervisor_fault_exit_decision_magic: () => number;
+    supervisor_fault_exit_kind_thread_exit: () => number;
+    supervisor_fault_exit_kind_process_exit: () => number;
+    supervisor_fault_exit_decision: (vmPtr: number, outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
+  kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
+  kernel.supervisor_fault_exit_kind_process_exit = () => 2;
+  kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(outLen).toBe(88);
+    writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+      kind: 2,
+      vmPtr: 0x1234,
+      exitVmPtr: 0x5678,
+      remainingThreads: 0,
+      liveThreads: 0,
+      exitCode: 139,
+      termSignal: 11,
+    });
+    return 88;
+  });
   const deps = makeDeps(worker);
-  deps.threadWorkerStates.set(faultWorker, {
+  const faultThread = {
     vmPtr: 0x5678,
     ownerPid: 1,
     ownerAsyncStatus: null,
     generation: 1,
     waitingInWorkerStatus: null,
-    resumeWorkersOnReady: [],
-  });
+  };
+  setThreadHostIdentity(faultThread as never, 1, 1);
+  deps.threadWorkerStates.set(faultWorker, faultThread);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -232,10 +812,83 @@ test("STATUS_FAULT selects a worker VM with concrete fault evidence when the pro
     completedSyncEffects: 0,
   });
 
+  expect(kernel.supervisor_fault_exit_decision).toHaveBeenCalledWith(0x1234, expect.any(Number), 88);
   expect(deps.completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x5678);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
-    expect.stringContaining("complete-exit-request:transitions-fault:1:vm=0x1234:exitVm=0x5678:priority=2"),
+    expect.stringContaining("complete-exit-request:transitions-fault:1:vm=0x1234:exitVm=0x5678:decision=1"),
+  );
+});
+
+test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remaining-thread heuristic", () => {
+  const worker = { terminate: vi.fn() } as unknown as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.process_current_pid = () => 1;
+  handle.kernel.thread_process_thread_count = () => 1;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_fault_exit_decision_bytes: () => number;
+    supervisor_fault_exit_decision_magic: () => number;
+    supervisor_fault_exit_kind_thread_exit: () => number;
+    supervisor_fault_exit_kind_process_exit: () => number;
+    supervisor_fault_exit_decision: (vmPtr: number, outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
+  kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
+  kernel.supervisor_fault_exit_kind_process_exit = () => 2;
+  kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(0x1234);
+    expect(outLen).toBe(88);
+    writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+      kind: 1,
+      vmPtr: 0x1234,
+      exitVmPtr: 0x1234,
+      remainingThreads: 1,
+      liveThreads: 1,
+      exitCode: 42,
+      termSignal: 0,
+      status: 3,
+    });
+    return 88;
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 3,
+      exitCode: 42,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 3,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(kernel.supervisor_fault_exit_decision).toHaveBeenCalledWith(0x1234, expect.any(Number), 88);
+  expect(deps.completeProcessExit).not.toHaveBeenCalled();
+  expect(processHasWorker(handle, worker)).toBe(false);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    77,
+    expect.stringContaining("fault-worker-delete:1:vm=0x1234"),
   );
 });
 
@@ -245,7 +898,7 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
   handle.pid = 4;
   handle.runtimeId = 99;
   handle.kernel.process_current_pid = () => 4;
-  handle.networkConnections.set(3, {} as never);
+  networkConnections(handle).set(3, {} as never);
   const bridge = {
     connect: vi.fn(),
   };
@@ -255,7 +908,7 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
     runtimeId: 99,
     networkBridge: bridge,
   };
-  handle.kernelShare.members.add(parent as never);
+  addKernelShareMember(handle, parent as never);
   const deps = makeDeps(worker);
   deps.processHandles.set(1, parent as never);
   deps.processHandles.set(4, handle as never);
@@ -308,10 +961,10 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
     runtimeId: 99,
     networkBridge: bridge,
   };
-  parent.networkConnections.set(3, connection);
+  networkConnections(parent).set(3, connection);
   parent.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 12 : 0);
   parent.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 12 ? 8 : 0);
-  handle.kernelShare.members.add(parent as never);
+  addKernelShareMember(handle, parent as never);
   const deps = makeDeps(worker);
   deps.processHandles.set(1, parent as never);
   deps.processHandles.set(4, handle as never);
@@ -340,8 +993,8 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
     expect(deps.pumpNetworkConnections).toHaveBeenCalledWith(handle, 0x1234);
   });
   expect(handle.networkBridge).toBe(bridge);
-  expect(handle.networkConnections.get(3)).toBe(connection);
-  expect(handle.networkConnectionOfds?.get(3)).toBe(12);
+  expect(networkConnections(handle).get(3)).toBe(connection);
+  expect(networkConnectionOfds(handle as never).get(3)).toBe(12);
   expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
 });
 
@@ -349,7 +1002,7 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 5;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   const deps = makeDeps(worker);
   const order: string[] = [];
   deps.requestSocketStateSync = vi.fn(async () => {
@@ -387,16 +1040,18 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
   expect(order).toEqual(["socket", "fork-shared"]);
 });
 
-test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing", () => {
+test("STATUS_SLEEP zero-duration yield reports progress before supervisor pump", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
+  hostExecutionState(handle).runningWorker = worker;
   const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
     handle: handle as never,
     worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
+    thread: thread as never,
     msg: {
       type: "status",
       status: 26,
@@ -412,206 +1067,139 @@ test("STATUS_SLEEP zero-duration yield kicks blocked workers before requeueing",
     completedSyncEffects: 0,
   });
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-  expect(handle.kernel.thread_resume_sleep).toHaveBeenCalledWith(0x1234);
-  expect(
-    handle.kernel.thread_resume_sleep.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
-  expect(
-    deps.kickBlockedWorkers.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.enqueueWorker.mock.invocationCallOrder[0]);
-});
-
-test("STATUS_SLEEP zero-duration yield lets existing ready work run before requeueing itself", async () => {
-  vi.useFakeTimers();
-  const worker = {} as Worker;
-  const readyWorker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.readyWorkers.push(readyWorker);
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 26,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 26,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  });
-
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  await vi.runOnlyPendingTimersAsync();
-
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-});
-
-test("STATUS_SLEEP zero-duration yield waits for pending blocked RPC before ready churn", async () => {
-  vi.useFakeTimers();
-  const worker = {} as Worker;
-  const readyWorker = {} as Worker;
-  const blockedWorker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.readyWorkers.push(readyWorker);
-  const blocked = {
-    vmPtr: 0x5678,
-    status: 22,
-    retryTimer: null,
-    timeoutExpired: false,
-    timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
-    epollTimerfdDeadlineTicks: null,
-    rpcPending: true,
-    rpcGeneration: 1,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  };
-  handle.blockedWorkers.set(blockedWorker, blocked);
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 26,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 26,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  });
-
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
-  expect(deps.pumpProcess).not.toHaveBeenCalled();
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  blocked.rpcPending = false;
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(deps.pumpProcess).not.toHaveBeenCalled();
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-});
-
-test("STATUS_SLEEP zero-duration yield gives blocked I/O retry a real timer turn", async () => {
-  vi.useFakeTimers();
-  const worker = {} as Worker;
-  const readyWorker = {} as Worker;
-  const blockedWorker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.readyWorkers.push(readyWorker);
-  handle.blockedWorkers.set(blockedWorker, {
-    vmPtr: 0x5678,
-    status: 22,
-    retryTimer: null,
-    timeoutExpired: false,
-    timeoutDeadlineMs: null,
-    sleepDeadlineTicks: null,
-    epollTimerfdDeadlineTicks: null,
-    rpcPending: false,
-    rpcGeneration: 0,
-    skipNextNetworkPump: false,
-    pipeSyncedBeforePassive: false,
-    pipeChildExitResumeKey: null,
-    pipeEofChildExitDeferrals: 0,
-  });
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 26,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 26,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  });
-
-  expect(deps.pumpProcess).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(0);
-
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-
-  await vi.advanceTimersByTimeAsync(1);
-
-  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
-});
-
-test("STATUS_SLEEP blocks in the owner scheduler instead of arming a host timer", () => {
-  const worker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.kernel.thread_sleep_nanoseconds = () => 1_000_000n;
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 26,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 26,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  });
-
-  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 26, 0x1234);
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
-  expect(deps.enqueueWorker).not.toHaveBeenCalled();
-  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(
-    deps.blockWorker.mock.invocationCallOrder[0],
-  ).toBeLessThan(deps.kickBlockedWorkers.mock.invocationCallOrder[0]);
-  expect(
-    deps.kickBlockedWorkers.mock.invocationCallOrder[0],
+    deps.notifyWorkerStatusProgress.mock.invocationCallOrder[0],
   ).toBeLessThan(deps.pumpProcess.mock.invocationCallOrder[0]);
 });
 
-test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", () => {
+test("STATUS_SLEEP zero-duration yield waits for requested pipe sync before supervisor pump", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  hostExecutionState(handle).runningWorker = worker;
+  setProcessKernelWorkerRequest(handle, {} as never);
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 26,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 26,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  await Promise.resolve();
+
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
+});
+
+test("STATUS_SLEEP arms supervisor host timer HostOp and reports completion", async () => {
+  vi.useFakeTimers();
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  hostExecutionState(handle).runningWorker = worker;
+  handle.kernel.thread_sleep_nanoseconds = () => 1_000_000n;
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_arm_host_timer: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+    supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  let completionView: DataView | null = null;
+  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
+    completionView = new DataView(memory.buffer, completionPtr, completionLen);
+    return 0;
+  });
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 9n,
+      tid: 2,
+      processPtr: 0x5000,
+      status: 26,
+      deadlineTicks: 500_000n,
+    });
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 26,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 26,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBe(26);
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+
+  await vi.advanceTimersByTimeAsync(5);
+
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(completionView?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(completionView?.getUint32(12, true)).toBe(12);
+  expect(completionView?.getBigUint64(16, true)).toBe(9n);
+  expect(completionView?.getUint32(24, true)).toBe(0x1234);
+  expect(completionView?.getUint32(36, true)).toBe(1);
+  expect(completionView?.getUint32(40, true)).toBe(0);
+  expect(deps.pumpProcess).toHaveBeenCalledTimes(2);
+});
+
+test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
@@ -619,6 +1207,7 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
   handle.kernel.thread_status = () => handle.kernel.abi_status_ok();
   handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
   const deps = makeDeps(worker);
+  setThreadOwnerPid(deps.threadWorkerStates.get(worker)! as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   expect(() => transition({
@@ -640,7 +1229,10 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
     completedSyncEffects: 0,
   })).not.toThrow();
 
-  expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
     "clone-spawn-stale-current:1:0x1234:25->0",
@@ -650,45 +1242,11 @@ test("STATUS_CLONE_SPAWN ignores stale duplicate after kernel status moved on", 
     "clone_spawn_stale:0x1234:25->0",
   );
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
-test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", () => {
-  const worker = {} as Worker;
-  const handle = makeHandle(worker);
-  handle.pid = 1;
-  handle.runtimeId = 77;
-  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
-  handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
-  const deps = makeDeps(worker);
-  const transition = createWorkerStatusTransitionHandler(deps as never);
-
-  expect(() => transition({
-    handle: handle as never,
-    worker,
-    thread: deps.threadWorkerStates.get(worker)! as never,
-    msg: {
-      type: "status",
-      status: 25,
-      exitCode: 0,
-      termSignal: 0,
-      pc: 0n,
-      vmPtr: 0x1234,
-      kernelState: makeKernelState(),
-    },
-    status: 25,
-    wroteToPipe: false,
-    drainedPipe: false,
-    completedSyncEffects: 0,
-  })).toThrow("thread_spawn_from_clone failed for pid=1");
-
-  expect(handle.kernel.thread_spawn_from_clone).toHaveBeenCalledWith(0x1234);
-  expect(deps.appendRuntimeLifecycleEvent).not.toHaveBeenCalled();
-  expect(deps.attachThreadWorker).not.toHaveBeenCalled();
-});
-
-test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () => {
+test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async () => {
   const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
     Object.assign(this, {
       postMessage: vi.fn(),
@@ -697,14 +1255,19 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
     });
   });
   vi.stubGlobal("Worker", workerConstructor);
+
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const { kernel } = installCloneSpawnHostOp(handle);
+  kernel.thread_spawn_from_clone = vi.fn(() => {
+    throw new Error("legacy clone spawn should not be called");
+  });
   const deps = makeDeps(worker);
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   let childThread:
     | {
       vmPtr: number;
@@ -712,7 +1275,6 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
       ownerAsyncStatus: number | null;
       generation: number;
       waitingInWorkerStatus: number | null;
-      resumeWorkersOnReady: Worker[];
     }
     | undefined;
   deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
@@ -722,10 +1284,10 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
       ownerAsyncStatus: null,
       generation: 1,
       waitingInWorkerStatus: null,
-      resumeWorkersOnReady: [],
     };
+    setThreadHostIdentity(childThread as never, handle.pid, 1);
     deps.threadWorkerStates.set(request.worker, childThread);
-    handle.workers.add(request.worker);
+    addProcessWorker(handle, request.worker);
   });
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
@@ -748,22 +1310,393 @@ test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", () =>
     completedSyncEffects: 0,
   });
 
-  expect(thread.ownerAsyncStatus).toBe(25);
-  expect(childThread?.resumeWorkersOnReady).toEqual([worker]);
+  await Promise.resolve();
+
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: expect.any(Object),
+    vmPtr: 0x2000,
+  });
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
+  expect(snapshotThreadResumeWorkersOnReady(childThread as never)).toEqual([worker]);
+  expect(deps.appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "clone_spawn_hostop:parent=0x1234:child=0x2000:tid=2:seq=1",
+  );
+});
+
+test("STATUS_CLONE_SPAWN drains clone HostOp by kind without consuming pending timer", async () => {
+  const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
+    Object.assign(this, {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      unref: vi.fn(),
+    });
+  });
+  vi.stubGlobal("Worker", workerConstructor);
+
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const pendingKinds = [12, 1];
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_spawn_thread_worker: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+    supervisor_next_host_op_kind: (kind: number, outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_spawn_thread_worker = () => 1;
+  kernel.supervisor_next_host_op = vi.fn(() => {
+    throw new Error("unfiltered HostOp drain should not be used");
+  });
+  kernel.supervisor_next_host_op_kind = vi.fn((kind: number, outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    const index = pendingKinds.indexOf(kind);
+    if (index < 0) {
+      return 0;
+    }
+    pendingKinds.splice(index, 1);
+    if (kind === 1) {
+      writeCloneSpawnHostOpRecord(memory, outPtr, 0x1234, 0x2000);
+      return 64;
+    }
+    return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 9n,
+      tid: 2,
+      processPtr: 0x5000,
+      status: 20,
+      deadlineTicks: 500_000n,
+    });
+  });
+  kernel.thread_spawn_from_clone = vi.fn(() => {
+    throw new Error("legacy clone spawn should not be called");
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
+    const childThread = {
+      vmPtr: request.vmPtr,
+      ownerPid: handle.pid,
+      ownerAsyncStatus: null,
+      generation: 1,
+      waitingInWorkerStatus: null,
+    };
+    setThreadHostIdentity(childThread as never, handle.pid, 1);
+    deps.threadWorkerStates.set(request.worker, childThread);
+    addProcessWorker(handle, request.worker);
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await Promise.resolve();
+
+  expect(kernel.supervisor_next_host_op_kind).toHaveBeenCalledWith(1, expect.any(Number), 64);
+  expect(kernel.supervisor_next_host_op).not.toHaveBeenCalled();
+  expect(pendingKinds).toEqual([12]);
+  expect(kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
+  expect(deps.attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker: expect.any(Object),
+    vmPtr: 0x2000,
+  });
+});
+
+test("STATUS_FUTEX_WAIT arms supervisor host timer HostOp and reports completion", async () => {
+  vi.useFakeTimers();
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  hostExecutionState(handle).runningWorker = worker;
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_abi_version: () => number;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_host_op_kind_arm_host_timer: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+    supervisor_complete_futex_wait: (vmPtr: number, completion: number) => number;
+    supervisor_complete_host_op: (completionPtr: number, completionLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_host_op_kind_arm_host_timer = () => 12;
+  kernel.supervisor_complete_futex_wait = vi.fn(() => 0);
+  let completionView: DataView | null = null;
+  kernel.supervisor_complete_host_op = vi.fn((completionPtr: number, completionLen: number) => {
+    completionView = new DataView(memory.buffer, completionPtr, completionLen);
+    return 0;
+  });
+  kernel.supervisor_next_host_op = vi.fn((outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    return writeSupervisorArmHostTimerHostOpRecord(memory, outPtr, {
+      vmPtr: 0x1234,
+      delayMs: 5n,
+      seq: 9n,
+      tid: 2,
+      processPtr: 0x5000,
+      status: 20,
+      deadlineTicks: 500_000n,
+    });
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 20,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 20,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
+  expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
+    handle,
+    worker,
+    thread.vmPtr,
+    "status-futex-supervisor-owned",
+  );
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(5);
+
+  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(completionView?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(completionView?.getUint32(12, true)).toBe(12);
+  expect(completionView?.getBigUint64(16, true)).toBe(9n);
+  expect(completionView?.getUint32(24, true)).toBe(0x1234);
+  expect(completionView?.getUint32(36, true)).toBe(1);
+  expect(completionView?.getUint32(40, true)).toBe(0);
+  expect(deps.pumpProcess).toHaveBeenCalledTimes(2);
+});
+
+test("STATUS_FUTEX_WAIT parks after supervisor HostOp poll returns no timer", () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  hostExecutionState(handle).runningWorker = worker;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const kernel = handle.kernel as typeof handle.kernel & {
+    memory: WebAssembly.Memory;
+    supervisor_host_op_record_bytes: () => number;
+    supervisor_next_host_op: (outPtr: number, outLen: number) => number;
+  };
+  kernel.memory = memory;
+  kernel.supervisor_host_op_record_bytes = () => 64;
+  kernel.supervisor_next_host_op = vi.fn((_outPtr: number, outLen: number) => {
+    expect(outLen).toBe(64);
+    return 0;
+  });
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 20,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 20,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
+  expect(deps.parkSupervisorFutexWait).toHaveBeenCalledWith(
+    handle,
+    worker,
+    thread.vmPtr,
+    "status-futex-supervisor-owned",
+  );
+  expect(kernel.supervisor_next_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+});
+
+test("STATUS_CLONE_SPAWN still fails when spawn handoff is missing at current clone status", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  handle.kernel.thread_spawn_from_clone = vi.fn(() => 0);
+  const deps = makeDeps(worker);
+  setThreadOwnerPid(deps.threadWorkerStates.get(worker)! as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
+  expect(deps.failProcess).toHaveBeenCalledWith(
+    handle,
+    expect.objectContaining({
+      message: "kernel supervisor ABI missing clone spawn HostOp exports for pid=1",
+    }),
+  );
+  expect(deps.attachThreadWorker).not.toHaveBeenCalled();
+});
+
+test("STATUS_CLONE_SPAWN holds parent until attached child reports ready", async () => {
+  const workerConstructor = vi.fn(function WorkerMock(this: Worker) {
+    Object.assign(this, {
+      postMessage: vi.fn(),
+      terminate: vi.fn(),
+      unref: vi.fn(),
+    });
+  });
+  vi.stubGlobal("Worker", workerConstructor);
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.runtimeId = 77;
+  handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
+  installCloneSpawnHostOp(handle);
+  const deps = makeDeps(worker);
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  let childThread:
+    | {
+      vmPtr: number;
+      ownerPid: number;
+      ownerAsyncStatus: number | null;
+      generation: number;
+      waitingInWorkerStatus: number | null;
+    }
+    | undefined;
+  deps.attachThreadWorker = vi.fn((_handle, request: { worker: Worker; vmPtr: number }) => {
+    childThread = {
+      vmPtr: request.vmPtr,
+      ownerPid: handle.pid,
+      ownerAsyncStatus: null,
+      generation: 1,
+      waitingInWorkerStatus: null,
+    };
+    setThreadHostIdentity(childThread as never, handle.pid, 1);
+    deps.threadWorkerStates.set(request.worker, childThread);
+    addProcessWorker(handle, request.worker);
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 25,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 25,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await Promise.resolve();
+
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
+  expect(snapshotThreadResumeWorkersOnReady(childThread as never)).toEqual([worker]);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
 });
 
 test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync completes", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
   const deps = makeDeps(worker);
   deps.syncProcessLifecycleViaKernelWorker = vi.fn(() => new Promise<void>(() => {}));
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -786,7 +1719,7 @@ test("STATUS_CLONE_SPAWN defers child spawn until kernel-worker lifecycle sync c
   });
 
   expect(deps.syncProcessLifecycleViaKernelWorker).toHaveBeenCalledWith(handle, 0x1234);
-  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
@@ -795,7 +1728,7 @@ test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => 
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
   handle.kernel.thread_status = () => handle.kernel.abi_status_clone_spawn();
   const deps = makeDeps(worker);
   const syncResolutions: Array<() => void> = [];
@@ -803,7 +1736,7 @@ test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => 
     syncResolutions.push(resolve);
   }));
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
   const statusMsg = {
     type: "status" as const,
@@ -840,7 +1773,7 @@ test("STATUS_CLONE_SPAWN ignores stale lifecycle sync completions", async () => 
   await Promise.resolve();
 
   expect(deps.syncProcessLifecycleViaKernelWorker).toHaveBeenCalledTimes(2);
-  expect(thread.ownerAsyncStatus).toBe(25);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(handle.kernel.thread_spawn_from_clone).not.toHaveBeenCalled();
   expect(deps.attachThreadWorker).not.toHaveBeenCalled();
 });
@@ -873,31 +1806,25 @@ test("STATUS_FS does not sync pipe state before filesystem resume completes", ()
 
   expect(deps.requestPipeStateSync).not.toHaveBeenCalled();
   expect(deps.resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
-  expect(deps.kickBlockedWorkers).not.toHaveBeenCalled();
+  expect(deps.notifyWorkerStatusProgress).not.toHaveBeenCalled();
   expect(deps.pumpProcess).not.toHaveBeenCalled();
 });
 
-test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", async () => {
+test("STATUS_FS supervisor pipe-refresh NONE action skips shared pipe refresh", () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 3;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "unused" }));
-  handle.kernelShare.members.add(handle as never);
-  handle.kernelShare.members.add({ pid: 1 } as never);
-  handle.kernel.abi_fd_type_pipe = () => 6;
-  handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => fd === 0 ? 1 : 0;
-  handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 1 ? 6 : 0;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
+  const kernel = handle.kernel as typeof handle.kernel & {
+    supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
+  };
+  kernel.supervisor_fs_pipe_refresh_before_resume_action = vi.fn(() => 0);
   const deps = makeDeps(worker);
-  let resolvePipeSync: (() => void) | undefined;
-  deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
-    resolvePipeSync = resolve;
-  }));
   const resumeFsViaKernelWorkerOutcome = vi.fn(async () => ({ kind: "completed", status: 0 }));
   (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
     .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
-  thread.ownerAsyncStatus = null;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -919,7 +1846,54 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
     completedSyncEffects: 0,
   });
 
-  expect(thread.ownerAsyncStatus).toBe(6);
+  expect(kernel.supervisor_fs_pipe_refresh_before_resume_action).toHaveBeenCalledWith(0x1234, 1);
+  expect(deps.requestPipeStateSync).not.toHaveBeenCalled();
+  expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
+});
+
+test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 3;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
+  const kernel = handle.kernel as typeof handle.kernel & {
+    supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
+  };
+  kernel.supervisor_fs_pipe_refresh_before_resume_action = vi.fn(() => 1);
+  const deps = makeDeps(worker);
+  let resolvePipeSync: (() => void) | undefined;
+  deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
+    resolvePipeSync = resolve;
+  }));
+  const resumeFsViaKernelWorkerOutcome = vi.fn(async () => ({ kind: "completed", status: 0 }));
+  (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
+    .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  clearThreadOwnerAsyncStatus(thread as never);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 6,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 6,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(6);
+  expect(kernel.supervisor_fs_pipe_refresh_before_resume_action).toHaveBeenCalledWith(0x1234, 1);
   expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
   expect(resumeFsViaKernelWorkerOutcome).not.toHaveBeenCalled();
 
@@ -928,14 +1902,14 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
     expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
   });
 
-  expect(thread.ownerAsyncStatus).toBeNull();
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
 
 test("STATUS_OK network pump syncs socket state before requeueing", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
-  handle.networkConnections.set(7, {} as never);
+  networkConnections(handle).set(7, {} as never);
   const deps = makeDeps(worker);
   deps.pumpNetworkConnections = vi.fn(async () => true);
   let resolveSocketSync: (() => void) | undefined;
@@ -974,7 +1948,7 @@ test("STATUS_OK network pump syncs socket state before requeueing", async () => 
     await Promise.resolve();
   }
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -982,7 +1956,7 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 7;
-  handle.kernelWorkerRequest = vi.fn(async () => ({ type: "pipe-state-synced" }));
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
   const deps = makeDeps(worker);
   deps.syncEffectPipeState = 1;
   let resolvePipeSync: (() => void) | undefined;
@@ -990,7 +1964,7 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
     resolvePipeSync = resolve;
   }));
   const thread = deps.threadWorkerStates.get(worker)!;
-  thread.ownerPid = handle.pid;
+  setThreadOwnerPid(thread as never, handle.pid);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -1014,15 +1988,15 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
 
   await Promise.resolve();
 
-  expect(thread.ownerAsyncStatus).toBe(0);
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
   expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, true);
   expect(deps.enqueueWorker).not.toHaveBeenCalled();
 
   resolvePipeSync?.();
   await vi.waitFor(() => {
-    expect(thread.ownerAsyncStatus).toBeNull();
+    expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   });
 
-  expect(deps.kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });

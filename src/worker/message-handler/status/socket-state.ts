@@ -1,11 +1,14 @@
 import { attachKernelRuntimeState } from "../../../abi.js";
 import { FS_RING_TOTAL_BYTES } from "../../../layout/fs-ring.js";
+import { kernelNetBufferCount } from "../../../kernel-socket-layout.js";
 import {
   forceNetworkClosedFds,
 } from "../../network-socket-close.js";
 import {
+  kernelSocketOutboundAvailable,
   preserveNetworkSocketSlots,
   restoreNetworkSocketSlots,
+  runtimeNetworkFds,
   socketTablePtrs,
 } from "../../ownership/socket-control.js";
 import type { ProcessHandle } from "../../types.js";
@@ -20,6 +23,7 @@ import {
 import {
   applyThreadMemfsKernelWriteToForkShareMembers,
 } from "./memfs-kernel-write.js";
+import { isProcessMemfsDirty } from "../../process-memfs-state.js";
 import {
   maskIncompatibleOfdSlotKernelWrite,
   maskRegularFileFdEntryRollbackGuestWrite,
@@ -27,12 +31,14 @@ import {
 import {
   formatGuestMemoryWriteWatchOverlap,
 } from "../../guest-memory-writes.js";
+import { guestWriteWatchRegions } from "../../guest-write-watch-state.js";
+import { workerDebugLog } from "../../worker-debug-log.js";
 import type { WorkerMessageHandlerDeps } from "../types.js";
+import { supervisorProcessStatusIsExecveSpawn } from "../../supervisor-status.js";
 import {
   deriveNetBufUsedFromSocketSlots,
   closedSocketRecvBufferIndices,
   netBufUsedMaskFromBufferIndices,
-  networkAuthoritativeFds,
   preserveClosedNetworkRecvBuffers,
   preserveNetworkRecvBuffers,
   preserveNetworkRecvForKernelMemoryWrite,
@@ -69,14 +75,14 @@ export function applyThreadGuestMemoryWrites(
     const writeBytes = maskRegularFileFdEntryRollbackGuestWrite(handle, msg, write.guestPtr, write.bytes);
     const overlap = formatGuestMemoryWriteWatchOverlap(
       "status-guest-write",
-      handle.guestWriteWatchRegions,
+      guestWriteWatchRegions(handle),
       write.guestPtr,
       writeBytes,
     );
     if (overlap !== null) {
-      handle.workerDebugLog.push(overlap);
-      if (handle.workerDebugLog.length > 4096) {
-        handle.workerDebugLog.splice(0, handle.workerDebugLog.length - 4096);
+      workerDebugLog(handle).push(overlap);
+      if (workerDebugLog(handle).length > 4096) {
+        workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
       }
     }
     memory.set(writeBytes, start);
@@ -164,12 +170,14 @@ function isDirtyMemfsKernelMemoryWrite(
   ptr: number,
   length: number,
 ): boolean {
-  if (!handle.processMemfsDirty || length <= 0) {
+  if (!isProcessMemfsDirty(handle) || length <= 0) {
     return false;
   }
   const faultStatus = handle.kernel.abi_status_fault?.();
-  const execveSpawnStatus = handle.kernel.abi_status_execve_spawn?.();
-  if (msg.status !== faultStatus && msg.status !== execveSpawnStatus) {
+  if (
+    msg.status !== faultStatus
+    && !supervisorProcessStatusIsExecveSpawn(handle.kernel, msg.status)
+  ) {
     return false;
   }
   const regions = [
@@ -195,7 +203,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   const currentNetBufUsed = handle.kernelState.netBufUsed
     | handle.kernel.kernel_net_buf_used()
     | deriveNetBufUsedFromSocketSlots(handle, currentSocketUsed);
-  const debugFds = networkAuthoritativeFds(handle);
+  const debugFds = runtimeNetworkFds(handle);
   const socketDebugEntry = (fd: number, source: string) => {
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(msg.vmPtr, fd) ?? -1;
     const state = socketIdx >= 0 ? handle.kernel.thread_socket_state?.(socketIdx) ?? -1 : -1;
@@ -213,14 +221,14 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
       buf,
       recv,
       ht: readNetworkRecvBufferDebug(handle, socketIdx),
-      avail: handle.kernel.thread_socket_outbound_available?.(msg.vmPtr, fd) ?? -1,
+      avail: kernelSocketOutboundAvailable(handle, msg.vmPtr, fd),
     };
   };
   const before = STATUS_SOCKET_DEBUG_LOG_ENABLED && debugFds.size > 0
     ? [...debugFds].map((fd) => socketDebugEntry(fd, "status-before"))
     : [];
   const pendingOutboundFds = [...debugFds].filter((fd) =>
-    (handle.kernel.thread_socket_outbound_available?.(msg.vmPtr, fd) ?? 0) > 0
+    kernelSocketOutboundAvailable(handle, msg.vmPtr, fd) > 0
   );
   if (pendingOutboundFds.length > 0) {
     appendStatusSocketDebug(
@@ -231,7 +239,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   }
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
   const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
-  const maxNetBuffers = Math.max(1, Number(handle.kernel.abi_max_sockets?.() ?? 32) * 2);
+  const maxNetBuffers = kernelNetBufferCount(handle.kernel);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxNetBuffers);
   const netBufPoolSizeValid = msg.socketState.netBufPool === undefined
     || msg.socketState.netBufPool.length === netBufPoolBytes;

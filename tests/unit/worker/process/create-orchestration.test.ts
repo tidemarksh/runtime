@@ -1,3 +1,4 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { writePipe } from "../../../../src/bridge/pipe.js";
@@ -9,10 +10,60 @@ import type {
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
 import { FS_RING_TOTAL_BYTES } from "../../../../src/layout/fs-ring.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
+type ProcessMemoryOwnershipFn =
+  typeof import("../../../../src/worker/memory-ownership-state.js").processMemoryOwnership;
+type ProcessHasWorkerFn =
+  typeof import("../../../../src/worker/process-worker-state.js").processHasWorker;
+type ProcessWorkerCountFn =
+  typeof import("../../../../src/worker/process-worker-state.js").processWorkerCount;
+type ProcessStdoutPipeFn =
+  typeof import("../../../../src/worker/process-stdio-state.js").processStdoutPipe;
 
 let workerModule: WorkerModule | null = null;
+let processMemoryOwnershipImpl: ProcessMemoryOwnershipFn | null = null;
+let processHasWorkerImpl: ProcessHasWorkerFn | null = null;
+let processWorkerCountImpl: ProcessWorkerCountFn | null = null;
+let processStdoutPipeImpl: ProcessStdoutPipeFn | null = null;
+
+function processMemoryOwnership(
+  handle: Parameters<ProcessMemoryOwnershipFn>[0],
+): ReturnType<ProcessMemoryOwnershipFn> {
+  if (processMemoryOwnershipImpl === null) {
+    throw new Error("processMemoryOwnership accessor not loaded");
+  }
+  return processMemoryOwnershipImpl(handle);
+}
+
+function processHasWorker(
+  handle: Parameters<ProcessHasWorkerFn>[0],
+  worker: Parameters<ProcessHasWorkerFn>[1],
+): ReturnType<ProcessHasWorkerFn> {
+  if (processHasWorkerImpl === null) {
+    throw new Error("processHasWorker accessor not loaded");
+  }
+  return processHasWorkerImpl(handle, worker);
+}
+
+function processWorkerCount(
+  handle: Parameters<ProcessWorkerCountFn>[0],
+): ReturnType<ProcessWorkerCountFn> {
+  if (processWorkerCountImpl === null) {
+    throw new Error("processWorkerCount accessor not loaded");
+  }
+  return processWorkerCountImpl(handle);
+}
+
+function processStdoutPipe(
+  handle: Parameters<ProcessStdoutPipeFn>[0],
+): ReturnType<ProcessStdoutPipeFn> {
+  if (processStdoutPipeImpl === null) {
+    throw new Error("processStdoutPipe accessor not loaded");
+  }
+  return processStdoutPipeImpl(handle);
+}
 
 function clearRuntimeFsState(runtimeId: number): void {
   workerModule?.clearRuntimeFsState(runtimeId);
@@ -78,6 +129,10 @@ class FakeWorker {
   }
 
   emit(message: ThreadWorkerOutbound): void {
+    if (message.type === "status") {
+      const kernel = createdKernelExports[createdWorkers.indexOf(this)];
+      kernel?.setThreadExitStatus(message.exitCode, message.termSignal);
+    }
     this.onmessage?.({ data: message } as MessageEvent<ThreadWorkerOutbound>);
   }
 
@@ -103,10 +158,11 @@ const createdWorkers: FakeWorker[] = [];
 const createdKernelExports: Array<
   KernelExports & {
     recordedChildExits: Array<[number, number]>;
-    retainedOfds: number[];
-    liveThreadVmPtrs: number[];
-    fsProcessCalls: number;
-    memfsCreateCalls: Array<[number, number]>;
+	    retainedOfds: number[];
+	    liveThreadVmPtrs: number[];
+	    fsProcessCalls: number;
+	    setThreadExitStatus(exitCode: number, termSignal: number): void;
+	    memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
     memfsSetFileExternalCalls: Array<[number, number]>;
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
@@ -230,6 +286,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   const memfsSetFileSizeShallowCalls: Array<[number, number]> = [];
   const memfsWriteCalls: Array<[number, number]> = [];
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
+  let threadExitCode = 0;
+  let threadTermSignal = 0;
   let nextIno = 10;
   interface MockProcessIdentity {
     pid: number;
@@ -412,8 +470,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     },
     thread_step: () => 0,
     thread_status: () => 0,
-    thread_exit_code: () => 0,
-    thread_term_signal: () => 0,
+    thread_exit_code: () => threadExitCode,
+    thread_term_signal: () => threadTermSignal,
     thread_pc: () => 0n,
     thread_ra: () => 0n,
     thread_sp: () => 0n,
@@ -431,8 +489,6 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_futex_wait_addr: () => 0n,
     thread_futex_wait_timeout: () => 0n,
     thread_futex_wait_expected: () => 0,
-    thread_resume_futex_wait: () => {},
-    thread_resume_futex_wait_result: () => {},
     thread_sleep_seconds: () => 0n,
     thread_sleep_nanoseconds: () => 0n,
     thread_record_blocked_addr: () => 0,
@@ -495,6 +551,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     process_record_child_exit: (pid, waitStatus) => {
       recordedChildExits.push([pid, waitStatus]);
     },
+    process_has_active_child: () => 0,
     process_current_pid: (vmPtr = 0x1234) => identityForVm(vmPtr).pid,
     process_current_ppid: (vmPtr = 0x1234) => identityForVm(vmPtr).ppid,
     process_current_pgid: (vmPtr = 0x1234) => identityForVm(vmPtr).pgid,
@@ -594,6 +651,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     recordedChildExits,
     retainedOfds,
     liveThreadVmPtrs,
+    setThreadExitStatus(exitCode, termSignal) {
+      threadExitCode = exitCode;
+      threadTermSignal = termSignal;
+    },
     get fsProcessCalls() {
       return fsProcessCalls;
     },
@@ -604,6 +665,11 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsWriteCalls,
     memfsCreateWithDataCalls,
   };
+  Object.assign(exports, makeSupervisorAbiStubs({
+    memory,
+    cloneSpawnParentVmPtr: () => 0x1234,
+    currentExports: () => exports,
+  }));
   createdKernelExports.push(exports);
   return exports;
 }
@@ -612,6 +678,15 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  processMemoryOwnershipImpl = (
+    await import("../../../../src/worker/memory-ownership-state.js")
+  ).processMemoryOwnership;
+  const processWorkerState = await import("../../../../src/worker/process-worker-state.js");
+  processHasWorkerImpl = processWorkerState.processHasWorker;
+  processWorkerCountImpl = processWorkerState.processWorkerCount;
+  processStdoutPipeImpl = (
+    await import("../../../../src/worker/process-stdio-state.js")
+  ).processStdoutPipe;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -640,6 +715,10 @@ afterEach(() => {
   workerModule?.destroyWorkerPool();
   clearModuleCache();
   workerModule = null;
+  processMemoryOwnershipImpl = null;
+  processHasWorkerImpl = null;
+  processWorkerCountImpl = null;
+  processStdoutPipeImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -1047,7 +1126,7 @@ test("clone child ready ignores stale local pipe writes under kernel-worker-owne
   requests.length = 0;
 
   const warningBytes = new TextEncoder().encode("[java] cloned child warning\n");
-  expect(writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdoutPipe, warningBytes).written).toBe(
+  expect(writePipe(handle.memory, handle.kernelState.pipeBase, processStdoutPipe(handle), warningBytes).written).toBe(
     warningBytes.length,
   );
 
@@ -1094,7 +1173,7 @@ test("STATUS_OK with kernel-worker-owned pipe state syncs without local stdout d
   requests.length = 0;
 
   const bannerBytes = new TextEncoder().encode("openjdk banner\n");
-  expect(writePipe(handle.memory, handle.kernelState.pipeBase, handle.stdoutPipe, bannerBytes).written).toBe(
+  expect(writePipe(handle.memory, handle.kernelState.pipeBase, processStdoutPipe(handle), bannerBytes).written).toBe(
     bannerBytes.length,
   );
 
@@ -1159,9 +1238,9 @@ test("running worker prunes stale blocked workers after the live thread table sh
     kernelState: makeKernelState(),
   });
 
-  expect((handle as { blockedWorkers: Map<Worker, unknown> }).blockedWorkers.has(childWorker as unknown as Worker))
+  expect((handle as { hostBlockedWorkers: Map<Worker, unknown> }).hostBlockedWorkers.has(childWorker as unknown as Worker))
     .toBe(false);
-  expect((handle as { workers: Set<Worker> }).workers.has(childWorker as unknown as Worker)).toBe(true);
+  expect(processHasWorker(handle, childWorker as unknown as Worker)).toBe(true);
 });
 
 test("fault exits the process when the live thread table is empty despite a stale positive thread count", async () => {
@@ -1187,7 +1266,7 @@ test("fault exits the process when the live thread table is empty despite a stal
   await flushMicrotasks();
 
   expect(onExit).toHaveBeenCalledWith(139);
-  expect((handle as { workers: Set<Worker> }).workers.size).toBe(0);
+  expect(processWorkerCount(handle)).toBe(0);
   expect(worker.terminated).toBe(true);
 });
 
@@ -1337,7 +1416,7 @@ test("STATUS_FS does not sync fork-shared OFD state when no fork-share peers exi
   const worker = createdWorkers[0];
 
   handle.kernel.thread_pending_fs_effects = () => 1 << 1;
-  handle.kernelShare.sharedOfdIds.add(7);
+  addKernelShareSharedOfdId(handle, 7);
   handle.kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? 7 : 0);
   new DataView(handle.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + 7 * 32, 1, true);
 
@@ -1498,13 +1577,13 @@ test("createProcess blocks STATUS_CONNECT until socket timeout expires", async (
   });
 
   expect(resumeConnect).not.toHaveBeenCalled();
-  expect(handle.blockedWorkers.size).toBe(1);
+  expect(handle.hostBlockedWorkers.size).toBe(1);
   await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks();
   expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
 });
 
-test("kernel-worker child exit bookkeeping tears down the child and resumes parent wait4", async () => {
+test("kernel-worker child exit bookkeeping records child exit and delegates parent wait4 resume", async () => {
   const requests: KernelWorkerRequest[] = [];
   threadCountQueue.push(1, 0);
 
@@ -1636,21 +1715,10 @@ test("kernel-worker child exit bookkeeping tears down the child and resumes pare
   vi.advanceTimersByTime(15);
   await flushMicrotasks();
 
-  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(false);
-  expect(resumeWait4).toHaveBeenCalledWith(0x1234);
-  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x80);
-  expect(parentWorker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: {
-        ...makeKernelState(),
-        heapPtr: makeKernelState().heapPtr + 0x80,
-        pipeUsed: 15n,
-      },
-      childExitRecords: [{ childPid: 2, waitStatus: 7 << 8, parentPid: 1 }],
-    },
-  ]);
+  expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(true);
+  expect(resumeWait4).not.toHaveBeenCalled();
+  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x100);
+  expect(parentWorker.postedMessages).toEqual([]);
   vi.useRealTimers();
 });
 
@@ -1734,7 +1802,7 @@ test("createProcess routes explicit preload file payloads through kernel-worker 
     type: "snapshot-fs",
     includeData: false,
   }));
-  expect(handle.memoryOwnership).toEqual({
+  expect(processMemoryOwnership(handle)).toEqual({
     guestAddressProfile: 1,
     guestAddressLimitBytes: "4294967295",
     guestMemoryPolicyLimitBytes: 64n * 1024n * 1024n,
@@ -1776,11 +1844,11 @@ test("createProcess reports published metadata capacity independently from page-
     sabPageCache: new SharedArrayBuffer(8 * 1024 * 1024),
   });
 
-  expect(smallPageCache.memoryOwnership?.pageCacheDataCapacityBytes).toBe(1024 * 1024);
-  expect(largePageCache.memoryOwnership?.pageCacheDataCapacityBytes).toBe(8 * 1024 * 1024);
-  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes).toBeGreaterThan(0);
-  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes)
-    .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
+  expect(processMemoryOwnership(smallPageCache)?.pageCacheDataCapacityBytes).toBe(1024 * 1024);
+  expect(processMemoryOwnership(largePageCache)?.pageCacheDataCapacityBytes).toBe(8 * 1024 * 1024);
+  expect(processMemoryOwnership(smallPageCache)?.publishedMetadataCapacityBytes).toBeGreaterThan(0);
+  expect(processMemoryOwnership(smallPageCache)?.publishedMetadataCapacityBytes)
+    .toBe(processMemoryOwnership(largePageCache)?.publishedMetadataCapacityBytes);
 });
 
 test("createProcess reports FS RPC ring capacity independently from page-cache data and metadata capacity", async () => {
@@ -1793,12 +1861,12 @@ test("createProcess reports FS RPC ring capacity independently from page-cache d
     fsRpcRingCapacityBytes: FS_RING_TOTAL_BYTES,
   });
 
-  expect(smallPageCache.memoryOwnership?.pageCacheDataCapacityBytes).not
-    .toBe(largePageCache.memoryOwnership?.pageCacheDataCapacityBytes);
-  expect(smallPageCache.memoryOwnership?.publishedMetadataCapacityBytes)
-    .toBe(largePageCache.memoryOwnership?.publishedMetadataCapacityBytes);
-  expect(smallPageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
-  expect(largePageCache.memoryOwnership?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
+  expect(processMemoryOwnership(smallPageCache)?.pageCacheDataCapacityBytes).not
+    .toBe(processMemoryOwnership(largePageCache)?.pageCacheDataCapacityBytes);
+  expect(processMemoryOwnership(smallPageCache)?.publishedMetadataCapacityBytes)
+    .toBe(processMemoryOwnership(largePageCache)?.publishedMetadataCapacityBytes);
+  expect(processMemoryOwnership(smallPageCache)?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
+  expect(processMemoryOwnership(largePageCache)?.fsRpcRingCapacityBytes).toBe(FS_RING_TOTAL_BYTES);
 });
 
 test("createProcess rejects artifact materialization budget separately from guest policy", async () => {

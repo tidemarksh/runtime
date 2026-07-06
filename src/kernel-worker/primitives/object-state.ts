@@ -5,6 +5,7 @@ import {
   type KernelExports,
   type KernelRuntimeState,
 } from "../../abi.js";
+import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import {
   NET_BUFFER_CAPACITY_OFFSET,
   NET_BUFFER_DATA_OFFSET,
@@ -40,7 +41,7 @@ export function createKernelWorkerObjectStatePrimitives() {
     targetExports: KernelExports,
     targetState: KernelRuntimeState,
   ): void {
-    const maxBuffers = Math.max(1, Number(sourceExports.abi_max_sockets?.() ?? 32) * 2);
+    const maxBuffers = kernelNetBufferCount(sourceExports);
     const poolBytes = sourceExports.kernel_net_buf_pool_bytes();
     const slotBytes = Math.floor(poolBytes / maxBuffers);
     const dataBytes = slotBytes - NET_BUF_OFF_DATA;
@@ -165,7 +166,7 @@ export function createKernelWorkerObjectStatePrimitives() {
       socketUsed: sourceState.socketUsed,
       netBufUsed: sourceState.netBufUsed,
     });
-    const tableBytes = sourceExports.kernel_socket_table_bytes?.() ?? 0;
+    const tableBytes = sourceExports.kernel_socket_table_bytes();
     const stateBytes = kernelSocketStateBytes(sourceExports, sourceState);
     const hasFullState = Boolean(
       sourceExports.kernel_socket_state_ptr

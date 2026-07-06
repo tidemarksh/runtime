@@ -6,7 +6,7 @@ import {
   OFD_TYPE_OFFSET,
 } from "../../../../src/layout/ofd.js";
 import { applyStatusOfdSlots } from "../../../../src/worker/message-handler/status/ofd-slots.js";
-import { makeHandle, makeKernel, makeStatusMessage } from "./helpers.js";
+import { makeHandle, makeKernel, makeStatusMessage, seedNetworkSocketState } from "./helpers.js";
 
 const SLOT_BYTES = 32;
 
@@ -42,11 +42,13 @@ test("status ofd slots do not clobber protected runtime network OFDs", () => {
   const existing = makeOfdSlot(8, 44, 55, 1);
   const incoming = makeOfdSlot(1, 66, 77, 1);
   const handle = makeHandle({
-    networkConnections: new Map([[5, { close: () => undefined }]]),
-    networkConnectionOfds: new Map([[5, 3]]),
     kernel: makeKernel({
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 3 ? 8 : 0,
     }),
+  });
+  seedNetworkSocketState(handle, {
+    connections: [[5, { close: () => undefined }]],
+    connectionOfds: [[5, 3]],
   });
   new Uint8Array((handle.memory as WebAssembly.Memory).buffer).set(
     existing,

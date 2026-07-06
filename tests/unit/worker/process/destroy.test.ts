@@ -1,12 +1,31 @@
+import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  processHostStdio,
+  processStderrPipe,
+  processStdinPipe,
+  processStdoutPipe,
+  setProcessStderrPipe,
+  setProcessStdinPipe,
+  setProcessStdoutPipe,
+} from "../../../../src/worker/process-stdio-state.js";
+import {
+  processWorkerList,
+  processWorkers,
+} from "../../../../src/worker/process-worker-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { createWorkerDestroyHelpers } from "../../../../src/worker/destroy.js";
+import { setProcessOnExit } from "../../../../src/worker/process-callback-state.js";
+import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { FakeWorker } from "../../../support/fake-worker.js";
+import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
   const primaryWorker = new FakeWorker() as unknown as Worker;
   const extraWorker = new FakeWorker() as unknown as Worker;
-  return {
+  const handle = {
     runtimeId: 1,
     pid: 11,
     parentPid: null,
@@ -19,6 +38,7 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     kernel: {
       process_release_host_stdio: vi.fn(),
     } as unknown as ProcessHandle["kernel"],
+    kernelWorkerRequest: vi.fn(async () => ({ type: "process-unregistered", requestId: 0 } as never)),
     kernelState: {
       heapBase: 0x200000,
       heapPtr: 0x210000,
@@ -52,35 +72,18 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "destroy-test",
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(8),
       stateSab: new SharedArrayBuffer(128),
     },
     sabPageCache: null,
     workers: new Set([extraWorker]),
-    readyWorkers: [extraWorker],
+    vforkReadyWorkers: [extraWorker],
     runningWorker: extraWorker,
-    blockedWorkers: new Map([[extraWorker, {
+    hostBlockedWorkers: new Map([[extraWorker, {
       vmPtr: 0x2222,
       status: 6,
-      retryTimer: null,
-      timeoutExpired: false,
-      timeoutDeadlineMs: null,
-      sleepDeadlineTicks: null,
-      rpcPending: false,
     }]]),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
-    ofdSyncPromise: null,
-    ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
     vforkSnapshot: {
       vmPtr: 0x1234,
       childPid: 77,
@@ -94,29 +97,41 @@ function makeHandle(overrides: Partial<ProcessHandle> = {}): ProcessHandle {
     workerDebugLog: [],
     ...overrides,
   } as unknown as ProcessHandle;
+  seedProcessKernelWorkerRequestFixture(handle);
+  setProcessDebugCommand(handle, "destroy-test");
+  seedProcessHandleStateFixture(handle);
+  return handle;
 }
 
-test("destroyProcessHandle tears down workers, clears process maps, and releases host stdio once", () => {
+test("destroyProcessHandle tears down workers, clears process maps, and releases host stdio once", async () => {
   const handle = makeHandle();
   const primaryWorker = handle.worker as unknown as FakeWorker;
-  const extraWorkers = [...handle.workers] as Array<Worker & FakeWorker>;
-  handle.kernelShare.members.add(handle);
+  const extraWorkers = processWorkerList(handle) as Array<Worker & FakeWorker>;
+  addKernelShareMember(handle);
   const processHandles = new Map<number, ProcessHandle>([[handle.pid, handle]]);
   const runtimeFsDirtyHandles = new Map<number, Set<ProcessHandle>>([[handle.runtimeId, new Set([handle])]]);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
   threadWorkerStates.set(handle.worker, { vmPtr: handle.vmPtr, initialized: true, waitingInWorkerStatus: null });
-  for (const worker of handle.workers) {
+  for (const worker of processWorkers(handle)) {
     threadWorkerStates.set(worker, { vmPtr: 0x2222, initialized: true, waitingInWorkerStatus: null });
   }
   const appendRuntimeLifecycleEvent = vi.fn();
   const clearBlockedWorker = vi.fn((targetHandle: ProcessHandle, worker: Worker) => {
-    targetHandle.blockedWorkers.delete(worker);
+    hostExecutionState(targetHandle).hostBlockedWorkers.delete(worker);
   });
   const clearVforkSnapshot = vi.fn((targetHandle: ProcessHandle) => {
-    targetHandle.vforkSnapshot = null;
-    targetHandle.vforkWorker = null;
+    hostExecutionState(targetHandle).vforkSnapshot = null;
+    hostExecutionState(targetHandle).vforkWorker = null;
   });
   const unregisterProcessWithKernelWorker = vi.fn(async () => {});
+  const releaseSharedHostStdio = vi.fn(async (targetHandle: ProcessHandle) => {
+    if (processHostStdio(targetHandle).refCount > 0) {
+      processHostStdio(targetHandle).refCount -= 1;
+    }
+    setProcessStdinPipe(targetHandle, 0);
+    setProcessStdoutPipe(targetHandle, 0);
+    setProcessStderrPipe(targetHandle, 0);
+  });
 
   const destroyHelpers = createWorkerDestroyHelpers({
     processHandles,
@@ -125,11 +140,14 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
     appendRuntimeLifecycleEvent,
     clearBlockedWorker,
     clearVforkSnapshot,
+    releaseSharedHostStdio,
     unregisterProcessWithKernelWorker,
   });
 
   destroyHelpers.destroyProcessHandle(handle, 15, false);
   destroyHelpers.destroyProcessHandle(handle, 15, false);
+  await Promise.resolve();
+  await Promise.resolve();
 
   expect(clearBlockedWorker).toHaveBeenCalledTimes(1);
   expect(clearVforkSnapshot).toHaveBeenCalledWith(handle);
@@ -140,36 +158,47 @@ test("destroyProcessHandle tears down workers, clears process maps, and releases
   }
   expect(processHandles.has(handle.pid)).toBe(false);
   expect(runtimeFsDirtyHandles.has(handle.runtimeId)).toBe(false);
-  expect(handle.stdinPipe).toBe(0);
-  expect(handle.stdoutPipe).toBe(0);
-  expect(handle.stderrPipe).toBe(0);
-  expect(handle.hostStdio.refCount).toBe(0);
-  expect(handle.kernel.process_release_host_stdio).toHaveBeenCalledTimes(1);
-  expect(handle.kernelShare.members.has(handle)).toBe(false);
+  expect(processStdinPipe(handle)).toBe(0);
+  expect(processStdoutPipe(handle)).toBe(0);
+  expect(processStderrPipe(handle)).toBe(0);
+  expect(processHostStdio(handle).refCount).toBe(0);
+  expect(releaseSharedHostStdio).toHaveBeenCalledTimes(1);
+  expect(kernelShareMembers(handle).has(handle)).toBe(false);
 });
 
 test("destroyRuntimeProcesses only notifies exits for handles in the selected runtime", () => {
+  const runtime1RootOnExit = vi.fn();
   const runtime1Root = makeHandle({
     runtimeId: 1,
     pid: 1,
-    onExit: vi.fn(),
   });
+  setProcessOnExit(runtime1Root, runtime1RootOnExit);
+  const runtime1ChildOnExit = vi.fn();
   const runtime1Child = makeHandle({
     runtimeId: 1,
     pid: 2,
     parentPid: 1,
-    onExit: vi.fn(),
   });
+  setProcessOnExit(runtime1Child, runtime1ChildOnExit);
+  const runtime2OnExit = vi.fn();
   const runtime2Handle = makeHandle({
     runtimeId: 2,
     pid: 3,
-    onExit: vi.fn(),
   });
+  setProcessOnExit(runtime2Handle, runtime2OnExit);
   const processHandles = new Map<number, ProcessHandle>([
     [1, runtime1Root],
     [2, runtime1Child],
     [3, runtime2Handle],
   ]);
+  const releaseSharedHostStdio = vi.fn(async (targetHandle: ProcessHandle) => {
+    if (processHostStdio(targetHandle).refCount > 0) {
+      processHostStdio(targetHandle).refCount -= 1;
+    }
+    setProcessStdinPipe(targetHandle, 0);
+    setProcessStdoutPipe(targetHandle, 0);
+    setProcessStderrPipe(targetHandle, 0);
+  });
 
   const destroyHelpers = createWorkerDestroyHelpers({
     processHandles,
@@ -178,13 +207,14 @@ test("destroyRuntimeProcesses only notifies exits for handles in the selected ru
     appendRuntimeLifecycleEvent: vi.fn(),
     clearBlockedWorker: vi.fn(),
     clearVforkSnapshot: vi.fn(),
+    releaseSharedHostStdio,
     unregisterProcessWithKernelWorker: vi.fn(async () => {}),
   });
 
   destroyHelpers.destroyRuntimeProcesses(1, 9);
 
-  expect(runtime1Root.onExit).toHaveBeenCalledWith(137);
-  expect(runtime1Child.onExit).toHaveBeenCalledWith(137);
-  expect(runtime2Handle.onExit).not.toHaveBeenCalled();
+  expect(runtime1RootOnExit).toHaveBeenCalledWith(137);
+  expect(runtime1ChildOnExit).toHaveBeenCalledWith(137);
+  expect(runtime2OnExit).not.toHaveBeenCalled();
   expect(processHandles.has(3)).toBe(true);
 });

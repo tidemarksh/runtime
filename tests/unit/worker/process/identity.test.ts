@@ -1,13 +1,19 @@
 import { expect, test } from "vite-plus/test";
+import {
+  addProcessWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { assertHandleWorkerProcessIdentity } from "../../../../src/worker/process-identity.js";
+import { setProcessLastDebugMessage } from "../../../../src/worker/process-debug-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
+import {
+  setThreadHostIdentity,
+  setThreadInitialized,
+  setThreadReinitCount,
+} from "../../../../src/worker/thread-host-state.js";
 
 function makeWorkerState(vmPtr: number): ThreadWorkerState {
-  return {
+  const thread = {
     vmPtr,
-    ownerPid: 3,
-    generation: 0,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -27,14 +33,13 @@ function makeWorkerState(vmPtr: number): ThreadWorkerState {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeBlockedOnNextStep: false,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
-    resumeWorkersOnReady: [],
   };
+  setThreadHostIdentity(thread, 3, 0);
+  setThreadInitialized(thread, true);
+  setThreadReinitCount(thread, 0);
+  return thread;
 }
 
 function makeHandle(options: {
@@ -42,19 +47,21 @@ function makeHandle(options: {
   processPtrByVm: Map<number, number>;
   liveVmPtrs: number[];
 }): ProcessHandle {
-  return {
+  const handle = {
     pid: 3,
-    pendingChildSpawnRecords: 0,
     vmPtr: 0,
     workers: new Set<Worker>(),
     kernel: {
       abi_max_threads: () => options.liveVmPtrs.length,
       process_thread_vm_ptr: (_vmPtr: number, slot: number) => options.liveVmPtrs[slot] ?? 0,
       process_current_pid: (vmPtr: number) => options.actualPidByVm.get(vmPtr) ?? 0,
+      supervisor_process_owner_matches: (vmPtr: number, runtimePid: number) =>
+        options.actualPidByVm.get(vmPtr) === runtimePid ? 1 : 0,
       thread_process_ptr: (vmPtr: number) => options.processPtrByVm.get(vmPtr) ?? 0,
     },
-    lastDebugMessage: "unit",
   } as unknown as ProcessHandle;
+  setProcessLastDebugMessage(handle, "unit");
+  return handle;
 }
 
 test("process identity ignores detached live-thread slots with no process pointer", () => {
@@ -73,8 +80,8 @@ test("process identity ignores detached live-thread slots with no process pointe
     ]),
     liveVmPtrs: [anchorVmPtr, detachedVmPtr],
   });
-  handle.workers.add(anchorWorker);
-  handle.workers.add(detachedWorker);
+  addProcessWorker(handle, anchorWorker);
+  addProcessWorker(handle, detachedWorker);
 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>([
     [anchorWorker, makeWorkerState(anchorVmPtr)],
@@ -102,8 +109,8 @@ test("process identity still rejects an owned live thread with a different pid",
     ]),
     liveVmPtrs: [anchorVmPtr, driftVmPtr],
   });
-  handle.workers.add(anchorWorker);
-  handle.workers.add(driftWorker);
+  addProcessWorker(handle, anchorWorker);
+  addProcessWorker(handle, driftWorker);
 
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>([
     [anchorWorker, makeWorkerState(anchorVmPtr)],

@@ -1,12 +1,8 @@
-// Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
+// Kernel-worker tests in this file validate supervisor-owned bridge host-effect behavior.
 import { expect, test, vi } from "vite-plus/test";
 import type { KernelRuntimeState } from "../../../src/abi.js";
 import type { KernelWorkerOutbound } from "../../../src/messages.js";
 import { createKernelWorkerMessageHandler } from "../../../src/kernel-worker/message-handler.js";
-import { KERNEL_WORKER_FS_STATE_OWNERSHIP } from "../../../src/kernel-worker/fs-state.js";
-import { KERNEL_WORKER_PRIMITIVES_OWNERSHIP } from "../../../src/kernel-worker/primitives.js";
-import { KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP } from "../../../src/kernel-worker/process-control.js";
-import { KERNEL_WORKER_SHARED_STATE_SYNC_OWNERSHIP } from "../../../src/kernel-worker/shared-state-sync.js";
 
 function makeKernelState(): KernelRuntimeState {
   return {
@@ -66,10 +62,10 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     recordChildExit: vi.fn(() => state),
     resumeConnect: vi.fn(() => state),
     resumeWait4: vi.fn(() => state),
-    resumeBlockedSyscall: vi.fn(() => state),
     resumeVforkParent: vi.fn(() => ({ childPid: 4, kernelState: state })),
     canonicalizeChildPid: vi.fn(() => ({
       childPid: 4,
+      ppid: 1,
       nextPid: 5,
       pgid: 3,
       sid: 3,
@@ -77,6 +73,7 @@ function makeDeps(posted: KernelWorkerOutbound[]) {
     })),
     initializeProcessLifecycle: vi.fn(() => state),
     resumeVforkExecveParent: vi.fn(() => state),
+    rollbackVforkExecveHandoff: vi.fn(() => ({ waitStatus: 127 << 8, kernelState: state })),
     syncProcessLifecycle: vi.fn(() => state),
     syncProcessMemfs: vi.fn(() => state),
     syncPipeState: vi.fn(() => ({ kernelState: state, pipeSlots: [] })),
@@ -320,13 +317,6 @@ test("message handler registers OPFS backing source identities", async () => {
       requestId: 34,
     },
   ]);
-});
-
-test("state-owning kernel-worker modules are marked transitional-runtime-owner", () => {
-  expect(KERNEL_WORKER_FS_STATE_OWNERSHIP).toBe("transitional-runtime-owner");
-  expect(KERNEL_WORKER_PRIMITIVES_OWNERSHIP).toBe("transitional-runtime-owner");
-  expect(KERNEL_WORKER_PROCESS_CONTROL_OWNERSHIP).toBe("transitional-runtime-owner");
-  expect(KERNEL_WORKER_SHARED_STATE_SYNC_OWNERSHIP).toBe("transitional-runtime-owner");
 });
 
 test("message handler routes debug resident page eviction through kernel-worker owner", async () => {

@@ -1,9 +1,26 @@
+import { hostExecutionState } from "./host-execution-state.js";
 import { createWorkerControlMessageHandler } from "./message-handler/control.js";
 import { readProcessPidField } from "./diagnostics/format.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status/route.js";
+import {
+  supervisorProcessOwnerAbsent,
+  supervisorProcessOwnerLiveMatches,
+  supervisorProcessOwnerMatches,
+  supervisorProcessOwnerMissingOrInvalid,
+} from "./process-identity.js";
+import { supervisorProcessStatusAllowsPidMismatch } from "./supervisor-status.js";
 import type { WorkerMessageHandlerDeps } from "./message-handler/types.js";
 import { recordWorkerMessageDebugEvent, type ProcessHandle } from "./types.js";
+import { workerDebugLog } from "./worker-debug-log.js";
+import { workerMessageDebugStats } from "./worker-debug-stats.js";
+import { processExitInProgress } from "./process-lifecycle-state.js";
+import { processLastDebugMessage } from "./process-debug-state.js";
 import type { ThreadWorkerOutbound } from "../messages.js";
+import {
+  getThreadGeneration,
+  getThreadOwnerPid,
+  setThreadOwnerPid,
+} from "./thread-host-state.js";
 
 export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
   const handleWorkerControlMessage = createWorkerControlMessageHandler(deps);
@@ -16,14 +33,14 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     detail: string,
   ): void {
     recordWorkerMessageDebugEvent(
-      handle.workerMessageDebugStats,
+      workerMessageDebugStats(handle),
       "ownershipInvariantDrops",
       `ownership-invariant:${handle.pid}:${msg.type}:${detail}`,
     );
     const thread = deps.threadWorkerStates.get(worker);
     const vmPtr = thread?.vmPtr ?? 0;
-    const workerLogTail = handle.workerDebugLog.slice(-12).join(", ");
-    const plainForkLog = handle.workerDebugLog
+    const workerLogTail = workerDebugLog(handle).slice(-12).join(", ");
+    const plainForkLog = workerDebugLog(handle)
       .filter((entry) => entry.includes("plain-fork"))
       .slice(-12)
       .join(", ");
@@ -41,7 +58,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
           + ` process_pid_field=${processPidField}`
           + ` process_ppid_field=${processPpidField}`
           + ` process_thread_count=${processThreadCount}`
-          + ` last_debug=${JSON.stringify(handle.lastDebugMessage ?? "n/a")}`
+          + ` last_debug=${JSON.stringify(processLastDebugMessage(handle) ?? "n/a")}`
           + ` worker_log_tail=[${workerLogTail}]`
           + ` plain_fork_log=[${plainForkLog}]`,
       ),
@@ -57,28 +74,30 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     if (!thread) {
       return true;
     }
-    if ("generation" in msg && msg.generation !== thread.generation) {
+    const threadGeneration = getThreadGeneration(thread);
+    if ("generation" in msg && msg.generation !== threadGeneration) {
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "staleGenerationDrops",
-        `stale-generation:${handle.pid}:${msg.type}:${msg.generation}->${thread.generation}`,
+        `stale-generation:${handle.pid}:${msg.type}:${msg.generation}->${threadGeneration}`,
       );
       deps.appendWorkerDebugLog(
         handle,
-        `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${thread.generation}`,
+        `stale-message:0x${thread.vmPtr.toString(16)}:${msg.type}:${msg.generation}->${threadGeneration}`,
       );
       return false;
     }
-    if (thread.ownerPid !== handle.pid) {
+    const ownerPid = getThreadOwnerPid(thread);
+    if (ownerPid !== handle.pid) {
       const readyVmPtr = msg.type === "ready" && "vmPtr" in msg ? msg.vmPtr : 0;
       if (readyVmPtr === thread.vmPtr && handle.pid > 0) {
-        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
-        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
-        if (currentPid === handle.pid && processThreadCount > 0) {
-          const previousOwnerPid = thread.ownerPid;
-          thread.ownerPid = handle.pid;
+        if (supervisorProcessOwnerLiveMatches(handle.kernel, thread.vmPtr, handle.pid)) {
+          const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+          const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+          const previousOwnerPid = ownerPid;
+          setThreadOwnerPid(thread, handle.pid);
           recordWorkerMessageDebugEvent(
-            handle.workerMessageDebugStats,
+            workerMessageDebugStats(handle),
             "readyRehydrateAdopts",
             `ready-owner-adopt:${handle.pid}:0x${thread.vmPtr.toString(16)}`
               + `:previous=${previousOwnerPid}:current=${currentPid}:threads=${processThreadCount}`,
@@ -93,7 +112,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
             handle,
             worker,
             msg,
-            `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
+            `owner_pid=${ownerPid} handle_pid=${handle.pid}`,
           );
           return false;
         }
@@ -102,7 +121,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
           handle,
           worker,
           msg,
-          `owner_pid=${thread.ownerPid} handle_pid=${handle.pid}`,
+          `owner_pid=${ownerPid} handle_pid=${handle.pid}`,
         );
         return false;
       }
@@ -116,38 +135,38 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       );
       return false;
     }
-    const isActiveVforkWorker = handle.vforkSnapshot !== null && handle.vforkWorker === worker;
+    const isActiveVforkWorker = hostExecutionState(handle).vforkSnapshot !== null && hostExecutionState(handle).vforkWorker === worker;
     const messageAllowsTransientKernelPidMismatch = isActiveVforkWorker || (
       msg.type === "status"
-      && (
-        msg.status === handle.kernel.abi_status_vfork_wait()
-        || msg.status === handle.kernel.abi_status_execve_spawn()
-      )
+      && supervisorProcessStatusAllowsPidMismatch(handle.kernel, msg.status)
     );
     if (messageAllowsTransientKernelPidMismatch) {
       return true;
     }
     if (handle.pid > 0) {
-      const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
       const messageProcessPidField = "debug" in msg
         ? readProcessPidField(msg.debug)
         : null;
       if (
         msg.type === "status"
         && msg.status === handle.kernel.abi_status_fault()
-        && (currentPid === 0 || currentPid > 0xffff || messageProcessPidField === handle.pid)
+        && (
+          supervisorProcessOwnerMissingOrInvalid(handle.kernel, thread.vmPtr)
+          || messageProcessPidField === handle.pid
+        )
       ) {
         return true;
       }
-      const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+      const processOwnerAbsent = supervisorProcessOwnerAbsent(handle.kernel, thread.vmPtr);
       if (
         msg.type === "ready"
-        && currentPid === 0
-        && processThreadCount === 0
+        && processOwnerAbsent
         && messageProcessPidField === handle.pid
       ) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
         recordWorkerMessageDebugEvent(
-          handle.workerMessageDebugStats,
+          workerMessageDebugStats(handle),
           "readyRehydrateAdopts",
           `ready-rehydrate:${handle.pid}:0x${thread.vmPtr.toString(16)}`
             + `:field=${messageProcessPidField}:current=${currentPid}:threads=${processThreadCount}`,
@@ -158,9 +177,11 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         );
         return true;
       }
-      if (msg.type === "status" && currentPid === 0 && processThreadCount === 0) {
+      if (msg.type === "status" && processOwnerAbsent) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
         recordWorkerMessageDebugEvent(
-          handle.workerMessageDebugStats,
+          workerMessageDebugStats(handle),
           "staleProcessStatusDrops",
           `stale-process-status:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`
             + `:field=${messageProcessPidField ?? "n/a"}`
@@ -172,7 +193,8 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         );
         return false;
       }
-      if (currentPid !== handle.pid) {
+      if (!supervisorProcessOwnerMatches(handle.kernel, thread.vmPtr, handle.pid)) {
+        const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
         failOwnershipInvariant(handle, worker, msg, `kernel_pid=${currentPid} expected_pid=${handle.pid}`);
         return false;
       }
@@ -185,18 +207,18 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     worker: Worker,
     msg: ThreadWorkerOutbound,
   ): void {
-    recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "received");
+    recordWorkerMessageDebugEvent(workerMessageDebugStats(handle), "received");
     if (msg.type === "status") {
-      recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "statusReceived");
+      recordWorkerMessageDebugEvent(workerMessageDebugStats(handle), "statusReceived");
     } else {
-      recordWorkerMessageDebugEvent(handle.workerMessageDebugStats, "controlReceived");
+      recordWorkerMessageDebugEvent(workerMessageDebugStats(handle), "controlReceived");
     }
     const messageProcessPidField = "debug" in msg ? readProcessPidField(msg.debug) : null;
     const thread = deps.threadWorkerStates.get(worker);
     const isActiveVforkWorker = thread !== undefined
-      && handle.vforkSnapshot !== null
-      && handle.vforkWorker === worker;
-    const workerOwnerMatchesHandle = thread !== undefined && thread.ownerPid === handle.pid;
+      && hostExecutionState(handle).vforkSnapshot !== null
+      && hostExecutionState(handle).vforkWorker === worker;
+    const workerOwnerMatchesHandle = thread !== undefined && getThreadOwnerPid(thread) === handle.pid;
     if (
       !isActiveVforkWorker
       && !workerOwnerMatchesHandle
@@ -208,7 +230,7 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       const rerouteHandle = deps.processHandles.get(messageProcessPidField);
       if (rerouteHandle && rerouteHandle !== handle) {
         recordWorkerMessageDebugEvent(
-          handle.workerMessageDebugStats,
+          workerMessageDebugStats(handle),
           "rerouted",
           `reroute:${handle.pid}->${messageProcessPidField}:${msg.type}`,
         );
@@ -224,19 +246,20 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       !isActiveVforkWorker
       && handle.pid > 0
       && thread !== undefined
-      && thread.ownerPid > 0
-      && thread.ownerPid !== handle.pid
+      && getThreadOwnerPid(thread) > 0
+      && getThreadOwnerPid(thread) !== handle.pid
     ) {
-      const ownerHandle = deps.processHandles.get(thread.ownerPid);
+      const ownerPid = getThreadOwnerPid(thread);
+      const ownerHandle = deps.processHandles.get(ownerPid);
       if (ownerHandle && ownerHandle !== handle) {
         recordWorkerMessageDebugEvent(
-          handle.workerMessageDebugStats,
+          workerMessageDebugStats(handle),
           "rerouted",
-          `reroute-owner:${handle.pid}->${thread.ownerPid}:${msg.type}`,
+          `reroute-owner:${handle.pid}->${ownerPid}:${msg.type}`,
         );
         deps.appendWorkerDebugLog(
           handle,
-          `reroute-owner-message:pid=${handle.pid}->${thread.ownerPid}:type=${msg.type}`,
+          `reroute-owner-message:pid=${handle.pid}->${ownerPid}:type=${msg.type}`,
         );
         handleWorkerMessage(ownerHandle, worker, msg);
         return;
@@ -244,15 +267,15 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     }
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) !== handle) {
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "inactiveHandleDrops",
         `inactive-handle:${handle.pid}:${msg.type}`,
       );
       return;
     }
-    if (handle.exitInProgress) {
+    if (processExitInProgress(handle)) {
       recordWorkerMessageDebugEvent(
-        handle.workerMessageDebugStats,
+        workerMessageDebugStats(handle),
         "exitInProgressDrops",
         `exit-in-progress:${handle.pid}:${msg.type}`,
       );

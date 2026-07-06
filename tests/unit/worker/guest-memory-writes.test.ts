@@ -1,11 +1,10 @@
 import { expect, test } from "vite-plus/test";
 import { appendPendingGuestMemoryWrites } from "../../../src/worker/guest-memory-writes.js";
+import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../src/worker/thread-step-payload.js";
 import type { ThreadWorkerState } from "../../../src/worker/types.js";
 
 function makeThread(): ThreadWorkerState {
-  return {
-    pendingGuestMemoryWrites: [],
-  } as unknown as ThreadWorkerState;
+  return {} as ThreadWorkerState;
 }
 
 test("appendPendingGuestMemoryWrites keeps more than thirty-two disjoint ranges", () => {
@@ -17,12 +16,13 @@ test("appendPendingGuestMemoryWrites keeps more than thirty-two disjoint ranges"
 
   appendPendingGuestMemoryWrites(thread, writes);
 
-  expect(thread.pendingGuestMemoryWrites).toHaveLength(40);
-  expect(thread.pendingGuestMemoryWrites[0]).toEqual({
+  const pendingWrites = snapshotPendingGuestMemoryWritesForNextStep(thread);
+  expect(pendingWrites).toHaveLength(40);
+  expect(pendingWrites[0]).toEqual({
     guestPtr: 0x1000,
     bytes: Uint8Array.from([0]),
   });
-  expect(thread.pendingGuestMemoryWrites[39]).toEqual({
+  expect(pendingWrites[39]).toEqual({
     guestPtr: 0x1000 + 39 * 0x1000,
     bytes: Uint8Array.from([39]),
   });
@@ -36,7 +36,7 @@ test("appendPendingGuestMemoryWrites coalesces overlapping ranges with latest by
     { guestPtr: 0x1002, bytes: Uint8Array.from([9, 8, 7]) },
   ]);
 
-  expect(thread.pendingGuestMemoryWrites).toEqual([
+  expect(snapshotPendingGuestMemoryWritesForNextStep(thread)).toEqual([
     { guestPtr: 0x1000, bytes: Uint8Array.from([1, 2, 9, 8, 7]) },
   ]);
 });

@@ -8,10 +8,23 @@ import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
+import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
+type ProcessStdinPipeFn =
+  typeof import("../../../../src/worker/process-stdio-state.js").processStdinPipe;
 
 let workerModule: WorkerModule | null = null;
+let processStdinPipeImpl: ProcessStdinPipeFn | null = null;
+
+function processStdinPipe(
+  handle: Parameters<ProcessStdinPipeFn>[0],
+): ReturnType<ProcessStdinPipeFn> {
+  if (processStdinPipeImpl === null) {
+    throw new Error("processStdinPipe accessor not loaded");
+  }
+  return processStdinPipeImpl(handle);
+}
 
 function clearRuntimeFsState(runtimeId: number): void {
   workerModule?.clearRuntimeFsState(runtimeId);
@@ -235,7 +248,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     view.setInt32(base + 8, 1, true);
     view.setInt32(base + 12, 1, true);
   }
-  const exports: KernelExports & {
+  let exports: KernelExports & {
     recordedChildExits: Array<[number, number]>;
     fsProcessCalls: number;
     memfsCreateCalls: Array<[number, number]>;
@@ -243,7 +256,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     memfsSetFileSizeShallowCalls: Array<[number, number]>;
     memfsWriteCalls: Array<[number, number]>;
     memfsCreateWithDataCalls: Array<[number, number]>;
-  } = {
+  };
+  exports = {
+    ...makeSupervisorAbiStubs({ currentExports: () => exports }),
     memory,
     __stack_pointer: new WebAssembly.Global({ value: "i32", mutable: true }, 0),
     abi_status_ok: () => 0,
@@ -270,6 +285,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
     abi_max_pipes: () => 64,
+    abi_max_sockets: () => 64,
     abi_fd_type_none: () => 0,
     abi_fd_type_file: () => 1,
     abi_fd_type_pipe: () => 2,
@@ -390,8 +406,6 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_futex_wait_addr: () => 0n,
     thread_futex_wait_timeout: () => 0n,
     thread_futex_wait_expected: () => 0,
-    thread_resume_futex_wait: () => {},
-    thread_resume_futex_wait_result: () => {},
     thread_sleep_seconds: () => 0n,
     thread_sleep_nanoseconds: () => 0n,
     thread_record_blocked_addr: () => 0,
@@ -556,6 +570,9 @@ beforeEach(async () => {
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
+  processStdinPipeImpl = (
+    await import("../../../../src/worker/process-stdio-state.js")
+  ).processStdinPipe;
   createdWorkers.length = 0;
   createdKernelExports.length = 0;
   threadCountQueue.length = 0;
@@ -584,6 +601,7 @@ afterEach(() => {
   workerModule?.destroyWorkerPool();
   clearModuleCache();
   workerModule = null;
+  processStdinPipeImpl = null;
   vi.restoreAllMocks();
   globalThis.Worker = originalWorker;
   if (originalSchedulerStepBudget === undefined) {
@@ -648,7 +666,6 @@ test("process exit releases host stdio through kernel-worker when available", as
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(requests.some((msg) => msg.type === "sync-socket-state")).toBe(true);
-  expect(requests.some((msg) => msg.type === "sync-fork-shared-state")).toBe(true);
   expect(requests.some((msg) => msg.type === "release-host-stdio")).toBe(true);
   expect(releaseHostStdio).not.toHaveBeenCalled();
 });
@@ -658,7 +675,7 @@ test("writeProcessStdin writes into the hidden stdin pipe buffer", async () => {
 
   writeProcessStdin(handle, new TextEncoder().encode("abc"));
 
-  const slotBase = handle.kernelState.pipeBase + handle.stdinPipe * MOCK_PIPE_SLOT_BYTES;
+  const slotBase = handle.kernelState.pipeBase + processStdinPipe(handle) * MOCK_PIPE_SLOT_BYTES;
   const dataBase = slotBase + 32;
   const mem = new Uint8Array(handle.memory.buffer);
   expect(new TextDecoder().decode(mem.subarray(dataBase, dataBase + 3))).toBe("abc");

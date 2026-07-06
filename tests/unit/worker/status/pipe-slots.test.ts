@@ -11,9 +11,8 @@ import {
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../../../src/layout/pipe.js";
 import {
-  applyStatusPipeSlots,
-  statusKernelWorkerOwnsPipeState,
-} from "../../../../src/worker/message-handler/status/pipe-slots.js";
+  applyThreadPipeSlots,
+} from "../../../../src/worker/ownership/pipe-control.js";
 import { makeHandle, makeKernel } from "./helpers.js";
 
 const SLOT_BYTES = 64;
@@ -39,7 +38,7 @@ test("status pipe slots apply fresh control snapshots through the status owner",
   });
   const appendRuntimeLifecycleEvent = vi.fn();
 
-  applyStatusPipeSlots(
+  applyThreadPipeSlots(
     handle as never,
     [{
       pipeSlot: 1,
@@ -59,10 +58,4 @@ test("status pipe slots apply fresh control snapshots through the status owner",
   expect(view.getInt32(PIPE_WRITE_OPEN_OFFSET, true)).toBe(1);
   expect(view.getUint32(PIPE_GENERATION_OFFSET, true)).toBe(2);
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalled();
-});
-
-test("status pipe ownership reports kernel-worker owned state only for active requests", () => {
-  expect(statusKernelWorkerOwnsPipeState(makeHandle({ kernelWorkerRequest: {} }) as never)).toBe(true);
-  expect(statusKernelWorkerOwnsPipeState(makeHandle({ kernelWorkerRequest: undefined }) as never)).toBe(false);
-  expect(statusKernelWorkerOwnsPipeState(makeHandle({ pid: 0, kernelWorkerRequest: {} }) as never)).toBe(false);
 });

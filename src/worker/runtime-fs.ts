@@ -2,6 +2,9 @@ import { attachKernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { detachedKernelScratchBase } from "./kernel-scratch.js";
 import { normalizePath, preloadSnapshotEntries } from "./process-fs.js";
+import { isProcessMemfsDirty } from "./process-memfs-state.js";
+import { processKernelShareGroup } from "./kernel-share.js";
+import { workerDebugLog } from "./worker-debug-log.js";
 import type {
   KernelShareGroup,
   KernelSyncHandle,
@@ -50,11 +53,11 @@ function appendRuntimeFsSnapshotDebug(
     }
     return `${entry.path}:size=${entry.size ?? entry.data?.length ?? 0}:head=${headHex(entry.data)}`;
   });
-  representative.workerDebugLog.push(
+  workerDebugLog(representative).push(
     `runtime-fs-snapshot:runtime=${runtimeId}:pid=${representative.pid}:${details.join(",")}`,
   );
-  if (representative.workerDebugLog.length > 4096) {
-    representative.workerDebugLog.splice(0, representative.workerDebugLog.length - 4096);
+  if (workerDebugLog(representative).length > 4096) {
+    workerDebugLog(representative).splice(0, workerDebugLog(representative).length - 4096);
   }
 }
 
@@ -118,14 +121,14 @@ export function flushRuntimeFsStateFromDirtyHandle(
 
   const liveRepresentatives = new Map<KernelShareGroup, ProcessHandle>();
   for (const handle of dirtyHandles) {
-    if (!handle.processMemfsDirty) {
+    if (!isProcessMemfsDirty(handle)) {
       continue;
     }
     if (handle.pid > 0 && context.processHandles.get(handle.pid) !== handle) {
       continue;
     }
     const representative = context.kernelShareRepresentative(handle) ?? handle;
-    liveRepresentatives.set(representative.kernelShare, representative);
+    liveRepresentatives.set(processKernelShareGroup(representative), representative);
   }
 
   context.runtimeFsDirtyHandles.delete(runtimeId);
@@ -175,7 +178,7 @@ export function forEachRuntimeKernelShare(
       continue;
     }
     const representative = context.kernelShareRepresentative(handle) ?? handle;
-    const group = representative.kernelShare;
+    const group = processKernelShareGroup(representative);
     if (visited.has(group)) {
       continue;
     }

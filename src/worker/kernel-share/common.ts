@@ -5,6 +5,13 @@ import type {
   ProcessHandle,
 } from "../types.js";
 
+const kernelShareGroups = new WeakMap<ProcessHandle, KernelShareGroup>();
+const PROCESS_KERNEL_SHARE_GROUP = Symbol.for("tidemark.worker.kernelShareGroup");
+
+type KernelShareStateCarrier = ProcessHandle & {
+  [PROCESS_KERNEL_SHARE_GROUP]?: KernelShareGroup;
+};
+
 export function copyMemoryRange(
   sourceMemory: WebAssembly.Memory,
   sourceOffset: number,
@@ -25,17 +32,96 @@ export function createKernelShareGroup(): KernelShareGroup {
     members: new Set(),
     sharedOfdIds: new Set(),
     ofdSlotSnapshots: new Map(),
-    forkSharedSyncPromise: null,
   };
 }
 
+export function processKernelShareGroup(handle: ProcessHandle): KernelShareGroup {
+  const group = kernelShareGroups.get(handle);
+  if (group !== undefined) {
+    return group;
+  }
+  const carrier = handle as KernelShareStateCarrier;
+  if (Object.prototype.hasOwnProperty.call(carrier, PROCESS_KERNEL_SHARE_GROUP)) {
+    const sharedGroup = carrier[PROCESS_KERNEL_SHARE_GROUP];
+    if (sharedGroup !== undefined) {
+      kernelShareGroups.set(handle, sharedGroup);
+      return sharedGroup;
+    }
+  }
+  const created = createKernelShareGroup();
+  setProcessKernelShareGroup(handle, created);
+  return created;
+}
+
+export function setProcessKernelShareGroup(handle: ProcessHandle, group: KernelShareGroup): void {
+  kernelShareGroups.set(handle, group);
+  Object.defineProperty(handle, PROCESS_KERNEL_SHARE_GROUP, {
+    configurable: true,
+    enumerable: false,
+    value: group,
+    writable: true,
+  });
+}
+
+export function addKernelShareMember(handle: ProcessHandle, member: ProcessHandle = handle): void {
+  processKernelShareGroup(handle).members.add(member);
+}
+
+export function deleteKernelShareMember(handle: ProcessHandle, member: ProcessHandle = handle): void {
+  processKernelShareGroup(handle).members.delete(member);
+}
+
+export function kernelShareMembers(handle: ProcessHandle): Set<ProcessHandle> {
+  return processKernelShareGroup(handle).members;
+}
+
+export function kernelShareMemberList(handle: ProcessHandle): ProcessHandle[] {
+  return [...kernelShareMembers(handle)];
+}
+
 export function kernelShareRepresentative(handle: ProcessHandle): ProcessHandle | null {
-  const representative = handle.kernelShare.members.values().next().value as ProcessHandle | undefined;
+  const representative = kernelShareMembers(handle).values().next().value as ProcessHandle | undefined;
   return representative ?? null;
 }
 
 export function kernelShareOtherMembers(handle: ProcessHandle): ProcessHandle[] {
-  return [...handle.kernelShare.members].filter((member) => member !== handle);
+  return kernelShareMemberList(handle).filter((member) => member !== handle);
+}
+
+export function kernelShareSharedOfdIds(handle: ProcessHandle): Set<number> {
+  return processKernelShareGroup(handle).sharedOfdIds;
+}
+
+export function kernelShareSharedOfdIdList(handle: ProcessHandle): number[] {
+  return [...kernelShareSharedOfdIds(handle)];
+}
+
+export function addKernelShareSharedOfdId(handle: ProcessHandle, ofdId: number): void {
+  kernelShareSharedOfdIds(handle).add(ofdId);
+}
+
+export function deleteKernelShareSharedOfdId(handle: ProcessHandle, ofdId: number): void {
+  kernelShareSharedOfdIds(handle).delete(ofdId);
+}
+
+export function kernelShareHasSharedOfdId(handle: ProcessHandle, ofdId: number): boolean {
+  return kernelShareSharedOfdIds(handle).has(ofdId);
+}
+
+export function setKernelShareOfdSlotSnapshot(
+  handle: ProcessHandle,
+  ofdId: number,
+  slot: Uint8Array,
+): void {
+  processKernelShareGroup(handle).ofdSlotSnapshots.set(ofdId, slot);
+}
+
+export function getKernelShareOfdSlotSnapshot(handle: ProcessHandle, ofdId: number): Uint8Array | undefined {
+  return processKernelShareGroup(handle).ofdSlotSnapshots.get(ofdId);
+}
+
+export function deleteKernelShareOfdSlotSnapshot(handle: ProcessHandle, ofdId: number): void {
+  processKernelShareGroup(handle).ofdSlotSnapshots.delete(ofdId);
 }
 
 export function copyKernelRegion(

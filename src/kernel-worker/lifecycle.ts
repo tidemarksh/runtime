@@ -1,4 +1,5 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../abi.js";
+import { resumeBlockedSyscallBySupervisor } from "../supervisor-blocked-resume.js";
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -68,6 +69,25 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     return readKernelRuntimeState(processExports);
   }
 
+  function childLifecycleFromKernel(
+    processExports: KernelExports,
+    childPid: number,
+  ): { ppid: number; pgid: number; sid: number; nextPid: number } {
+    const ppid = processExports.process_child_ppid?.(childPid);
+    const pgid = processExports.process_child_pgid?.(childPid);
+    const sid = processExports.process_child_sid?.(childPid);
+    const nextPid = processExports.process_next_pid?.();
+    if (ppid === undefined || pgid === undefined || sid === undefined || nextPid === undefined) {
+      throw new Error("kernel process lifecycle ABI missing child lifecycle export");
+    }
+    return {
+      ppid,
+      pgid,
+      sid,
+      nextPid,
+    };
+  }
+
   function resumeConnect(
     pid: number,
     vmPtr: number,
@@ -92,23 +112,7 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
   ): KernelRuntimeState {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    processExports.thread_resume_wait4(vmPtr);
-    return readKernelRuntimeState(processExports);
-  }
-
-  function resumeBlockedSyscall(
-    pid: number,
-    vmPtr: number,
-    kernelState: KernelRuntimeState,
-  ): KernelRuntimeState {
-    const processExports = deps.requireProcessKernel(pid);
-    attachKernelRuntimeState(processExports, kernelState);
-    try {
-      processExports.thread_resume_blocked_syscall(vmPtr);
-    } catch (error) {
-      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-      throw new Error(`${detail}\n${deps.formatProcessDebug(processExports, vmPtr)}`);
-    }
+    resumeBlockedSyscallBySupervisor(processExports, vmPtr);
     return readKernelRuntimeState(processExports);
   }
 
@@ -143,25 +147,33 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     vmPtr: number,
     provisionalChildPid: number,
     kernelState: KernelRuntimeState,
-  ): { childPid: number; nextPid: number; pgid: number; sid: number; kernelState: KernelRuntimeState } {
+  ): { childPid: number; ppid: number; nextPid: number; pgid: number; sid: number; kernelState: KernelRuntimeState } {
     const processExports = deps.requireProcessKernel(pid);
     attachKernelRuntimeState(processExports, kernelState);
-    const childPid = reserveCanonicalPid(provisionalChildPid);
-    const nextPid = deps.getCanonicalNextPid();
-    processExports.process_rewrite_child_pid(vmPtr, provisionalChildPid, childPid, nextPid);
+    const nextPidFloor = deps.getCanonicalNextPid();
+    const childPid = processExports.process_canonicalize_child_pid
+      ? processExports.process_canonicalize_child_pid(vmPtr, provisionalChildPid, nextPidFloor)
+      : reserveCanonicalPid(provisionalChildPid);
+    const kernelLifecycle = childLifecycleFromKernel(processExports, childPid);
+    const nextPid = Math.max(kernelLifecycle.nextPid, childPid + 1, nextPidFloor);
+    deps.setCanonicalNextPid(nextPid);
+    if (!processExports.process_canonicalize_child_pid) {
+      processExports.process_rewrite_child_pid(vmPtr, provisionalChildPid, childPid, nextPid);
+    }
     upsertCanonicalProcess({
       pid: childPid,
-      ppid: processExports.process_current_ppid(vmPtr),
-      pgid: processExports.process_current_pgid(vmPtr),
-      sid: processExports.process_current_sid(vmPtr),
+      ppid: kernelLifecycle.ppid,
+      pgid: kernelLifecycle.pgid,
+      sid: kernelLifecycle.sid,
       didExec: false,
       vmPtr,
     });
     return {
       childPid,
+      ppid: kernelLifecycle.ppid,
       nextPid,
-      pgid: processExports.process_current_pgid(vmPtr),
-      sid: processExports.process_current_sid(vmPtr),
+      pgid: kernelLifecycle.pgid,
+      sid: kernelLifecycle.sid,
       kernelState: readKernelRuntimeState(processExports),
     };
   }
@@ -219,6 +231,31 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     return readKernelRuntimeState(processExports);
   }
 
+  function rollbackVforkExecveHandoff(
+    pid: number,
+    vmPtr: number,
+    childPid: number,
+    kernelState: KernelRuntimeState,
+  ): { waitStatus: number; kernelState: KernelRuntimeState } {
+    const processExports = deps.requireProcessKernel(pid);
+    attachKernelRuntimeState(processExports, kernelState);
+    const rollback = processExports.supervisor_vfork_execve_rollback;
+    if (!rollback) {
+      throw new Error("kernel supervisor ABI missing supervisor_vfork_execve_rollback");
+    }
+    const waitStatus = rollback.call(processExports, vmPtr, childPid);
+    if (waitStatus < 0) {
+      throw new Error(`kernel supervisor vfork execve rollback failed: ${waitStatus}`);
+    }
+    if (!deps.processKernels.has(childPid)) {
+      dropCanonicalProcess(childPid);
+    }
+    return {
+      waitStatus,
+      kernelState: readKernelRuntimeState(processExports),
+    };
+  }
+
   function syncProcessLifecycle(
     pid: number,
     vmPtr: number,
@@ -241,7 +278,7 @@ export function createKernelWorkerLifecycle(deps: KernelWorkerLifecycleDeps) {
     canonicalizeChildPid,
     initializeProcessLifecycle,
     recordChildExit,
-    resumeBlockedSyscall,
+    rollbackVforkExecveHandoff,
     resumeConnect,
     resumeVforkExecveParent,
     resumeVforkParent,

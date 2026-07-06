@@ -1,33 +1,186 @@
 import type { RuntimeNetworkBridge } from "../../bridge/network.js";
+import { requireKernelSocketCount } from "../../kernel-socket-layout.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerSocketStateSnapshot,
 } from "../../messages.js";
 import { OFD_TYPE_OFFSET } from "../../layout/ofd.js";
-import type { KernelOwnershipHandle, ProcessHandle } from "../types.js";
-
-export function kernelWorkerOwnsSocketState(handle: KernelOwnershipHandle): boolean {
-  return !!handle.kernelWorkerRequest && handle.pid > 0;
-}
+import {
+  networkClosedFds,
+  networkClosedSocketSlots,
+  networkConnectionOfds as networkConnectionOfdsState,
+  networkConnections,
+  networkOfdSlotWatermarks,
+  networkRecvHeadWatermarks,
+  networkPendingConnectFds,
+  networkRecvPayloadWatermarks,
+  networkRecvTailWatermarks,
+  networkSocketSlotWatermarks,
+} from "../network-socket-state.js";
+import { kernelShareMemberList } from "../kernel-share.js";
+import type { ProcessHandle } from "../types.js";
+import { supervisorProcessOfdForFd } from "./fd-table.js";
 
 export function runtimeNetworkFds(handle: ProcessHandle): Set<number> {
   return new Set([
-    ...(handle.networkConnections?.keys() ?? []),
-    ...(handle.networkPendingConnectFds ?? []),
-    ...(handle.networkClosedFds ?? []),
-    ...(handle.networkClosedSocketSlots?.keys() ?? []),
-    ...(handle.networkSocketSlotWatermarks?.keys() ?? []),
-    ...(handle.networkRecvPayloadWatermarks?.keys() ?? []),
+    ...(networkConnections(handle)?.keys() ?? []),
+    ...networkPendingConnectFds(handle),
+    ...networkClosedFds(handle),
+    ...networkClosedSocketSlots(handle).keys(),
+    ...networkSocketSlotWatermarks(handle).keys(),
+    ...networkRecvPayloadWatermarks(handle).keys(),
   ]);
 }
 
+export function kernelSocketOutboundAvailable(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  const readOutboundAvailable = handle.kernel.thread_socket_outbound_available;
+  if (typeof readOutboundAvailable !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_outbound_available");
+  }
+  return readOutboundAvailable(vmPtr, fd);
+}
+
+export function kernelSocketIndexForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  const readSocketIndex = handle.kernel.thread_socket_idx_for_fd;
+  if (typeof readSocketIndex !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_idx_for_fd");
+  }
+  return readSocketIndex(vmPtr, fd);
+}
+
+export function kernelSocketPeerIndex(handle: ProcessHandle, socketIdx: number): number {
+  const readPeerIndex = handle.kernel.thread_socket_peer_idx;
+  if (typeof readPeerIndex !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_peer_idx");
+  }
+  return readPeerIndex(socketIdx);
+}
+
+export function kernelSocketState(handle: ProcessHandle, socketIdx: number): number {
+  const readState = handle.kernel.thread_socket_state;
+  if (typeof readState !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_state");
+  }
+  return readState(socketIdx);
+}
+
+export function kernelSocketExternalPeer(handle: ProcessHandle, socketIdx: number): number {
+  const readExternalPeer = handle.kernel.thread_socket_external_peer;
+  if (typeof readExternalPeer !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_external_peer");
+  }
+  return readExternalPeer(socketIdx);
+}
+
+export function kernelSocketRecvBufferIndex(handle: ProcessHandle, socketIdx: number): number {
+  const readRecvBufferIndex = handle.kernel.thread_socket_recv_buf_idx;
+  if (typeof readRecvBufferIndex !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_recv_buf_idx");
+  }
+  return readRecvBufferIndex(socketIdx);
+}
+
+export function kernelSocketRecvAvailable(handle: ProcessHandle, socketIdx: number): number {
+  const readRecvAvailable = handle.kernel.thread_socket_recv_available;
+  if (typeof readRecvAvailable !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_recv_available");
+  }
+  return readRecvAvailable(socketIdx);
+}
+
+export function kernelSocketReadBytes(handle: ProcessHandle, socketIdx: number): bigint | number {
+  const readBytes = handle.kernel.thread_socket_read_bytes;
+  if (typeof readBytes !== "function") {
+    throw new Error("kernel supervisor ABI missing thread_socket_read_bytes");
+  }
+  return readBytes(socketIdx);
+}
+
 export function socketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
-  return handle.kernel.process_fd_ofd_id?.(vmPtr, fd) ?? 0;
+  return supervisorProcessOfdForFd(handle, vmPtr, fd);
+}
+
+function supervisorHeldSocketOfdIds(handle: ProcessHandle, vmPtr: number): number[] {
+  const query = handle.kernel.supervisor_process_socket_held_ofd;
+  if (!query || vmPtr === 0) {
+    return [];
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  const ofdIds: number[] = [];
+  for (let index = 0; index < maxFds; index += 1) {
+    const ofdId = query.call(handle.kernel, vmPtr, index);
+    if (ofdId === 0) {
+      break;
+    }
+    if (ofdId > 0 && ofdId < maxFds) {
+      ofdIds.push(ofdId);
+    }
+  }
+  return ofdIds;
 }
 
 export function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
-  handle.networkConnectionOfds ??= new Map();
-  return handle.networkConnectionOfds;
+  return networkConnectionOfdsState(handle);
+}
+
+function requireSupervisorSocketBridgeActiveFd(handle: ProcessHandle) {
+  const activeFd = handle.kernel.supervisor_socket_bridge_active_fd;
+  if (typeof activeFd !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_socket_bridge_active_fd");
+  }
+  return activeFd;
+}
+
+function requireSupervisorSocketOfdIsSocket(handle: ProcessHandle) {
+  const isSocket = handle.kernel.supervisor_socket_ofd_is_socket;
+  if (typeof isSocket !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_socket_ofd_is_socket");
+  }
+  return isSocket;
+}
+
+function requireSupervisorSocketOfdForFd(handle: ProcessHandle) {
+  const ofdForFd = handle.kernel.supervisor_process_socket_ofd_for_fd;
+  if (typeof ofdForFd !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_socket_ofd_for_fd");
+  }
+  return ofdForFd;
+}
+
+function requireSupervisorSocketDrainFd(handle: ProcessHandle) {
+  const drainFd = handle.kernel.supervisor_process_socket_drain_fd;
+  if (typeof drainFd !== "function") {
+    throw new Error("kernel supervisor ABI missing supervisor_process_socket_drain_fd");
+  }
+  return drainFd;
+}
+
+export function supervisorSocketOfdIsSocket(handle: ProcessHandle, ofdId: number): boolean {
+  return ofdId > 0 && requireSupervisorSocketOfdIsSocket(handle).call(handle.kernel, ofdId) === 1;
+}
+
+export function supervisorSocketOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
+  if (vmPtr === 0 || fd < 0) {
+    return 0;
+  }
+  return requireSupervisorSocketOfdForFd(handle).call(handle.kernel, vmPtr, fd);
+}
+
+export function supervisorSocketDrainFds(handle: ProcessHandle, vmPtr: number, connectedFd: number): number[] {
+  if (vmPtr === 0 || connectedFd < 0) {
+    return [];
+  }
+  const readDrainFd = requireSupervisorSocketDrainFd(handle);
+  const maxFds = handle.kernel.abi_max_fds();
+  const fds: number[] = [];
+  for (let index = 0; index < maxFds; index += 1) {
+    const fd = readDrainFd.call(handle.kernel, vmPtr, connectedFd, index);
+    if (fd < 0) {
+      break;
+    }
+    fds.push(fd);
+  }
+  return fds;
 }
 
 type SocketStatusDebug = (handle: ProcessHandle, event: string) => void;
@@ -36,6 +189,11 @@ export interface PreservedNetworkSocketSlot {
   offset: number;
   data: Uint8Array;
   socketMask: number;
+}
+
+export interface PreserveNetworkSocketSlotOptions {
+  pruneMissingClosedFds?: boolean;
+  preserveWatermarkedSlots?: "all" | "recv-payload";
 }
 
 export function socketTablePtrs(handle: ProcessHandle): number[] {
@@ -55,8 +213,8 @@ export function restoreNetworkOfdSlotWatermarks(
   handle: ProcessHandle,
   appendStatusSocketDebug?: SocketStatusDebug,
 ): void {
-  const watermarks = handle.networkOfdSlotWatermarks;
-  if (!watermarks || watermarks.size === 0) {
+  const watermarks = networkOfdSlotWatermarks(handle);
+  if (watermarks.size === 0) {
     return;
   }
   const maxFds = handle.kernel.abi_max_fds();
@@ -71,7 +229,7 @@ export function restoreNetworkOfdSlotWatermarks(
     if (!slot || slot.length !== slotBytes || ofdId <= 0 || ofdId >= maxFds) {
       continue;
     }
-    if (handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()) {
+    if (supervisorSocketOfdIsSocket(handle, ofdId)) {
       continue;
     }
     memory.set(slot, handle.kernelState.ofdTablePtr + ofdId * slotBytes);
@@ -84,15 +242,13 @@ function clearNetworkRecvWatermarks(
   fd: number,
   appendStatusSocketDebug?: SocketStatusDebug,
 ): void {
-  if (handle.networkRecvPayloadWatermarks?.has(fd)) {
+  if (networkRecvPayloadWatermarks(handle).has(fd)) {
     appendStatusSocketDebug?.(handle, `net-status-watermark-clear:${handle.pid}:fd=${fd}`);
   }
-  handle.networkRecvHeadWatermarks.delete(fd);
-  handle.networkRecvTailWatermarks.delete(fd);
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  handle.networkRecvPayloadWatermarks.delete(fd);
-  handle.networkSocketSlotWatermarks ??= new Map();
-  handle.networkSocketSlotWatermarks.delete(fd);
+  networkRecvHeadWatermarks(handle).delete(fd);
+  networkRecvTailWatermarks(handle).delete(fd);
+  networkRecvPayloadWatermarks(handle).delete(fd);
+  networkSocketSlotWatermarks(handle).delete(fd);
 }
 
 function moveNetworkRecvWatermarks(
@@ -104,24 +260,22 @@ function moveNetworkRecvWatermarks(
   if (fromFd === toFd) {
     return;
   }
-  const head = handle.networkRecvHeadWatermarks.get(fromFd);
-  const tail = handle.networkRecvTailWatermarks.get(fromFd);
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  const payload = handle.networkRecvPayloadWatermarks.get(fromFd);
-  handle.networkSocketSlotWatermarks ??= new Map();
-  const socketSlot = handle.networkSocketSlotWatermarks.get(fromFd);
+  const head = networkRecvHeadWatermarks(handle).get(fromFd);
+  const tail = networkRecvTailWatermarks(handle).get(fromFd);
+  const payload = networkRecvPayloadWatermarks(handle).get(fromFd);
+  const socketSlot = networkSocketSlotWatermarks(handle).get(fromFd);
   clearNetworkRecvWatermarks(handle, fromFd, appendStatusSocketDebug);
   if (head !== undefined) {
-    handle.networkRecvHeadWatermarks.set(toFd, head);
+    networkRecvHeadWatermarks(handle).set(toFd, head);
   }
   if (tail !== undefined) {
-    handle.networkRecvTailWatermarks.set(toFd, tail);
+    networkRecvTailWatermarks(handle).set(toFd, tail);
   }
   if (payload !== undefined) {
-    handle.networkRecvPayloadWatermarks.set(toFd, payload);
+    networkRecvPayloadWatermarks(handle).set(toFd, payload);
   }
   if (socketSlot !== undefined) {
-    handle.networkSocketSlotWatermarks.set(toFd, socketSlot);
+    networkSocketSlotWatermarks(handle).set(toFd, socketSlot);
   }
 }
 
@@ -135,42 +289,48 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     appendStatusSocketDebug?: SocketStatusDebug;
   },
 ): void {
-  if (!fdEntries || vmPtr === 0 || handle.networkConnections.size === 0) {
+  if (!fdEntries || vmPtr === 0 || networkConnections(handle).size === 0) {
     return;
   }
   const ofds = networkConnectionOfds(handle);
-  const maxFds = handle.kernel.abi_max_fds();
-  const findFdForOfd = (ofdId: number, preferredFd: number): number | null => {
-    if (ofdId <= 0) {
-      return null;
+  const supervisorBridgeActiveFd = (
+    preferredFd: number,
+    expectedOfd: number | undefined,
+  ): { fd: number | null; supervisor: boolean } => {
+    if (expectedOfd === undefined || expectedOfd <= 0) {
+      return { fd: null, supervisor: false };
     }
-    if (handle.kernel.process_fd_ofd_id(vmPtr, preferredFd) === ofdId) {
-      return preferredFd;
-    }
-    for (let fd = 0; fd < maxFds; fd += 1) {
-      if (fd !== preferredFd && handle.kernel.process_fd_ofd_id(vmPtr, fd) === ofdId) {
-        return fd;
-      }
-    }
-    return null;
+    const activeFd = requireSupervisorSocketBridgeActiveFd(handle).call(
+      handle.kernel,
+      vmPtr,
+      preferredFd,
+      expectedOfd,
+      networkPendingConnectFds(handle).has(preferredFd) ? 1 : 0,
+    );
+    return {
+      fd: activeFd >= 0 ? activeFd : null,
+      supervisor: true,
+    };
   };
-  for (const [fd, connection] of [...handle.networkConnections]) {
+  for (const [fd, connection] of [...networkConnections(handle)]) {
     const fdEntry = fdEntries.find((entry) => entry.fd === fd);
     const expectedOfd = ofds.get(fd);
-    const currentOfd = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);
+    let supervisorDecidedClose = false;
     if (expectedOfd === undefined) {
       if (currentOfd > 0) {
         ofds.set(fd, currentOfd);
         continue;
       }
-    } else if (currentOfd === expectedOfd) {
-      continue;
     } else {
-      const replacementFd = findFdForOfd(expectedOfd, fd);
+      const supervisorActiveFd = supervisorBridgeActiveFd(fd, expectedOfd);
+      const replacementFd = supervisorActiveFd.supervisor
+        ? supervisorActiveFd.fd
+        : null;
       if (replacementFd !== null) {
         if (replacementFd !== fd) {
-          handle.networkConnections.delete(fd);
-          handle.networkConnections.set(replacementFd, connection);
+          networkConnections(handle).delete(fd);
+          networkConnections(handle).set(replacementFd, connection);
           ofds.delete(fd);
           ofds.set(replacementFd, expectedOfd);
           moveNetworkRecvWatermarks(handle, fd, replacementFd, callbacks.appendStatusSocketDebug);
@@ -178,10 +338,12 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
         }
         continue;
       }
-      if (
+      if (supervisorActiveFd.supervisor) {
+        supervisorDecidedClose = true;
+      } else if (
         currentOfd > 0
-        && handle.kernel.kernel_ofd_fd_type(currentOfd) === handle.kernel.abi_fd_type_socket()
-        && !handle.networkPendingConnectFds.has(fd)
+        && supervisorSocketOfdIsSocket(handle, currentOfd)
+        && !networkPendingConnectFds(handle).has(fd)
       ) {
         ofds.set(fd, currentOfd);
         callbacks.appendWorkerDebugLog(handle, `net-status-rekey:${handle.pid}:fd=${fd}:ofd=${expectedOfd}->${currentOfd}`);
@@ -189,15 +351,16 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
       }
     }
     if (
-      !handle.networkClosedFds.has(fd)
+      !supervisorDecidedClose
+      && !networkClosedFds(handle).has(fd)
       && !(fdEntry?.ofdId === 0 && currentOfd === 0)
     ) {
       callbacks.appendWorkerDebugLog(handle, `net-status-keep:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
       continue;
     }
-    handle.networkConnections.delete(fd);
+    networkConnections(handle).delete(fd);
     ofds.delete(fd);
-    handle.networkPendingConnectFds.delete(fd);
+    networkPendingConnectFds(handle).delete(fd);
     clearNetworkRecvWatermarks(handle, fd, callbacks.appendStatusSocketDebug);
     callbacks.appendWorkerDebugLog(handle, `net-status-close:${handle.pid}:fd=${fd}:ofd=${expectedOfd ?? "unknown"}->${currentOfd}`);
     void Promise.resolve(connection.close?.()).catch((error) => {
@@ -207,12 +370,7 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
 }
 
 export function isSocketOfd(handle: ProcessHandle, ofdId: number): boolean {
-  if (ofdId <= 0) {
-    return false;
-  }
-  const fdType = handle.kernel.kernel_ofd_fd_type?.(ofdId);
-  const socketType = handle.kernel.abi_fd_type_socket?.();
-  return fdType === undefined || socketType === undefined || fdType === socketType;
+  return supervisorSocketOfdIsSocket(handle, ofdId);
 }
 
 export function findSocketFdForOfd(
@@ -221,12 +379,12 @@ export function findSocketFdForOfd(
   ofdId: number,
   preferredFd: number,
 ): number | null {
-  if (isSocketOfd(handle, ofdId) && socketOfdForFd(handle, vmPtr, preferredFd) === ofdId) {
+  if (isSocketOfd(handle, ofdId) && supervisorSocketOfdForFd(handle, vmPtr, preferredFd) === ofdId) {
     return preferredFd;
   }
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
   for (let fd = 0; fd < maxFds; fd += 1) {
-    if (fd !== preferredFd && socketOfdForFd(handle, vmPtr, fd) === ofdId && isSocketOfd(handle, ofdId)) {
+    if (fd !== preferredFd && supervisorSocketOfdForFd(handle, vmPtr, fd) === ofdId && isSocketOfd(handle, ofdId)) {
       return fd;
     }
   }
@@ -239,7 +397,7 @@ export function restoreRuntimeNetworkSidecarForHandle(
   vmPtr: number,
 ): RuntimeNetworkBridge | undefined {
   const relatedHandles = [
-    ...handle.kernelShare.members,
+    ...kernelShareMemberList(handle),
     ...processHandles.values(),
   ].filter((member) => member !== handle && member.runtimeId === handle.runtimeId);
 
@@ -256,23 +414,23 @@ export function restoreRuntimeNetworkSidecarForHandle(
 
   if (handle.networkBridge) {
     for (const member of relatedHandles) {
-      for (const [sourceFd, connection] of member.networkConnections) {
-        const sourceOfd = socketOfdForFd(member, member.vmPtr, sourceFd);
+      for (const [sourceFd, connection] of networkConnections(member)) {
+        const sourceOfd = supervisorSocketOfdForFd(member, member.vmPtr, sourceFd);
         if (!isSocketOfd(member, sourceOfd)) {
           continue;
         }
         const targetFd = findSocketFdForOfd(handle, vmPtr, sourceOfd, sourceFd);
         if (
           targetFd === null
-          || handle.networkConnections.has(targetFd)
-          || handle.networkClosedFds.has(targetFd)
+          || networkConnections(handle).has(targetFd)
+          || networkClosedFds(handle).has(targetFd)
         ) {
           continue;
         }
-        handle.networkConnections.set(targetFd, connection);
+        networkConnections(handle).set(targetFd, connection);
         networkConnectionOfds(handle).set(targetFd, sourceOfd);
-        handle.networkPendingConnectFds.delete(targetFd);
-        handle.networkClosedSocketSlots.delete(targetFd);
+        networkPendingConnectFds(handle).delete(targetFd);
+        networkClosedSocketSlots(handle).delete(targetFd);
       }
     }
   }
@@ -283,17 +441,17 @@ export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorke
   if (
     handle.kernelState.socketUsed === 0
     && handle.kernelState.netBufUsed === 0n
-    && (handle.networkConnections?.size ?? 0) === 0
-    && (handle.networkPendingConnectFds?.size ?? 0) === 0
-    && (handle.networkClosedFds?.size ?? 0) === 0
-    && (handle.networkClosedSocketSlots?.size ?? 0) === 0
-    && (handle.networkSocketSlotWatermarks?.size ?? 0) === 0
-    && (handle.networkRecvPayloadWatermarks?.size ?? 0) === 0
+    && (networkConnections(handle)?.size ?? 0) === 0
+    && networkPendingConnectFds(handle).size === 0
+    && networkClosedFds(handle).size === 0
+    && networkClosedSocketSlots(handle).size === 0
+    && networkSocketSlotWatermarks(handle).size === 0
+    && networkRecvPayloadWatermarks(handle).size === 0
   ) {
     return undefined;
   }
-  const socketTableBytes = handle.kernel.kernel_socket_table_bytes?.() ?? 0;
-  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes?.() ?? 0;
+  const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
   if (socketTableBytes <= 0 || netBufPoolBytes <= 0) {
     return undefined;
   }
@@ -320,26 +478,25 @@ export function collectRuntimeNetworkSocketOfdIds(handles: Iterable<ProcessHandl
       if (
         ofdId > 0
         && ofdId < maxFds
-        && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()
+        && supervisorSocketOfdIsSocket(handle, ofdId)
       ) {
         ofdIds.add(ofdId);
       }
     };
-    for (const ofdId of handle.networkConnectionOfds?.values() ?? []) {
+    for (const ofdId of networkConnectionOfds(handle).values()) {
       addOfd(ofdId);
     }
     const networkFds = runtimeNetworkFds(handle);
     for (const fd of networkFds) {
       if (fd >= 0 && fd < maxFds && handle.vmPtr !== 0) {
-        addOfd(handle.kernel.process_fd_ofd_id(handle.vmPtr, fd));
+        addOfd(supervisorSocketOfdForFd(handle, handle.vmPtr, fd));
       }
     }
-    for (const [ofdId, slot] of handle.networkOfdSlotWatermarks ?? []) {
+    for (const [ofdId, slot] of networkOfdSlotWatermarks(handle)) {
       if (ofdId <= 0 || ofdId >= maxFds) {
         continue;
       }
-      const view = new DataView(slot.buffer, slot.byteOffset, slot.byteLength);
-      if (view.getInt32(OFD_TYPE_OFFSET, true) === handle.kernel.abi_fd_type_socket()) {
+      if (slot.byteLength >= OFD_TYPE_OFFSET + 4 && supervisorSocketOfdIsSocket(handle, ofdId)) {
         ofdIds.add(ofdId);
       }
     }
@@ -351,35 +508,28 @@ export function hasKernelSocketFdState(handle: ProcessHandle): boolean {
   if (handle.vmPtr === 0) {
     return false;
   }
-  const maxFds = handle.kernel.abi_max_fds();
-  for (let fd = 0; fd < maxFds; fd += 1) {
-    const ofdId = handle.kernel.process_fd_ofd_id(handle.vmPtr, fd);
-    if (
-      ofdId > 0
-      && handle.kernel.kernel_ofd_fd_type(ofdId) === handle.kernel.abi_fd_type_socket()
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return supervisorHeldSocketOfdIds(handle, handle.vmPtr).length > 0;
 }
 
 export function hasRuntimeNetworkSocketState(handle: ProcessHandle): boolean {
-  return (handle.networkConnections?.size ?? 0) > 0
-    || (handle.networkPendingConnectFds?.size ?? 0) > 0
-    || handle.networkClosedFds.size > 0
-    || handle.networkClosedSocketSlots.size > 0
-    || (handle.networkSocketSlotWatermarks?.size ?? 0) > 0
-    || (handle.networkRecvPayloadWatermarks?.size ?? 0) > 0
+  return (networkConnections(handle)?.size ?? 0) > 0
+    || networkPendingConnectFds(handle).size > 0
+    || networkClosedFds(handle).size > 0
+    || networkClosedSocketSlots(handle).size > 0
+    || networkSocketSlotWatermarks(handle).size > 0
+    || networkRecvPayloadWatermarks(handle).size > 0
     || hasKernelSocketFdState(handle);
 }
 
 export function preserveNetworkSocketSlots(
   handle: ProcessHandle,
-  vmPtr: number,
-  socketTableBytes: number,
+  vmPtr = handle.vmPtr,
+  socketTableBytes = handle.kernel.kernel_socket_table_bytes(),
+  options: PreserveNetworkSocketSlotOptions = {},
 ): PreservedNetworkSocketSlot[] {
-  const maxSockets = handle.kernel.abi_max_sockets?.() ?? 32;
+  const pruneMissingClosedFds = options.pruneMissingClosedFds ?? true;
+  const preserveWatermarkedSlots = options.preserveWatermarkedSlots ?? "all";
+  const maxSockets = requireKernelSocketCount(handle.kernel);
   const socketSlotBytes = maxSockets > 0 ? socketTableBytes / maxSockets : 0;
   if (!Number.isInteger(socketSlotBytes) || socketSlotBytes <= 0) {
     return [];
@@ -404,7 +554,7 @@ export function preserveNetworkSocketSlots(
     });
   };
   for (const fd of runtimeNetworkFds(handle)) {
-    const closedSlot = handle.networkClosedSocketSlots.get(fd);
+    const closedSlot = networkClosedSocketSlots(handle).get(fd);
     if (closedSlot) {
       if (!preservedOffsets.has(closedSlot.offset)) {
         preservedOffsets.add(closedSlot.offset);
@@ -416,9 +566,10 @@ export function preserveNetworkSocketSlots(
       }
       continue;
     }
-    handle.networkSocketSlotWatermarks ??= new Map();
-    const watermarkedSlot = handle.networkSocketSlotWatermarks.get(fd);
-    if (watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
+    const watermarkedSlot = networkSocketSlotWatermarks(handle).get(fd);
+    const shouldPreserveWatermarkedSlot = preserveWatermarkedSlots === "all"
+      || networkRecvPayloadWatermarks(handle).has(fd);
+    if (shouldPreserveWatermarkedSlot && watermarkedSlot && !preservedOffsets.has(watermarkedSlot.offset)) {
       preservedOffsets.add(watermarkedSlot.offset);
       preserved.push({
         offset: watermarkedSlot.offset,
@@ -426,13 +577,15 @@ export function preserveNetworkSocketSlots(
         socketMask: 1 << Math.floor(watermarkedSlot.offset / socketSlotBytes),
       });
     }
-    const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(vmPtr, fd);
-    if (socketIdx === undefined || socketIdx < 0 || socketIdx >= maxSockets) {
-      handle.networkClosedFds.delete(fd);
+    const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
+    if (socketIdx < 0 || socketIdx >= maxSockets) {
+      if (pruneMissingClosedFds) {
+        networkClosedFds(handle).delete(fd);
+      }
       continue;
     }
     preserveSocketIdx(socketIdx);
-    preserveSocketIdx(handle.kernel.thread_socket_peer_idx?.(socketIdx) ?? -1);
+    preserveSocketIdx(kernelSocketPeerIndex(handle, socketIdx));
   }
   return preserved;
 }
@@ -447,4 +600,15 @@ export function restoreNetworkSocketSlots(
       memory.set(slot.data, socketTablePtr + slot.offset);
     }
   }
+}
+
+export function restoreNetworkSocketSlotsForHandle(
+  handle: ProcessHandle,
+  preserved: PreservedNetworkSocketSlot[],
+): void {
+  restoreNetworkSocketSlots(
+    new Uint8Array(handle.memory.buffer),
+    socketTablePtrs(handle),
+    preserved,
+  );
 }

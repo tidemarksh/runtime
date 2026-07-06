@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import { summarizeProcessWorkerLogFocus } from "../../../../src/worker/diagnostics/debug.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-pc postmortem entries", () => {
   const worker = {} as Worker;
@@ -17,8 +18,8 @@ test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-
   const handle = {
     workers: new Set([worker]),
     runningWorker: null,
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     workerDebugLog: [
       "status:0x1234@0:pc=0x67c592:ra=0x67cdc6:sp=0x197d2a0:s11=0x1",
       "ready:0x1234:pc=0x67c592:ra=0x67cdc6:sp=0x197d2a0:s11=0x1",
@@ -27,6 +28,7 @@ test("summarizeProcessWorkerLogFocus keeps the last credible state ahead of low-
     ],
     kernel: {},
   } as never;
+  seedProcessHandleStateFixture(handle);
 
   const [focus] = summarizeProcessWorkerLogFocus(handle, threadWorkerStates);
   expect(focus?.lastStatus).toBe("status:0x1234@3:pc=0x2:ra=0x0:sp=0x0:s11=0x0:process_thread_count=0");
@@ -58,11 +60,12 @@ test("summarizeProcessWorkerLogFocus finds the last credible state outside the s
   const handle = {
     workers: new Set([worker]),
     runningWorker: null,
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     workerDebugLog,
     kernel: {},
   } as never;
+  seedProcessHandleStateFixture(handle);
 
   const [focus] = summarizeProcessWorkerLogFocus(handle, threadWorkerStates);
   expect(focus?.lastStatus).toBe("status:0x1234@3:pc=0x2:ra=0x0:sp=0x0:s11=0x0:process_thread_count=0");

@@ -21,6 +21,7 @@ import {
   OFF_INODE_COUNT,
   readInodeRecord,
 } from "./fs/sab-page-cache.js";
+import { supervisorResidentPageTableAuthority } from "./fs/supervisor-page-table.js";
 import {
   FS_EFFECT_MEMFS_FILE_DATA,
   FS_EFFECT_MEMFS_MUTATION,
@@ -194,7 +195,7 @@ const {
   canonicalizeChildPid,
   initializeProcessLifecycle,
   recordChildExit,
-  resumeBlockedSyscall,
+  rollbackVforkExecveHandoff,
   resumeConnect,
   resumeVforkExecveParent,
   resumeVforkParent,
@@ -456,11 +457,11 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
   recordChildExit,
   resumeConnect,
   resumeWait4,
-  resumeBlockedSyscall,
   resumeVforkParent,
   canonicalizeChildPid,
   initializeProcessLifecycle,
   resumeVforkExecveParent,
+  rollbackVforkExecveHandoff,
   syncProcessLifecycle,
   syncProcessMemfs,
   syncPipeState,
@@ -505,7 +506,12 @@ const handleKernelWorkerMessage = createKernelWorkerMessageHandler({
     if (ino === 0) {
       return null;
     }
-    const status = evictResidentPage(sabPageCache, ino, pageIndex);
+    const status = evictResidentPage(
+      sabPageCache,
+      ino,
+      pageIndex,
+      supervisorResidentPageTableAuthority(exports),
+    );
     return {
       path,
       ino,

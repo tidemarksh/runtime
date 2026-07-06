@@ -1,25 +1,59 @@
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import {
+  processHasWorker,
+} from "../../../../src/worker/process-worker-state.js";
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
+import type { KernelExports } from "../../../../src/abi.js";
 import { createWorkerStatusMessageHandler as createRawWorkerStatusMessageHandler } from "../../../../src/worker/message-handler/status/route.js";
-import { createWorkerMessageDebugStats } from "../../../../src/worker/types.js";
+import {
+  clearThreadRunningGeneration,
+  setThreadGeneration,
+  setThreadHostIdentity,
+  setThreadInitialized,
+  setThreadOwnerAsyncStatus,
+  setThreadReinitCount,
+  setThreadRunningGeneration,
+  setThreadWaitingInWorkerStatus,
+} from "../../../../src/worker/thread-host-state.js";
+import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
+import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending-pipe-slot-state.js";
+import { setProcessMemfsDirty } from "../../../../src/worker/process-memfs-state.js";
+import {
+  networkConnectionOfds,
+  networkConnections,
+  networkRecvHeadWatermarks,
+  networkRecvTailWatermarks,
+} from "../../../../src/worker/network-socket-state.js";
+import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
+import { workerMessageDebugStats } from "../../../../src/worker/worker-debug-stats.js";
+import {
+  processLastDebugMessage,
+  setProcessLastDebugMessage,
+} from "../../../../src/worker/process-debug-state.js";
+import { writeSupervisorFaultExitDecisionRecord } from "../support/supervisor-abi.js";
+import { installSupervisorBlockedResumeStub } from "../support/supervisor-blocked-resume.js";
+import { seedNetworkSocketState } from "./helpers.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 const PIPE_BUF_SIZE = 65_536;
 const PIPE_SLOT_SIZE = 32 + PIPE_BUF_SIZE;
+const SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC = 0x5645_5354;
+const SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES = 80;
+const SUPERVISOR_THREAD_EVENT_KIND_BLOCKED = 1;
 
 function withHandleDefaults<T extends Record<string, unknown>>(handle: T): T {
-  handle.networkConnections ??= new Map();
-  handle.networkConnectionOfds ??= new Map();
-  handle.networkPendingConnectFds ??= new Set();
-  handle.networkClosedFds ??= new Set();
-  handle.networkRecvHeadWatermarks ??= new Map();
-  handle.networkRecvTailWatermarks ??= new Map();
-  handle.networkRecvPayloadWatermarks ??= new Map();
-  handle.workerDebugLog ??= [];
-  handle.workerMessageDebugStats ??= createWorkerMessageDebugStats();
-  handle.vforkSnapshot ??= null;
-  handle.processMemfsDirty ??= false;
-  handle.pendingPipeSlotSnapshots ??= [];
+  seedProcessHandleStateFixture(handle);
+  networkConnections(handle);
+  workerDebugLog(handle);
+  workerMessageDebugStats(handle);
+  hostExecutionState(handle).vforkSnapshot ??= null;
   return handle;
+}
+
+function pendingPipeSlotSnapshots(handle: Record<string, unknown>) {
+  return snapshotPendingPipeSlotSnapshots(withHandleDefaults(handle) as never);
 }
 
 function createWorkerStatusMessageHandler(deps: Parameters<typeof createRawWorkerStatusMessageHandler>[0]) {
@@ -56,10 +90,51 @@ function makeKernelState() {
   };
 }
 
+function installSupervisorFaultExitDecision(
+  kernel: Record<string, unknown>,
+  options: {
+    vmPtr: number;
+    exitVmPtr: number;
+    exitCode: number;
+    termSignal: number;
+    status: number;
+    kind?: number;
+    remainingThreads?: number;
+    liveThreads?: number;
+  },
+): void {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  kernel.memory = memory;
+  kernel.kernel_heap_ptr ??= () => 0;
+  kernel.supervisor_abi_version = () => 1;
+  kernel.supervisor_fault_exit_decision_bytes = () => 88;
+  kernel.supervisor_fault_exit_decision_magic = () => 0x5846_5354;
+  kernel.supervisor_fault_exit_kind_thread_exit = () => 1;
+  kernel.supervisor_fault_exit_kind_process_exit = () => 2;
+  kernel.supervisor_fault_exit_decision = vi.fn((vmPtr: number, outPtr: number, outLen: number) => {
+    expect(vmPtr).toBe(options.vmPtr);
+    expect(outLen).toBe(88);
+    writeSupervisorFaultExitDecisionRecord(memory, outPtr, {
+      ...options,
+      processPtr: 0x5000,
+    });
+    return 88;
+  });
+}
+
 function makeThreadState(overrides: Record<string, unknown> = {}) {
-  return {
+  const {
+    generation = 1,
+    initialized = true,
+    ownerAsyncStatus,
+    ownerPid = 7,
+    reinitCount = 0,
+    runningGeneration = null,
+    waitingInWorkerStatus,
+    ...rest
+  } = overrides;
+  const thread = {
     vmPtr: 0x1234,
-    reinitCount: 0,
     stepCount: 0,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -79,17 +154,32 @@ function makeThreadState(overrides: Record<string, unknown> = {}) {
     lastStatusSp: null,
     lastStatusS11: null,
     hotStatusPcs: {},
-    initialized: true,
-    waitingInWorkerStatus: null,
-    ownerPid: 7,
-    generation: 1,
-    resumeWorkersOnReady: [],
-    ...overrides,
+    ...rest,
   };
+  Object.assign(getThreadActivityState(thread as never), rest);
+  if (typeof ownerPid === "number" && typeof generation === "number") {
+    setThreadHostIdentity(thread as never, ownerPid, generation);
+  }
+  setThreadInitialized(thread as never, initialized === true);
+  if (typeof reinitCount === "number") {
+    setThreadReinitCount(thread as never, reinitCount);
+  }
+  if (typeof runningGeneration === "number") {
+    setThreadRunningGeneration(thread as never, runningGeneration);
+  } else {
+    clearThreadRunningGeneration(thread as never);
+  }
+  if (typeof ownerAsyncStatus === "number") {
+    setThreadOwnerAsyncStatus(thread as never, ownerAsyncStatus);
+  }
+  if (typeof waitingInWorkerStatus === "number") {
+    setThreadWaitingInWorkerStatus(thread as never, waitingInWorkerStatus);
+  }
+  return thread;
 }
 
 function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
-  return {
+  const kernel = {
     abi_max_fds: () => 64,
     abi_max_pipes: () => 64,
     abi_max_threads: () => 4,
@@ -128,8 +218,72 @@ function makeKernel(pid: number, overrides: Record<string, unknown> = {}) {
     kernel_attach_runtime_state: () => {},
     kernel_net_buf_used: () => 0n,
     kernel_socket_used: () => 0,
+    thread_socket_idx_for_fd: () => -1,
+    thread_socket_peer_idx: () => -1,
+    thread_socket_state: () => 3,
+    thread_socket_external_peer: () => 1,
+    thread_socket_recv_buf_idx: () => -1,
+    thread_socket_recv_available: () => 0,
+    thread_socket_read_bytes: () => 0n,
+    thread_socket_outbound_available: () => 0,
+    supervisor_socket_ofd_is_socket(this: Record<string, unknown>, ofdId: number) {
+      const readType = this.kernel_ofd_fd_type as ((ofdId: number) => number) | undefined;
+      const socketType = this.abi_fd_type_socket as (() => number) | undefined;
+      return ofdId > 0 && readType?.(ofdId) === socketType?.() ? 1 : 0;
+    },
+    supervisor_process_socket_ofd_for_fd(this: Record<string, unknown>, vmPtr: number, fd: number) {
+      const readOfd = this.process_fd_ofd_id as ((vmPtr: number, fd: number) => number) | undefined;
+      const isSocket = this.supervisor_socket_ofd_is_socket as ((ofdId: number) => number) | undefined;
+      const ofdId = readOfd?.(vmPtr, fd) ?? 0;
+      return isSocket?.call(this, ofdId) === 1 ? ofdId : 0;
+    },
+    supervisor_process_socket_drain_fd(this: Record<string, unknown>, vmPtr: number, connectedFd: number, index: number) {
+      const maxFds = (this.abi_max_fds as (() => number) | undefined)?.() ?? 0;
+      const socketOfdForFd = this.supervisor_process_socket_ofd_for_fd as (
+        (vmPtr: number, fd: number) => number
+      ) | undefined;
+      const connectedOfd = socketOfdForFd?.call(this, vmPtr, connectedFd) ?? 0;
+      if (connectedOfd <= 0) {
+        return -1;
+      }
+      const candidates = [connectedFd];
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        if (fd !== connectedFd && socketOfdForFd?.call(this, vmPtr, fd) === connectedOfd) {
+          candidates.push(fd);
+        }
+      }
+      return candidates[index] ?? -1;
+    },
+    supervisor_fs_pipe_refresh_action_none: () => 0,
+    supervisor_fs_pipe_refresh_action_request_sync: () => 1,
+    supervisor_fs_pipe_refresh_flag_kernel_worker_available: () => 1,
+    supervisor_fs_pipe_refresh_before_resume_action: () => 0,
+    supervisor_fd_entry_restore_action_apply: () => 1,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+    supervisor_fd_entry_restore_action: () => 1,
+    supervisor_fd_entry_guest_write_action: () => 1,
+    supervisor_ofd_slot_write_action: () => 1,
+    supervisor_ofd_slot_restore_flag_referenced_by_fd_entry: () => 1,
+    supervisor_ofd_slot_restore_flag_trust_regular_file_offset: () => 2,
+    supervisor_ofd_slot_restore_action: () => 1,
+    supervisor_regular_file_offset_restore_action: () => 1,
+    supervisor_fork_shared_effect_sync_action: (
+      hasEffect: number,
+      hasTrackedState: number,
+      sourceHoldsRegularFile: number,
+      regularFileHasPeer: number,
+    ) => (
+      hasEffect !== 0
+        && hasTrackedState !== 0
+        && (sourceHoldsRegularFile === 0 || regularFileHasPeer !== 0)
+        ? 1
+        : 0
+    ),
     ...overrides,
-  };
+  } as Partial<KernelExports> & Record<string, unknown>;
+  return installSupervisorBlockedResumeStub(kernel);
 }
 
 test("status handler logs futex resume with compact debug fields", () => {
@@ -140,7 +294,7 @@ test("status handler logs futex resume with compact debug fields", () => {
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   const thread = makeThreadState({
     waitingInWorkerStatus: 20,
-    runningGeneration: undefined,
+    runningGeneration: 1,
     lastStepAtMs: 100,
   });
   threadWorkerStates.set(worker, thread);
@@ -152,7 +306,7 @@ test("status handler logs futex resume with compact debug fields", () => {
     clearBlockedWorker,
     enqueueWorker,
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -198,11 +352,10 @@ test("status handler logs futex resume with compact debug fields", () => {
         stderrPipe: 0,
         refCount: 1,
       },
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
-      readyWorkers: [],
-      blockedWorkers: new Map(),
+      vforkReadyWorkers: [],
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -219,6 +372,7 @@ test("status handler logs futex resume with compact debug fields", () => {
     worker,
     {
       type: "status",
+      generation: 1,
       status: 0,
       vmPtr: 0x1234,
       exitCode: 0,
@@ -252,9 +406,9 @@ test("status handler logs futex resume with compact debug fields", () => {
   dateNow.mockRestore();
 
   expect(clearBlockedWorker).toHaveBeenCalledWith(expect.anything(), worker);
-  expect(thread.lastStepDurationMs).toBe(25);
-  expect(thread.totalStepWallMs).toBe(25);
-  expect(thread.maxStepWallMs).toBe(25);
+  expect(getThreadActivityState(thread as never).lastStepDurationMs).toBe(25);
+  expect(getThreadActivityState(thread as never).totalStepWallMs).toBe(25);
+  expect(getThreadActivityState(thread as never).maxStepWallMs).toBe(25);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     expect.anything(),
     "resume:0x1234@20->0:"
@@ -297,7 +451,7 @@ test("status handler preserves FS ring snapshots during transient process owner 
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -346,8 +500,8 @@ test("status handler preserves FS ring snapshots during transient process owner 
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -400,7 +554,7 @@ test("status handler preserves FS ring snapshots while owner async status is pen
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -449,8 +603,8 @@ test("status handler preserves FS ring snapshots while owner async status is pen
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -501,7 +655,7 @@ test("status handler does not roll back dirty memfs from fault snapshots", () =>
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -550,8 +704,8 @@ test("status handler does not roll back dirty memfs from fault snapshots", () =>
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -570,8 +724,8 @@ test("status handler does not roll back dirty memfs from fault snapshots", () =>
     },
     onStdout: null,
     runningWorker: worker,
-    processMemfsDirty: true,
   } as never;
+  setProcessMemfsDirty(handle, true);
 
   handler(handle, worker, {
     type: "status",
@@ -631,8 +785,8 @@ test("status handler preserves network recv buffers while owner async status is 
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -653,16 +807,13 @@ test("status handler preserves network recv buffers while owner async status is 
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -670,7 +821,7 @@ test("status handler preserves network recv buffers while owner async status is 
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -730,7 +881,6 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
 
   const handle = {
     pid: 7,
-    lastDebugMessage: "pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2",
     stdoutPipe: 0,
     stderrPipe: 0,
     stdinPipe: 0,
@@ -744,8 +894,8 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker, sibling]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -761,6 +911,14 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     onStdout: null,
     runningWorker: worker,
   } as never;
+  setProcessLastDebugMessage(handle, "pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
+  installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
+    vmPtr: 0x1234,
+    exitVmPtr: 0x1234,
+    exitCode: 139,
+    termSignal: 11,
+    status: 3,
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -768,7 +926,7 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -817,10 +975,131 @@ test("status handler keeps faulting worker tracked until completeProcessExit run
   );
 
   expect(completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x1234);
-  expect(handle.workers.has(worker)).toBe(true);
+  expect(processHasWorker(handle, worker)).toBe(true);
   expect(threadWorkerStates.get(worker)?.vmPtr).toBe(0x1234);
-  expect(handle.lastDebugMessage).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
+  expect(processLastDebugMessage(handle)).toBe("pc=0x67c5be sp=0x197d120 s11=0x1 process_thread_count=2");
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(handle, "status_debug:0x1234:pc=0x4 process_thread_count=0");
+});
+
+test("status handler uses supervisor thread-exit decision when adopting current status for stale fault", () => {
+  const appendWorkerDebugLog = vi.fn();
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const enqueueWorker = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
+  const completeProcessExit = vi.fn(async () => {});
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
+  threadWorkerStates.set(worker, makeThreadState());
+
+  const handle = {
+    pid: 7,
+    runtimeId: 1,
+    stdoutPipe: 0,
+    stderrPipe: 0,
+    stdinPipe: 0,
+    stdinQueue: [],
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+      refCount: 1,
+    },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    outputBacklog: [],
+    workers: new Set([worker]),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(12),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernel: makeKernel(7, {
+      abi_status_clone_spawn: () => 9,
+      thread_status: () => 0,
+    }),
+    kernelState: makeKernelState(),
+    onStdout: null,
+    runningWorker: worker,
+  } as never;
+  installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
+    kind: 1,
+    vmPtr: 0x1234,
+    exitVmPtr: 0x1234,
+    exitCode: 0,
+    termSignal: 0,
+    status: 3,
+    remainingThreads: 2,
+    liveThreads: 1,
+  });
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent,
+    appendWorkerDebugLog,
+    clearBlockedWorker: () => {},
+    enqueueWorker,
+    pumpProcess: () => {},
+    notifyWorkerStatusProgress,
+    failProcess: () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit,
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  handler(
+    handle,
+    worker,
+    {
+      type: "status",
+      status: 3,
+      vmPtr: 0x1234,
+      exitCode: 139,
+      termSignal: 11,
+      pc: 0n,
+      kernelState: makeKernelState(),
+      debug: "pc=0x4 process_thread_count=2",
+    },
+  );
+
+  expect(completeProcessExit).not.toHaveBeenCalled();
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    1,
+    "status-stale-fault-current:7:0x1234:3->0",
+  );
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "status-stale-fault-current:0x1234:3->0",
+  );
 });
 
 test("status handler leaves blocked fork-shared sync to blocked-status handling", async () => {
@@ -853,11 +1132,10 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
-    forkSharedSyncPromise: null,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -880,7 +1158,7 @@ test("status handler leaves blocked fork-shared sync to blocked-status handling"
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess,
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -978,11 +1256,10 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker, readyWorker]),
-    readyWorkers: [readyWorker],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [readyWorker],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set([3]) },
-    forkSharedSyncPromise: null,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -1003,7 +1280,7 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess,
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync,
     requestEpollStateSync: async () => {},
@@ -1095,11 +1372,10 @@ test("status handler skips explicit fork-shared effects when no peer exists", as
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: vi.fn(async () => ({ type: "noop" })),
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
-    forkSharedSyncPromise: null,
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(12),
       stateSab: new SharedArrayBuffer(176),
@@ -1118,7 +1394,7 @@ test("status handler skips explicit fork-shared effects when no peer exists", as
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -1177,6 +1453,8 @@ test("status handler skips explicit fork-shared effects when no peer exists", as
 
 test("status handler logs quoted write debug fields before wait handling", () => {
   const appendWorkerDebugLog = vi.fn();
+  const supervisorSubmitThreadEvent = vi.fn(() => 0);
+  const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   threadWorkerStates.set(worker, makeThreadState());
@@ -1187,7 +1465,7 @@ test("status handler logs quoted write debug fields before wait handling", () =>
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -1233,19 +1511,29 @@ test("status handler logs quoted write debug fields before wait handling", () =>
         stderrPipe: 0,
         refCount: 1,
       },
-      memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
-      readyWorkers: [],
-      blockedWorkers: new Map(),
+      vforkReadyWorkers: [],
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
         notifySab: new SharedArrayBuffer(12),
         stateSab: new SharedArrayBuffer(176),
       },
+      memory,
       kernel: makeKernel(7, {
+        abi_status_futex_wait: () => 28,
         abi_status_clone_spawn: () => 9,
+        abi_status_jit_ready: () => 27,
+        kernel_heap_ptr: () => 0,
+        memory,
+        supervisor_abi_version: () => 1,
+        supervisor_submit_thread_event: supervisorSubmitThreadEvent,
+        supervisor_thread_event_record_bytes: () => SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+        supervisor_thread_event_record_magic: () => SUPERVISOR_SHADOW_THREAD_EVENT_MAGIC,
+        supervisor_thread_event_kind_blocked: () => SUPERVISOR_THREAD_EVENT_KIND_BLOCKED,
+        thread_tid: () => 11,
       }),
       kernelState: makeKernelState(),
       onStdout: null,
@@ -1289,6 +1577,15 @@ test("status handler logs quoted write debug fields before wait handling", () =>
     expect.anything(),
     "write:0x1234:pc=0x4d650:gp=0x11dab8:tp=0x11eff0:write_fd=2:write_count=31:write_result=31:write_data=\"fatal: bad g in signal handler\\\\n\"",
   );
+  expect(supervisorSubmitThreadEvent).toHaveBeenCalledWith(
+    expect.any(Number),
+    SUPERVISOR_SHADOW_THREAD_EVENT_RECORD_BYTES,
+  );
+  const [recordPtr, recordLen] = supervisorSubmitThreadEvent.mock.calls[0]!;
+  const view = new DataView(memory.buffer, recordPtr, recordLen);
+  expect(view.getUint32(12, true)).toBe(SUPERVISOR_THREAD_EVENT_KIND_BLOCKED);
+  expect(view.getUint32(36, true)).toBe(11);
+  expect(view.getUint32(40, true)).toBe(20);
 });
 
 test("status handler dispatches execve_spawn into the ownership handoff path", () => {
@@ -1305,7 +1602,7 @@ test("status handler dispatches execve_spawn into the ownership handoff path", (
     clearBlockedWorker,
     enqueueWorker: vi.fn(),
     pumpProcess: vi.fn(),
-    kickBlockedWorkers: vi.fn(),
+    notifyWorkerStatusProgress: vi.fn(),
     failProcess: vi.fn(),
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -1354,8 +1651,8 @@ test("status handler dispatches execve_spawn into the ownership handoff path", (
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -1394,7 +1691,7 @@ test("status handler dispatches execve_spawn into the ownership handoff path", (
   expect(clearBlockedWorker).toHaveBeenCalledWith(handle, worker);
   expect(handleExecveSpawn).toHaveBeenCalledTimes(1);
   expect(handleExecveSpawn).toHaveBeenCalledWith(handle, worker, expect.objectContaining({ vmPtr: 0x1234 }));
-  expect((threadWorkerStates.get(worker) as { execveProcessState?: Uint8Array }).execveProcessState).toBe(execveProcessState);
+  expect(getThreadExecveProcessState(threadWorkerStates.get(worker) as never)).toBe(execveProcessState);
 });
 
 test("status handler keeps full debug for zeroed OK state", () => {
@@ -1420,7 +1717,7 @@ test("status handler keeps full debug for zeroed OK state", () => {
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -1469,8 +1766,8 @@ test("status handler keeps full debug for zeroed OK state", () => {
       memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
-      readyWorkers: [],
-      blockedWorkers: new Map(),
+      vforkReadyWorkers: [],
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1542,7 +1839,7 @@ test("status handler preserves the browser go ownership failure signature", () =
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -1591,8 +1888,8 @@ test("status handler preserves the browser go ownership failure signature", () =
       memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
-      readyWorkers: [],
-      blockedWorkers: new Map(),
+      vforkReadyWorkers: [],
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: undefined,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1648,7 +1945,7 @@ test("status handler defers local pipe drain when kernel-worker owns pipe state"
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync,
     requestEpollStateSync: async () => {},
@@ -1712,8 +2009,8 @@ test("status handler defers local pipe drain when kernel-worker owns pipe state"
       memory,
       outputBacklog: [],
       workers: new Set([worker]),
-      readyWorkers: [],
-      blockedWorkers: new Map(),
+      vforkReadyWorkers: [],
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1764,7 +2061,7 @@ test("status handler treats zero OK sync effects as explicit no-op", async () =>
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync,
     requestEpollStateSync: async () => {},
@@ -1813,8 +2110,8 @@ test("status handler treats zero OK sync effects as explicit no-op", async () =>
       memory: new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true }),
       outputBacklog: [],
       workers: new Set([worker]),
-      readyWorkers: [],
-      blockedWorkers: new Map(),
+      vforkReadyWorkers: [],
+      hostBlockedWorkers: new Map(),
       kernelWorkerRequest: async () => ({ type: "unexpected" }) as never,
       kernelShare: { members: new Set(), sharedOfdIds: new Set() },
       runtimeBridge: {
@@ -1857,12 +2154,12 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   threadWorkerStates.set(worker, thread);
   const enqueueWorker = vi.fn();
   const clearBlockedWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
     clearBlockedWorker,
     enqueueWorker,
-    kickBlockedWorkers,
+    notifyWorkerStatusProgress,
     blockWorker: () => {},
     appendWorkerDebugLog: () => {},
     failProcess: (handle, error) => { throw error; },
@@ -1910,26 +2207,25 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     pid: 7,
     memory,
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     stdinQueue: [],
     outputBacklog: [],
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: { notifySab: new SharedArrayBuffer(12), stateSab: new SharedArrayBuffer(176) },
     kernel: makeKernel(7, {
+      memory,
       abi_max_pipes: () => 64,
+      kernel_pipe_base: () => kernelState.pipeBase,
       kernel_pipe_region_bytes: () => 64 * PIPE_SLOT_SIZE,
       kernel_attach_runtime_state: vi.fn(),
     }),
     kernelState,
     runningWorker: worker,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
   };
 
-  thread.generation = 1;
+  setThreadGeneration(thread as never, 1);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -1948,7 +2244,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   const applied = new Uint8Array(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
   const appliedView = new DataView(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
   expect(applied[32]).toBe(0x7a);
-  expect(withHandleDefaults(handle).pendingPipeSlotSnapshots).toHaveLength(1);
+  expect(pendingPipeSlotSnapshots(handle)).toHaveLength(1);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 
   appliedView.setUint32(0, 9, true);
@@ -1964,7 +2260,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   staleReaderView.setInt32(12, 1, true);
   staleReaderSlot[32] = 0x99;
 
-  thread.generation = 2;
+  setThreadGeneration(thread as never, 2);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -1984,7 +2280,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(appliedView.getUint32(4, true)).toBe(9);
   expect(applied[32]).toBe(0x7a);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[1].slot.buffer, pending[1].slot.byteOffset, pending[1].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(9);
@@ -2001,7 +2297,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   writerSlot[32 + 9] = 0xab;
   applied[32 + 1] = 0x7b;
 
-  thread.generation = 3;
+  setThreadGeneration(thread as never, 3);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2022,7 +2318,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(applied[32 + 1]).toBe(0x7b);
   expect(applied[32 + 9]).toBe(0xab);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[2].slot.buffer, pending[2].slot.byteOffset, pending[2].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(12);
@@ -2037,7 +2333,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   staleDrainedReaderView.setInt32(8, 1, true);
   staleDrainedReaderView.setInt32(12, 1, true);
 
-  thread.generation = 4;
+  setThreadGeneration(thread as never, 4);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2057,7 +2353,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(appliedView.getUint32(4, true)).toBe(12);
   expect(applied[32 + 9]).toBe(0xab);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[3].slot.buffer, pending[3].slot.byteOffset, pending[3].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(9);
     expect(pendingView.getUint32(4, true)).toBe(12);
@@ -2074,7 +2370,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   appliedView.setUint32(0, 0, true);
   appliedView.setUint32(4, 0, true);
 
-  thread.generation = 5;
+  setThreadGeneration(thread as never, 5);
   handler(handle, worker, {
     type: "status",
     status: 0,
@@ -2093,7 +2389,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
   expect(appliedView.getUint32(0, true)).toBe(20);
   expect(appliedView.getUint32(4, true)).toBe(20);
   {
-    const pending = withHandleDefaults(handle).pendingPipeSlotSnapshots;
+    const pending = pendingPipeSlotSnapshots(handle);
     const pendingView = new DataView(pending[4].slot.buffer, pending[4].slot.byteOffset, pending[4].slot.byteLength);
     expect(pendingView.getUint32(0, true)).toBe(20);
     expect(pendingView.getUint32(4, true)).toBe(20);
@@ -2111,7 +2407,7 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
 
   const appendWorkerDebugLog = vi.fn();
   const enqueueWorker = vi.fn();
-  const kickBlockedWorkers = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
   const initialKernelState = makeKernelState();
   const incomingKernelState = {
     ...makeKernelState(),
@@ -2129,7 +2425,7 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
     clearBlockedWorker: () => {},
     enqueueWorker,
     pumpProcess: () => {},
-    kickBlockedWorkers,
+    notifyWorkerStatusProgress,
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -2177,8 +2473,8 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2256,7 +2552,7 @@ test("status handler adopts kernel state for transient pid mismatch while the ac
     handle.kernelState.timeStatePtr,
     handle.kernelState.signalfdStatePtr ?? 0,
   );
-  expect(kickBlockedWorkers).toHaveBeenCalledWith(handle);
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
@@ -2293,7 +2589,7 @@ test("status handler does not adopt child fault state while resuming an active v
     clearBlockedWorker,
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -2341,8 +2637,8 @@ test("status handler does not adopt child fault state while resuming an active v
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2374,6 +2670,13 @@ test("status handler does not adopt child fault state while resuming an active v
     },
     vforkWorker: worker,
   } as never;
+  installSupervisorFaultExitDecision((handle as { kernel: Record<string, unknown> }).kernel, {
+    vmPtr: 0x1234,
+    exitVmPtr: 0x1234,
+    exitCode: 12,
+    termSignal: 0,
+    status: 3,
+  });
 
   handler(
     handle,
@@ -2436,8 +2739,8 @@ test("status handler preserves host-injected network recv buffer when applying t
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2461,16 +2764,13 @@ test("status handler preserves host-injected network recv buffer when applying t
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2478,7 +2778,7 @@ test("status handler preserves host-injected network recv buffer when applying t
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -2581,8 +2881,8 @@ test("status handler keeps newer thread recv payload when producer tail is not a
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2606,16 +2906,13 @@ test("status handler keeps newer thread recv payload when producer tail is not a
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2623,7 +2920,7 @@ test("status handler keeps newer thread recv payload when producer tail is not a
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -2729,8 +3026,8 @@ test("status handler preserves host recv payload when producer tail wraps", () =
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2755,16 +3052,13 @@ test("status handler preserves host recv payload when producer tail wraps", () =
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[7, {
+  } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[7, {
       read: () => undefined,
       write: () => {},
-    }]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
-    networkRecvPayloadWatermarks: new Map([[7, {
+    }]],
+    recvPayloadWatermarks: [[7, {
       recvBufIdx,
       head: staleTail,
       tail: wrappedTail,
@@ -2773,8 +3067,8 @@ test("status handler preserves host recv payload when producer tail wraps", () =
       availableBytes,
       deliveredBytes: staleTail + availableBytes,
       data: bytes.slice(recvBufBase + 16, recvBufBase + netBufferBytes),
-    }]]),
-  } as never;
+    }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2782,7 +3076,7 @@ test("status handler preserves host recv payload when producer tail wraps", () =
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -2885,8 +3179,8 @@ test("status handler preserves closed network socket recv head when fd no longer
     memory,
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -2910,13 +3204,10 @@ test("status handler preserves closed network socket recv head when fd no longer
     },
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map(),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map([[7, { offset: 0, data: closedSlot }]]),
-    networkRecvHeadWatermarks: new Map(),
-    networkRecvTailWatermarks: new Map(),
   } as never;
+  seedNetworkSocketState(handle, {
+    closedSocketSlots: [[7, { offset: 0, data: closedSlot }]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -2924,7 +3215,7 @@ test("status handler preserves closed network socket recv head when fd no longer
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -2986,7 +3277,7 @@ test("status handler preserves closed network socket recv head when fd no longer
   expect(handle.kernelState.netBufUsed).toBe(0b10n);
 });
 
-test("status handler closes stale network bridge when fd snapshot drops the socket fd", () => {
+test("status handler closes stale network bridge when supervisor reports no active fd", () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   threadWorkerStates.set(worker, makeThreadState());
@@ -2998,6 +3289,7 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
   ]);
   const close = vi.fn(async () => {});
   const appendWorkerDebugLog = vi.fn();
+  const supervisorSocketBridgeActiveFd = vi.fn(() => -2);
   const handle = {
     pid: 4,
     stdoutPipe: 0,
@@ -3013,8 +3305,8 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
     memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     outputBacklog: [],
     workers: new Set([worker]),
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     kernelWorkerRequest: undefined,
     kernelShare: { members: new Set(), sharedOfdIds: new Set() },
     runtimeBridge: {
@@ -3034,18 +3326,18 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 ? 8 : 0,
       kernel_ofd_ino: () => 0,
       kernel_ofd_host_fd: () => -1,
+      supervisor_socket_bridge_active_fd: supervisorSocketBridgeActiveFd,
     }),
     kernelState: makeKernelState(),
     onStdout: null,
     runningWorker: worker,
-    networkConnections: new Map([[3, { close, read: () => undefined, write: () => {} }]]),
-    networkConnectionOfds: new Map([[3, 11]]),
-    networkPendingConnectFds: new Set(),
-    networkClosedFds: new Set(),
-    networkClosedSocketSlots: new Map(),
-    networkRecvHeadWatermarks: new Map([[3, 4096]]),
-    networkRecvTailWatermarks: new Map([[3, 8192]]),
   } as never;
+  seedNetworkSocketState(handle, {
+    connections: [[3, { close, read: () => undefined, write: () => {} }]],
+    connectionOfds: [[3, 11]],
+    recvHeadWatermarks: [[3, 4096]],
+    recvTailWatermarks: [[3, 8192]],
+  });
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -3053,7 +3345,7 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
     clearBlockedWorker: () => {},
     enqueueWorker: () => {},
     pumpProcess: () => {},
-    kickBlockedWorkers: () => {},
+    notifyWorkerStatusProgress: () => {},
     failProcess: () => {},
     requestPipeStateSync: async () => {},
     requestEpollStateSync: async () => {},
@@ -3109,11 +3401,12 @@ test("status handler closes stale network bridge when fd snapshot drops the sock
     },
   );
 
-  expect(handle.networkConnections.has(3)).toBe(false);
-  expect(handle.networkConnectionOfds.has(3)).toBe(false);
-  expect(handle.networkRecvHeadWatermarks.has(3)).toBe(false);
-  expect(handle.networkRecvTailWatermarks.has(3)).toBe(false);
+  expect(networkConnections(handle).has(3)).toBe(false);
+  expect(networkConnectionOfds(handle).has(3)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle).has(3)).toBe(false);
+  expect(networkRecvTailWatermarks(handle).has(3)).toBe(false);
   expect(close).toHaveBeenCalledTimes(1);
+  expect(supervisorSocketBridgeActiveFd).toHaveBeenCalledWith(0x1234, 3, 11, 0);
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "net-status-close:4:fd=3:ofd=11->0",

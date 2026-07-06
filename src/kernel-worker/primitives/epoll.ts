@@ -1,16 +1,35 @@
-import type { KernelExports, KernelRuntimeState } from "../../abi.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdIno,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../../abi.js";
 import { copyMemoryRange } from "../common.js";
 import { collectProcessHeldOfdRefcounts } from "./ofd.js";
 
 export function createKernelWorkerEpollPrimitives() {
   function collectProcessHeldEpollOfdIds(processExports: KernelExports, vmPtr: number): number[] {
     const maxFds = processExports.abi_max_fds();
+    const supervisorHeldEpollOfd = processExports.supervisor_process_epoll_held_ofd;
+    if (supervisorHeldEpollOfd) {
+      const epollOfdIds: number[] = [];
+      for (let index = 0; index < maxFds; index += 1) {
+        const ofdId = supervisorHeldEpollOfd.call(processExports, vmPtr, index);
+        if (ofdId === 0) {
+          break;
+        }
+        if (ofdId > 0 && ofdId < maxFds) {
+          epollOfdIds.push(ofdId);
+        }
+      }
+      return epollOfdIds;
+    }
     const epollType = processExports.abi_fd_type_epoll();
     const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
     const epollOfdIds: number[] = [];
 
     for (let ofdId = 1; ofdId < maxFds; ofdId += 1) {
-      if (heldRefcounts[ofdId] <= 0 || processExports.kernel_ofd_fd_type(ofdId) !== epollType) {
+      if (heldRefcounts[ofdId] <= 0 || supervisorOfdFdType(processExports, ofdId) !== epollType) {
         continue;
       }
       epollOfdIds.push(ofdId);
@@ -39,12 +58,12 @@ export function createKernelWorkerEpollPrimitives() {
       if (
         ofdId <= 0
         || ofdId >= maxFds
-        || sourceExports.kernel_ofd_fd_type(ofdId) !== epollType
+        || supervisorOfdFdType(sourceExports, ofdId) !== epollType
       ) {
         continue;
       }
 
-      const epollIdx = sourceExports.kernel_ofd_ino(ofdId);
+      const epollIdx = supervisorOfdIno(sourceExports, ofdId);
       if (epollIdx < 0 || epollIdx >= tableEntries || copiedSlots.has(epollIdx)) {
         continue;
       }

@@ -27,11 +27,22 @@ function makeHandle(options: {
     vmPtr,
     kernel: {
       process_current_pid: (candidateVmPtr: number) => candidateVmPtr === vmPtr ? ownerPid : 0,
+      supervisor_process_owner_matches: (candidateVmPtr: number, runtimePid: number) =>
+        candidateVmPtr === vmPtr && ownerPid === runtimePid ? 1 : 0,
       thread_process_ptr: (candidateVmPtr: number) => candidateVmPtr === vmPtr ? processPtr : 0,
       abi_max_fds: () => 8,
       abi_o_cloexec: () => 0x80000,
       process_fd_ofd_id: (_candidateVmPtr: number, fd: number) => fds.get(fd)?.ofdId ?? 0,
       process_fd_flags: (_candidateVmPtr: number, fd: number) => fds.get(fd)?.flags ?? 0,
+      supervisor_process_ofd_for_fd(this: ProcessHandle["kernel"], candidateVmPtr: number, fd: number) {
+        const ofdId = this.process_fd_ofd_id(candidateVmPtr, fd);
+        return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+      },
+      supervisor_process_fd_flags_for_fd(this: ProcessHandle["kernel"], candidateVmPtr: number, fd: number) {
+        return fd >= 0 && fd < this.abi_max_fds()
+          ? this.process_fd_flags(candidateVmPtr, fd)
+          : 0;
+      },
       kernel_ofd_fd_type: (ofdId: number) => {
         for (const entry of fds.values()) {
           if (entry.ofdId === ofdId) {

@@ -1,5 +1,12 @@
 import { expect, test, vi } from "vite-plus/test";
 import { Process } from "../../../src/index.js";
+import {
+  guestWriteWatchRegions,
+  setGuestWriteWatchRegions,
+} from "../../../src/worker/guest-write-watch-state.js";
+import { processOnStdout } from "../../../src/worker/process-callback-state.js";
+import { setProcessDebugCommand } from "../../../src/worker/process-debug-state.js";
+import { outputBacklog } from "../../../src/worker/stdio-buffer-state.js";
 import type { ProcessHandle } from "../../../src/worker/types.js";
 
 function makeHandle(): ProcessHandle {
@@ -50,29 +57,19 @@ function makeHandle(): ProcessHandle {
     },
     stdinQueue: [],
     outputBacklog: [],
-    debugCommand: "process-api",
     runtimeBridge: {} as ProcessHandle["runtimeBridge"],
     sabPageCache: null,
     workers: new Set(),
-    readyWorkers: [],
+    vforkReadyWorkers: [],
     runningWorker: null,
-    blockedWorkers: new Map(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    pipeWaiterWakeQueued: false,
-    epollSyncPromise: null,
-    epollSyncQueued: false,
-    epollWaiterWakeQueued: false,
+    hostBlockedWorkers: new Map(),
     ofdSyncPromise: null,
     ofdSyncQueuedIds: new Set(),
-    socketSyncPromise: null,
-    socketSyncQueued: false,
-    socketWaiterWakeQueued: false,
     vforkSnapshot: null,
     vforkWorker: null,
     workerDebugLog: [],
-    guestWriteWatchRegions: [],
   } as unknown as ProcessHandle;
+  setProcessDebugCommand(handle, "process-api");
   handle.kernelShare.members.add(handle);
   return handle;
 }
@@ -81,22 +78,22 @@ test("Process.onStdout flushes queued backlog before delivering later bytes", ()
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const handle = makeHandle();
-  handle.outputBacklog.push(encoder.encode("stdout-1\n"));
-  handle.outputBacklog.push(encoder.encode("stderr-1\n"));
+  outputBacklog(handle).push(encoder.encode("stdout-1\n"));
+  outputBacklog(handle).push(encoder.encode("stderr-1\n"));
   const proc = new Process(handle.pid, handle);
   const seen: string[] = [];
 
   proc.onStdout((data) => {
     seen.push(decoder.decode(data));
   });
-  handle.onStdout?.(encoder.encode("stdout-2\n"));
+  processOnStdout(handle)?.(encoder.encode("stdout-2\n"));
 
   expect(seen).toEqual([
     "stdout-1\n",
     "stderr-1\n",
     "stdout-2\n",
   ]);
-  expect(handle.outputBacklog).toEqual([]);
+  expect(outputBacklog(handle)).toEqual([]);
 });
 
 test("Process guest write watch coerces numeric regions to kernel u64 arguments", () => {
@@ -113,7 +110,7 @@ test("Process guest write watch coerces numeric regions to kernel u64 arguments"
     },
   ]);
 
-  expect(handle.guestWriteWatchRegions).toEqual([
+  expect(guestWriteWatchRegions(handle)).toEqual([
     {
       slot: 1,
       start: 0x3008d0,
@@ -128,10 +125,10 @@ test("Process clearGuestWriteWatch clears stored regions and kernel trace state"
   const handle = makeHandle();
   const clearTrace = (handle.kernel.debug_clear_guest_write_watch_trace = vi.fn());
   const proc = new Process(handle.pid, handle);
-  handle.guestWriteWatchRegions = [{ slot: 0, start: 0x1000, end: 0x1010 }];
+  setGuestWriteWatchRegions(handle, [{ slot: 0, start: 0x1000, end: 0x1010 }]);
 
   proc.clearGuestWriteWatch();
 
-  expect(handle.guestWriteWatchRegions).toEqual([]);
+  expect(guestWriteWatchRegions(handle)).toEqual([]);
   expect(clearTrace).toHaveBeenCalledTimes(1);
 });

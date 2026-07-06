@@ -19,6 +19,11 @@ import {
   snapshotEntriesEqual,
   snapshotProcessFs,
 } from "./process-fs.js";
+import { processMemoryOwnership } from "./memory-ownership-state.js";
+import {
+  processDebugCommand,
+  processLastDebugMessage,
+} from "./process-debug-state.js";
 import {
   kernelShareOtherMembers,
   kernelShareRepresentative,
@@ -116,7 +121,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function captureFailureMemorySnapshot(handle: ProcessHandle): RuntimeFailureSnapshot["memory"] {
-    const ownership = handle.memoryOwnership;
+    const ownership = processMemoryOwnership(handle);
     const memoryBytes = handle.memory.buffer.byteLength;
     return {
       memoryBytes,
@@ -144,17 +149,18 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     termSignal: number,
   ): void {
     const memorySyscalls = captureMemorySyscallTrace(handle);
+    const lastDebugMessage = processLastDebugMessage(handle);
     runtimeFailureSnapshots.set(handle.runtimeId, {
       pid: handle.pid,
-      cmd: handle.debugCommand,
+      cmd: processDebugCommand(handle),
       exitCode,
       termSignal,
-      debug: handle.lastDebugMessage ?? debugRuntimeProcessHandles(handle.runtimeId),
+      debug: lastDebugMessage ?? debugRuntimeProcessHandles(handle.runtimeId),
       memory: captureFailureMemorySnapshot(handle),
       memorySyscalls,
       workerFocus: [{
         pid: handle.pid,
-        cmd: handle.debugCommand,
+        cmd: processDebugCommand(handle),
         workers: summarizeProcessWorkerLogFocusImpl(handle, threadWorkerStates),
       }],
     });
@@ -184,7 +190,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
   }
 
   function captureMemorySyscallTrace(handle: ProcessHandle): string[] {
-    const debugValues = extractDebugFieldValues(handle.lastDebugMessage, "memory_syscalls");
+    const debugValues = extractDebugFieldValues(processLastDebugMessage(handle), "memory_syscalls");
     if (debugValues.length > 0) {
       return debugValues.at(-1)?.split(",").filter((entry) => entry.length > 0) ?? [];
     }
@@ -265,8 +271,8 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
         pid: -1,
         cmd: `unavailable:${error instanceof Error ? error.message : String(error)}`,
         running: false,
-        readyWorkers: 0,
-        blockedWorkers: 0,
+        vforkReadyWorkers: 0,
+        hostBlockedWorkers: 0,
         workers: [],
       }];
     }

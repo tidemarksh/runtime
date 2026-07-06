@@ -2,6 +2,18 @@ import { expect, test, vi } from "vite-plus/test";
 import type { KernelExports } from "../../../../src/abi.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { debugRuntimeProcessHandles, formatAllLiveThreadDebug } from "../../../../src/worker/diagnostics/debug.js";
+import {
+  setProcessDebugCommand,
+  setProcessLastDebugMessage,
+} from "../../../../src/worker/process-debug-state.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
+import {
+  setThreadHostIdentity,
+  setThreadInitialized,
+  setThreadReinitCount,
+  setThreadRunningGeneration,
+} from "../../../../src/worker/thread-host-state.js";
+import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
 function makeDiagnosticsKernel(overrides: Partial<KernelExports> = {}): KernelExports {
   return new Proxy(overrides, {
@@ -51,7 +63,6 @@ test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatti
   const handle = {
     pid: 1,
     runtimeId: 7,
-    debugCommand: "/jdk/bin/java -version",
     vmPtr: 0x1234,
     workerDebugLog: [],
     kernel: {
@@ -74,6 +85,7 @@ test("debugRuntimeProcessHandles keeps riscv syscall trace when process formatti
       debug_riscv_syscall_trace_entry_status: (index: number) => [0, 3][index] ?? 0,
     },
   } as never;
+  setProcessDebugCommand(handle, "/jdk/bin/java -version");
 
   const snapshot = debugRuntimeProcessHandles(
     7,
@@ -94,10 +106,6 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
   const worker = {} as Worker;
   const thread: ThreadWorkerState = {
     vmPtr: 0x2000,
-    ownerPid: 1,
-    generation: 3,
-    runningGeneration: 3,
-    reinitCount: 0,
     stepCount: 7,
     totalStepBudget: 0,
     totalStepWallMs: 0,
@@ -116,27 +124,32 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     lastStatusPc: 0x5678n,
     lastStatusSp: null,
     lastStatusS11: null,
-    forkStackSnapshot: undefined,
-    execveProcessState: undefined,
     hotStatusPcs: {},
-    initialized: true,
     waitingInWorkerStatus: null,
     ownerAsyncStatus: null,
-    resumeBlockedOnNextStep: false,
-    pendingPipeSlotsForNextStep: [],
-    pendingGuestMemoryWrites: [],
-    resumeWorkersOnReady: [],
   };
+  Object.assign(getThreadActivityState(thread), {
+    stepCount: 7,
+    statusCount: 6,
+    lastStatus: 0,
+    lastStepAtMs: 17_500,
+    lastStatusAtMs: 16_000,
+    lastStepPc: 0x1234n,
+    lastStatusPc: 0x5678n,
+  });
+  setThreadHostIdentity(thread, 1, 3);
+  setThreadInitialized(thread, true);
+  setThreadReinitCount(thread, 0);
+  setThreadRunningGeneration(thread, 3);
   const handle = {
     pid: 1,
     runtimeId: 7,
-    debugCommand: "/usr/bin/rustc",
     parentPid: null,
     vmPtr: 0x2000,
     workers: new Set([worker]),
     runningWorker: worker,
-    readyWorkers: [],
-    blockedWorkers: new Map(),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
     workerDebugLog: [],
     runtimeBridge: {
       notifySab: new SharedArrayBuffer(16),
@@ -144,18 +157,11 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
     },
     kernelShare: {
       sharedOfdIds: new Set(),
-      forkSharedSyncPromise: null,
     },
-    networkConnections: new Map(),
-    networkClosedFds: new Set(),
-    pipeSyncPromise: null,
-    pipeSyncQueued: false,
-    forkSharedSyncPromise: null,
     vforkSnapshot: null,
     stdinPipe: 0,
     stdoutPipe: 1,
     stderrPipe: 2,
-    lastDebugMessage: null,
     kernelState: {
       netBufBase: 0,
     },
@@ -171,6 +177,9 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
       process_stderr_pipe: () => 2,
     }),
   } as ProcessHandle;
+  setProcessDebugCommand(handle, "/usr/bin/rustc");
+  setProcessLastDebugMessage(handle, null);
+  seedProcessHandleStateFixture(handle);
 
   const snapshot = debugRuntimeProcessHandles(
     7,
@@ -194,6 +203,8 @@ test("formatAllLiveThreadDebug keeps execve summary without investigation traces
     worker,
     vmPtr: 0x1234,
     workers: new Set([worker]),
+    guestBase: 0,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
     kernel: {
       thread_tid: () => 11,
       thread_pc: () => 0x2000n,
@@ -216,6 +227,7 @@ test("formatAllLiveThreadDebug keeps execve summary without investigation traces
       debug_execve_value1: () => 0x66n,
     },
   } as never;
+  seedProcessHandleStateFixture(handle);
 
   const out = formatAllLiveThreadDebug(handle, new WeakMap([[worker, { vmPtr: 0x1234 } as never]]));
 
