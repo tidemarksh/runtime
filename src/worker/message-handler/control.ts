@@ -200,6 +200,24 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
             && supervisorProcessStatusIsCloneSpawn(handle.kernel, ownerAsyncStatus)
           ) {
             clearThreadOwnerAsyncStatus(resumeThread);
+            const resumeActivity = getThreadActivityState(resumeThread);
+            const readyThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
+              sequence: resumeActivity.statusCount,
+              vmPtr: resumeThread.vmPtr,
+              pid: handle.pid,
+              tid: handle.kernel.thread_tid?.(resumeThread.vmPtr) ?? 0,
+              status: handle.kernel.abi_status_ok(),
+              syncEffects: 0,
+              blockedReason: 0,
+              pc: handle.kernel.thread_pc(resumeThread.vmPtr),
+              sp: handle.kernel.thread_sp(resumeThread.vmPtr),
+            });
+            if (readyThreadEventResult !== undefined && readyThreadEventResult < 0) {
+              deps.appendWorkerDebugLog(
+                handle,
+                `supervisor-clone-parent-ready-event:submit-error:${readyThreadEventResult}`,
+              );
+            }
           }
         }
       };

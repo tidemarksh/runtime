@@ -627,6 +627,13 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const submittedThreadEvents: Array<{
+    kind: number;
+    vmPtr: number;
+    tid: number;
+    status: number;
+  }> = [];
   const handle = {
     pid: 4,
     parentPid: 1,
@@ -652,10 +659,27 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       notifySab: new SharedArrayBuffer(16),
       stateSab: new SharedArrayBuffer(512),
     },
-    memory: new WebAssembly.Memory({ initial: 1 }),
+    memory,
     kernelState: makeKernelState(),
     kernel: makeSupervisorKernel({
       abi_status_clone_spawn: () => 25,
+      abi_status_fault: () => 3,
+      abi_status_jit_ready: () => 27,
+      memory,
+      supervisor_abi_version: () => 1,
+      supervisor_thread_event_record_magic: () => 0x5645_5354,
+      supervisor_thread_event_record_bytes: () => 80,
+      supervisor_thread_event_kind_ready: () => 2,
+      supervisor_submit_thread_event: (eventPtr: number, eventLen: number) => {
+        const view = new DataView(memory.buffer, eventPtr, eventLen);
+        submittedThreadEvents.push({
+          kind: view.getUint32(12, true),
+          vmPtr: Number(view.getBigUint64(24, true)),
+          tid: view.getUint32(36, true),
+          status: view.getUint32(40, true),
+        });
+        return 0;
+      },
       kernel_attach_runtime_state: () => {},
       kernel_heap_base: () => 0,
       kernel_heap_ptr: () => 0,
@@ -681,6 +705,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       process_current_pid: () => 4,
       thread_process_thread_count: () => 2,
       thread_process_ptr: () => 0x48000,
+      thread_tid: (vmPtr: number) => vmPtr === 0x2000 ? 2 : 1,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
     }),
@@ -700,6 +725,12 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
   expect(snapshotThreadResumeWorkersOnReady(childThread)).toEqual([]);
   expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
   expect(enqueueWorker).toHaveBeenNthCalledWith(2, handle, parentWorker);
+  expect(submittedThreadEvents).toContainEqual({
+    kind: 2,
+    vmPtr: 0x1234,
+    tid: 1,
+    status: 0,
+  });
 });
 
 test("active vfork child fault remains routed through the parent handle", () => {
