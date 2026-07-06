@@ -19,13 +19,20 @@ import {
   type SupervisorBlockedWaitWakeSource,
 } from "../../supervisor-blocked-resume.js";
 import {
+  processExitInProgress,
+} from "../process-lifecycle-state.js";
+import {
+  collectProcessHeldOfds,
   collectHeldEpollDependentSyncOfdIds,
   collectHeldEpollOfdIds,
   collectProcessSyncDependentOfdIds,
 } from "../ownership/ofd-table.js";
 import { kernelWorkerOwnsEpollState } from "../ownership/epoll-control.js";
 import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
-import { composeHandlePipeUsed } from "../ownership/pipe-control.js";
+import {
+  composeHandlePipeUsed,
+  pipeSlotHasBufferedData,
+} from "../ownership/pipe-control.js";
 import { supervisorProcessPipeSlotForFd } from "../ownership/pipe-slot.js";
 import {
   assertHandleWorkerProcessIdentity,
@@ -56,6 +63,7 @@ import {
   syncSocketStateViaKernelWorker,
   applySocketStateFromKernelWorker,
 } from "./socket-state-sync.js";
+import { hasRuntimeNetworkSocketState } from "../ownership/socket-control.js";
 import { kernelShareMemberList } from "../kernel-share.js";
 import type { SyncCause } from "../contracts/sync.js";
 import type {
@@ -386,6 +394,122 @@ export function createWorkerSchedulerStateSyncHelpers(
     return ofdSyncPromise;
   }
 
+  function kernelShareMembersIncludingSelf(handle: ProcessHandle): ProcessHandle[] {
+    const members = kernelShareMemberList(handle);
+    return members.includes(handle) ? members : [handle, ...members];
+  }
+
+  function hasPipeSyncWaiterInKernelShare(handle: ProcessHandle): boolean {
+    for (const member of kernelShareMembersIncludingSelf(handle)) {
+      const waitingWorker = processWorkerList(member).some((candidate) => {
+        const state = deps.threadWorkerStates.get(candidate);
+        const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
+        return state !== undefined
+          && waitingInWorkerStatus !== null
+          && supervisorBlockedWaitStatusMatchesWakeSource(
+            member.kernel,
+            waitingInWorkerStatus,
+            "pipe-sync",
+          );
+      });
+      if (waitingWorker) {
+        return true;
+      }
+      if (hostExecutionState(member).hostBlockedWorkers.size > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function hasBufferedHostOutput(handle: ProcessHandle): boolean {
+    const stdio = processHostStdio(handle);
+    const slots = [stdio.stdoutPipe, stdio.stderrPipe]
+      .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
+    return slots.some((slot) => pipeSlotHasBufferedData(handle, slot));
+  }
+
+  function shouldSkipEmptyExitPipeStateSync(handle: ProcessHandle): boolean {
+    if (!processExitInProgress(handle) || handle.vmPtr === 0) {
+      return false;
+    }
+    if (processStdioOwner(handle) !== null) {
+      return false;
+    }
+    if (kernelShareMemberList(handle).some((member) => member !== handle)) {
+      return false;
+    }
+    const executionState = hostExecutionState(handle);
+    if (executionState.runningWorker !== null || executionState.hostBlockedWorkers.size > 0) {
+      return false;
+    }
+    if (collectProcessHeldOfds(handle).size > 0) {
+      return false;
+    }
+    if ([0, 1, 2].some((fd) => supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd) !== 0)) {
+      return false;
+    }
+    if (hasBufferedHostOutput(handle)) {
+      return false;
+    }
+    return !hasPipeSyncWaiterInKernelShare(handle);
+  }
+
+  function stateValueIsNonZero(value: bigint | number | undefined): boolean {
+    return value !== undefined && value !== 0 && value !== 0n;
+  }
+
+  function hasSocketState(handle: ProcessHandle): boolean {
+    return handle.kernelState.socketUsed !== 0
+      || handle.kernelState.netBufUsed !== 0n
+      || stateValueIsNonZero(handle.kernel.kernel_socket_used?.())
+      || stateValueIsNonZero(handle.kernel.kernel_net_buf_used?.())
+      || hasRuntimeNetworkSocketState(handle);
+  }
+
+  function hasSocketSyncWaiterInKernelShare(handle: ProcessHandle): boolean {
+    for (const member of kernelShareMembersIncludingSelf(handle)) {
+      const waitingWorker = processWorkerList(member).some((candidate) => {
+        const state = deps.threadWorkerStates.get(candidate);
+        const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
+        return state !== undefined
+          && waitingInWorkerStatus !== null
+          && supervisorBlockedWaitStatusMatchesWakeSource(
+            member.kernel,
+            waitingInWorkerStatus,
+            "socket-sync",
+          );
+      });
+      if (waitingWorker) {
+        return true;
+      }
+      if (hostExecutionState(member).hostBlockedWorkers.size > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function shouldSkipEmptyExitSocketStateSync(handle: ProcessHandle): boolean {
+    if (!processExitInProgress(handle) || handle.vmPtr === 0) {
+      return false;
+    }
+    if (kernelShareMemberList(handle).some((member) => member !== handle)) {
+      return false;
+    }
+    const executionState = hostExecutionState(handle);
+    if (executionState.runningWorker !== null || executionState.hostBlockedWorkers.size > 0) {
+      return false;
+    }
+    if (collectProcessHeldOfds(handle).size > 0) {
+      return false;
+    }
+    if (hasSocketState(handle)) {
+      return false;
+    }
+    return !hasSocketSyncWaiterInKernelShare(handle);
+  }
+
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     transferDebugStats(handle).pipeSyncRequests += 1;
     const startAction = supervisorStateSyncStartAction(handle.kernel, "pipe", {
@@ -406,6 +530,14 @@ export function createWorkerSchedulerStateSyncHelpers(
         const exhaustive: never = startAction;
         throw new Error(`unknown supervisor state-sync start action: ${exhaustive}`);
       }
+    }
+
+    if (shouldSkipEmptyExitPipeStateSync(handle)) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `pipe-sync-skip-empty-exit:${handle.pid}:wake=${wakeWaiters ? 1 : 0}`,
+      );
+      return Promise.resolve();
     }
 
     const shouldStart = supervisorStateSyncRequest(
@@ -535,6 +667,14 @@ export function createWorkerSchedulerStateSyncHelpers(
         const exhaustive: never = startAction;
         throw new Error(`unknown supervisor state-sync start action: ${exhaustive}`);
       }
+    }
+
+    if (shouldSkipEmptyExitSocketStateSync(handle)) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `socket-sync-skip-empty-exit:${handle.pid}:wake=${wakeWaiters ? 1 : 0}`,
+      );
+      return Promise.resolve();
     }
 
     const shouldStart = supervisorStateSyncRequest(

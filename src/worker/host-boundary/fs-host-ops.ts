@@ -33,6 +33,8 @@ import {
 } from "../memfs-tombstones.js";
 import {
   isProcessMemfsDirty,
+  rememberProcessMemfsChangedIno,
+  rememberProcessMemfsChangedPath,
   setProcessMemfsDirty,
   setProcessMemfsPublishPending,
 } from "../process-memfs-state.js";
@@ -1027,6 +1029,18 @@ function recordFsTransferStats(
   }
 }
 
+function rememberPendingFsMemfsChange(handle: ProcessHandle, pendingFs: PendingFsContext): void {
+  if (pendingFs.path) {
+    rememberProcessMemfsChangedPath(handle, pendingFs.path);
+  }
+  if (pendingFs.secondaryPath) {
+    rememberProcessMemfsChangedPath(handle, pendingFs.secondaryPath);
+  }
+  if (pendingFs.targetIno > 0) {
+    rememberProcessMemfsChangedIno(handle, pendingFs.targetIno);
+  }
+}
+
 function fsResultIsPending(handle: ProcessHandle, vmPtr: number, fsResult: bigint | number): boolean {
   const result = Number(BigInt.asIntN(64, normalizeFsResult(fsResult)));
   const eagain = handle.kernel.abi_eagain?.() ?? 11;
@@ -1301,9 +1315,12 @@ async function resumeFsViaKernelWorkerInner(
   try {
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
     appendFsLifecycleEvent(handle, "start", vmPtr, `${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
+    const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const heldOfdIds = collectProcessHeldOfds(handle);
-    const missingSharedOfdIds = pendingFsSharedOfdIds(handle, vmPtr)
-      .filter((ofdId) => !heldOfdIds.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
+    const missingSharedOfdIds = forkShareMembers.length === 0
+      ? []
+      : pendingFsSharedOfdIds(handle, vmPtr)
+        .filter((ofdId) => !heldOfdIds.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
     if (missingSharedOfdIds.length > 0) {
       await deps.rehydrateForkSharedStateViaKernelWorker([handle], missingSharedOfdIds, {
         cause: { kind: "syscall", nr: -1n, name: "fs-rehydrate-shared-ofd" },
@@ -1519,7 +1536,6 @@ async function resumeFsViaKernelWorkerInner(
     if (fsResponseDisposition.processOwnerMatches) {
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs");
     }
-    const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const syncTargets = forkShareMembers
       .filter((member) => hostExecutionState(member).runningWorker === null);
     const syncSharedOfdAfterFs = ofdStateChanged
@@ -1532,11 +1548,13 @@ async function resumeFsViaKernelWorkerInner(
     }
     const dirtyMemfsHandles: ProcessHandle[] = [];
     if (memfsMutated) {
+      rememberPendingFsMemfsChange(handle, pendingFs);
       setProcessMemfsDirty(handle, true);
       setProcessMemfsPublishPending(handle, true);
       if (fsResponseDisposition.processOwnerMatches) {
         if (memfsPublishReady && forkShareMembers.length > 0) {
           for (const member of forkShareMembers) {
+            rememberPendingFsMemfsChange(member, pendingFs);
             dirtyMemfsHandles.push(member);
           }
         }

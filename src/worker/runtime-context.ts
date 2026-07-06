@@ -17,7 +17,7 @@ import {
   applyFsEntryToHandle,
   cloneSnapshotEntries,
   snapshotEntriesEqual,
-  snapshotProcessFs,
+  snapshotProcessFs as snapshotProcessFsImpl,
 } from "./process-fs.js";
 import { processMemoryOwnership } from "./memory-ownership-state.js";
 import {
@@ -102,6 +102,12 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
 
   function publishRuntimeFsState(runtimeId: number, entries: FsSnapshotEntry[]): number {
     return publishRuntimeFsStateImpl(runtimeId, entries, runtimeFsContext);
+  }
+
+  function snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[] {
+    return snapshotProcessFsImpl(handle, {
+      baselineEntries: runtimeFsStates.get(handle.runtimeId)?.entries,
+    });
   }
 
   function getRuntimeFsState(

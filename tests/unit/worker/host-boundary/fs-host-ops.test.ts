@@ -1743,6 +1743,79 @@ test("kernel-worker fs outcome does not rehydrate unrelated peer shared OFD befo
   expect(outcome).toMatchObject({ kind: "completed", status: 0 });
 });
 
+test("kernel-worker fs outcome skips stale shared OFD rehydrate without fork-share peers before regular write", async () => {
+  const ringBase = 0x3000;
+  const kernel = {
+    ...makeKernel(),
+    thread_pending_fs_opcode: () => FS_OP_WRITE,
+    thread_pending_fs_effects: () => 6,
+    thread_fs_ring_base: () => ringBase,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 4 : 0,
+    kernel_ofd_fd_type: (ofdId: number) => ofdId === 4 ? 3 : 0,
+    supervisor_process_held_ofd_refcount: () => 0,
+  };
+  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_WRITE, 3);
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "fs-processed",
+    requestId: 1,
+    kernelState: makeKernelState(),
+    result: 87n,
+    memfsMutated: true,
+    ofdStateChanged: true,
+  }));
+  const handle = {
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: makeKernelState(),
+    memory: kernel.memory,
+    transferDebugStats: createTransferDebugStats(),
+    kernelShare: { members: new Set(), sharedOfdIds: new Set([4]) },
+    workers: new Set(),
+    hostBlockedWorkers: new Map(),
+    kernelWorkerRequest,
+  } as unknown as ProcessHandle;
+  const worker = {} as Worker;
+  addProcessWorker(handle, worker);
+  const threadWorkerStates = new WeakMap<Worker, object>();
+  threadWorkerStates.set(worker, {});
+  const rehydrateForkSharedStateViaKernelWorker = vi.fn(async () => {
+    throw new Error("single-process regular write should dispatch without rehydrate");
+  });
+  const helpers = createWorkerKernelRpcFsHelpers({
+    threadWorkerStates: threadWorkerStates as never,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    appendWorkerDebugLog: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    enqueueWorker: vi.fn(),
+    failProcess: vi.fn((_handle, error) => {
+      throw error;
+    }),
+    notifyHostEffectProgress: vi.fn(),
+    markRuntimeFsDirty: vi.fn(),
+    kernelShareOtherMembers: () => [],
+    syncDirtyMemfsPeerViaKernelWorker: vi.fn(async () => {}),
+    syncSharedOfdStateAfterFs: vi.fn(async () => {}),
+    rehydrateForkSharedStateViaKernelWorker,
+    publishRuntimeKernelState: vi.fn(),
+  });
+
+  const outcome = await helpers.resumeFsViaKernelWorkerOutcome(
+    handle,
+    worker,
+    0x1234
+  );
+
+  expect(rehydrateForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+    type: "process-fs",
+    pid: 1,
+    vmPtr: 0x1234,
+  }));
+  expect(outcome).toMatchObject({ kind: "completed", status: 0 });
+});
+
 test("kernel-worker fs outcome skips stale dirty MemFS peers before dispatch", async () => {
   const ringBase = 0x3000;
   const kernel = {

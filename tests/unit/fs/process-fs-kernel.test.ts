@@ -4,7 +4,12 @@ import {
   preloadSnapshotEntries,
   readMemfsFile,
   resolveMemfsPath,
+  snapshotProcessFs,
 } from "../../../src/worker/process-fs.js";
+import {
+  rememberProcessMemfsChangedPath,
+} from "../../../src/worker/process-memfs-state.js";
+import type { ProcessHandle } from "../../../src/worker/types.js";
 import { instantiateKernelWithSharedMemory } from "../../../src/wasm/kernel-memory.js";
 import { createDiagnosticKernelPageCache } from "../../support/kernel-page-cache-env.js";
 import { readKernelWasm } from "../../support/runtime-workload.js";
@@ -60,4 +65,67 @@ test("preloadSnapshotEntries preserves dynamic interpreter file size with the re
   expect(ino).toBeGreaterThan(1);
   expect(Number(exports.memfs_file_size(ino))).toBe(interpreter.length);
   expect(readMemfsFile(exports, ino)).toEqual(interpreter);
+}, 20_000);
+
+test("snapshotProcessFs preserves unchanged backing metadata without materializing file data", async () => {
+  if (!readKernelWasm()) {
+    return;
+  }
+
+  const exports = await loadKernel();
+  const size = 64 * 1024 * 1024;
+  preloadSnapshotEntries(exports, [
+    { kind: "dir", path: "/bin", mode: 0o755 },
+    { kind: "file", path: "/bin/external.bin", size, mode: 0o755 },
+  ]);
+  const handle = { kernel: exports } as ProcessHandle;
+  const beforeBytes = exports.memory.buffer.byteLength;
+
+  const entries = snapshotProcessFs(handle, {
+    baselineEntries: [
+      {
+        kind: "file",
+        path: "/bin/external.bin",
+        size,
+        mode: 0o755,
+        backingExtent: { sourceIdentity: "host:/bin/external.bin", length: size },
+      },
+    ],
+  });
+
+  const entry = entries.find((candidate) => candidate.path === "/bin/external.bin");
+  expect(entry).toMatchObject({
+    kind: "file",
+    path: "/bin/external.bin",
+    size,
+    mode: 0o755,
+    backingExtent: { sourceIdentity: "host:/bin/external.bin", length: size },
+  });
+  expect(entry?.kind === "file" ? entry.data : undefined).toBeUndefined();
+  expect(exports.memory.buffer.byteLength - beforeBytes).toBeLessThan(1024 * 1024);
+}, 20_000);
+
+test("snapshotProcessFs includes changed file data even when baseline metadata exists", async () => {
+  if (!readKernelWasm()) {
+    return;
+  }
+
+  const exports = await loadKernel();
+  const data = new Uint8Array([0x1b, 0x4c, 0x75, 0x61, 0x54]);
+  preloadSnapshotEntries(exports, [
+    { kind: "dir", path: "/work", mode: 0o755 },
+    { kind: "file", path: "/work/out.luac", data, mode: 0o644 },
+  ]);
+  const handle = { kernel: exports } as ProcessHandle;
+  rememberProcessMemfsChangedPath(handle, "/work/out.luac");
+
+  const entries = snapshotProcessFs(handle, {
+    baselineEntries: [
+      { kind: "file", path: "/work/out.luac", size: data.length, mode: 0o644 },
+    ],
+  });
+
+  const entry = entries.find((candidate) => candidate.path === "/work/out.luac");
+  expect(entry?.kind).toBe("file");
+  expect(entry?.kind === "file" ? entry.data : undefined).toEqual(data);
 }, 20_000);

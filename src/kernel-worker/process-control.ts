@@ -641,10 +641,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       inodes.add(mmapIno);
     }
     if ((pendingContext.effects & deps.fsEffectMemfsFileData) !== 0) {
-      if (pendingContext.fileDataTargetIno <= 0) {
-        return null;
+      if (pendingContext.fileDataTargetIno > 0) {
+        inodes.add(pendingContext.fileDataTargetIno);
       }
-      inodes.add(pendingContext.fileDataTargetIno);
     }
     return [...inodes];
   }
@@ -660,11 +659,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       pendingMmapGuestWrite,
       pendingBackingFill,
     );
+    if (targetInodes !== null && targetInodes.length === 0) {
+      return "targeted:none";
+    }
     if (targetInodes !== null && deps.restorePublishedRegularFileDataForInode) {
       for (const ino of targetInodes) {
         deps.restorePublishedRegularFileDataForInode(ino, processExports);
       }
-      return targetInodes.length === 0 ? "targeted:none" : `targeted:${targetInodes.join(",")}`;
+      return `targeted:${targetInodes.join(",")}`;
     }
     deps.restorePublishedRegularFileDataFromPageCache?.(processExports);
     return "full";

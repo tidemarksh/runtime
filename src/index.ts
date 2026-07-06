@@ -51,6 +51,10 @@ import {
   setGuestWriteWatchRegions,
 } from "./worker/guest-write-watch-state.js";
 import {
+  addProcessExitWaiter,
+  addRuntimeProcessExitWaiter,
+  setRuntimeProcessOnError,
+  setRuntimeProcessOnExit,
   setProcessOnError,
   setProcessOnExit,
   setProcessOnStdout,
@@ -384,49 +388,85 @@ export class Runtime {
     options: SpawnOptions = {},
   ): Promise<Process> {
     const pid = this.nextPid++;
-
-    const handle = await createProcess(this.wasmBytes, elfData, {
-      runtimeId: this.runtimeId,
-      pid,
-      guestMemoryPolicyLimitBytes: this.memoryConfig.guestMemoryPolicyLimitBytes,
-      argv,
-      env,
-      cwd: options.cwd,
-      sabPageCache: this.sabPageCache,
-      maxMemoryPages: this.memoryConfig.maxProcessMemoryPages,
-      forkMaxMemoryPages: this.memoryConfig.maxForkMemoryPages,
-      kernelWorkerPrivateMemoryBytes: this.memoryConfig.kernelWorkerMaxMemoryPages * 65536,
-      fsRpcRingCapacityBytes: this.memoryConfig.fsRpcRingCapacityBytes,
-      artifactMaterializationBudgetBytes: this.memoryConfig.artifactMaterializationBudgetBytes ?? undefined,
-      networkBridge: this.networkBridge,
-      stdio: options.stdio ?? "pipe",
-      stdin: options.stdin ?? "pipe",
-      hydrateFsFromKernelWorker: true,
-      kernelWorkerRequest: (msg) => this.sendKernelRequest(
-        msg.type === "process-fs" && processFsProgressDebugEnabled()
-          ? { ...msg, debugProgress: true }
-          : msg,
-        [],
-        { rejectOnDestroy: false },
-      ),
-    });
-
-    const proc = new Process(pid, handle);
-    setProcessOnExit(handle, (code) => {
+    let proc: Process | null = null;
+    let pendingExitCode: number | null = null;
+    let pendingError: Error | null = null;
+    const handleExit = (code: number): void => {
       this.processes.delete(pid);
-      proc.exitCode = code;
-      proc.exited = true;
-      proc._onExit?.(code);
-    });
-    setProcessOnError(handle, (error) => {
+      setRuntimeProcessOnExit(this.runtimeId, pid, undefined);
+      setRuntimeProcessOnError(this.runtimeId, pid, undefined);
+      if (proc) {
+        proc._markExited(code);
+        return;
+      }
+      pendingExitCode = code;
+    };
+    const handleError = (error: Error): void => {
       this.processes.delete(pid);
-      proc.exitCode = 1;
-      proc.exited = true;
-      proc.fatalError = error;
-      proc._onError?.(error);
-    });
+      setRuntimeProcessOnExit(this.runtimeId, pid, undefined);
+      setRuntimeProcessOnError(this.runtimeId, pid, undefined);
+      if (proc) {
+        proc._markFailed(error);
+        return;
+      }
+      pendingError = error;
+    };
 
-    this.processes.set(pid, handle);
+    setRuntimeProcessOnExit(this.runtimeId, pid, handleExit);
+    setRuntimeProcessOnError(this.runtimeId, pid, handleError);
+    let handle: ProcessHandle;
+    try {
+      handle = await createProcess(this.wasmBytes, elfData, {
+        runtimeId: this.runtimeId,
+        pid,
+        guestMemoryPolicyLimitBytes: this.memoryConfig.guestMemoryPolicyLimitBytes,
+        argv,
+        env,
+        cwd: options.cwd,
+        sabPageCache: this.sabPageCache,
+        maxMemoryPages: this.memoryConfig.maxProcessMemoryPages,
+        forkMaxMemoryPages: this.memoryConfig.maxForkMemoryPages,
+        kernelWorkerPrivateMemoryBytes: this.memoryConfig.kernelWorkerMaxMemoryPages * 65536,
+        fsRpcRingCapacityBytes: this.memoryConfig.fsRpcRingCapacityBytes,
+        artifactMaterializationBudgetBytes: this.memoryConfig.artifactMaterializationBudgetBytes ?? undefined,
+        networkBridge: this.networkBridge,
+        stdio: options.stdio ?? "pipe",
+        stdin: options.stdin ?? "pipe",
+        hydrateFsFromKernelWorker: true,
+        onExit: handleExit,
+        onError: handleError,
+        kernelWorkerRequest: (msg) => this.sendKernelRequest(
+          msg.type === "process-fs" && processFsProgressDebugEnabled()
+            ? { ...msg, debugProgress: true }
+            : msg,
+          [],
+          { rejectOnDestroy: false },
+        ),
+      });
+    } catch (error) {
+      setRuntimeProcessOnExit(this.runtimeId, pid, undefined);
+      setRuntimeProcessOnError(this.runtimeId, pid, undefined);
+      throw error;
+    }
+
+    proc = new Process(pid, handle);
+    if (pendingError) {
+      proc._markFailed(pendingError);
+      setProcessOnExit(handle, undefined);
+      setProcessOnError(handle, undefined);
+      setRuntimeProcessOnExit(this.runtimeId, pid, undefined);
+      setRuntimeProcessOnError(this.runtimeId, pid, undefined);
+    } else if (pendingExitCode !== null) {
+      proc._markExited(pendingExitCode);
+      setProcessOnExit(handle, undefined);
+      setProcessOnError(handle, undefined);
+      setRuntimeProcessOnExit(this.runtimeId, pid, undefined);
+      setRuntimeProcessOnError(this.runtimeId, pid, undefined);
+    } else {
+      setProcessOnExit(handle, handleExit);
+      setProcessOnError(handle, handleError);
+      this.processes.set(pid, handle);
+    }
     return proc;
   }
 
@@ -829,6 +869,8 @@ export class Process {
   fatalError: Error | null = null;
   _onExit?: (code: number) => void;
   _onError?: (error: Error) => void;
+  private exitWaiters: Array<(code: number) => void> = [];
+  private errorWaiters: Array<(error: Error) => void> = [];
 
   constructor(
     readonly pid: number,
@@ -859,6 +901,35 @@ export class Process {
     return processLastDebugMessage(this.handle);
   }
 
+  _markExited(code: number): void {
+    if (this.exited && this.fatalError === null) {
+      return;
+    }
+    this.exitCode = code;
+    this.exited = true;
+    const exitWaiters = this.exitWaiters.splice(0);
+    this.errorWaiters.length = 0;
+    this._onExit?.(code);
+    for (const resolve of exitWaiters) {
+      resolve(code);
+    }
+  }
+
+  _markFailed(error: Error): void {
+    if (this.exited && this.fatalError !== null) {
+      return;
+    }
+    this.exitCode = 1;
+    this.exited = true;
+    this.fatalError = error;
+    const errorWaiters = this.errorWaiters.splice(0);
+    this.exitWaiters.length = 0;
+    this._onError?.(error);
+    for (const reject of errorWaiters) {
+      reject(error);
+    }
+  }
+
   configureGuestWriteWatch(regions: GuestWriteWatchRegion[]): void {
     setGuestWriteWatchRegions(this.handle, regions);
     this.handle.kernel.debug_clear_guest_write_watch_trace?.();
@@ -884,8 +955,27 @@ export class Process {
       return Promise.resolve(this.exitCode);
     }
     return new Promise((resolve, reject) => {
-      this._onExit = resolve;
-      this._onError = reject;
+      this.exitWaiters.push(resolve);
+      this.errorWaiters.push(reject);
+      addProcessExitWaiter(
+        this.handle,
+        (code) => {
+          this._markExited(code);
+        },
+        (error) => {
+          this._markFailed(error);
+        },
+      );
+      addRuntimeProcessExitWaiter(
+        this.handle.runtimeId,
+        this.handle.pid,
+        (code) => {
+          this._markExited(code);
+        },
+        (error) => {
+          this._markFailed(error);
+        },
+      );
     });
   }
 }

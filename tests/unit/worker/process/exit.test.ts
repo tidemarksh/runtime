@@ -19,6 +19,11 @@ import {
   setProcessDebugCommand,
 } from "../../../../src/worker/process-debug-state.js";
 import { drainProcessOutput } from "../../../../src/worker/stdio.js";
+import {
+  addProcessExitWaiter,
+  addRuntimeProcessExitWaiter,
+  setRuntimeProcessOnExit,
+} from "../../../../src/worker/process-callback-state.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
@@ -1091,10 +1096,158 @@ test("completeProcessExit notifies process exit before waiting on final kernel-w
   expect(order).not.toContain("destroy:3");
 });
 
-test("completeProcessExit notifies process exit before waiting on final host stdio release", async () => {
+test("completeProcessExit notifies kernel-owned process exit before runtime fs publish and final host stdio release", async () => {
   const order: string[] = [];
   const handle = makeHandle({
     parentPid: null,
+    memfsPublishPending: true,
+    onExit: (code) => {
+      order.push(`exit:${code}`);
+    },
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [3, handle],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle(destroyHandle) {
+      order.push(`destroy:${destroyHandle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    notifyProcessExitProgress: () => {},
+    publishRuntimeFsState: () => {
+      order.push("publish-fs");
+      return 1;
+    },
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: () => {
+      order.push("release-start");
+      return new Promise<void>(() => {});
+    },
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {
+      order.push("unregister");
+    },
+  });
+
+  void helpers.completeProcessExit(handle, 0, 0);
+  await flushMicrotasks(100);
+
+  expect(order).toContain("publish-fs");
+  expect(order).toContain("exit:0");
+  expect(order).toContain("release-start");
+  expect(order.indexOf("exit:0")).toBeLessThan(order.indexOf("publish-fs"));
+  expect(order.indexOf("exit:0")).toBeLessThan(order.indexOf("release-start"));
+  expect(order).not.toContain("unregister");
+  expect(order).not.toContain("destroy:3");
+});
+
+test("completeProcessExit notifies runtime pid callback for kernel-owned process exit", async () => {
+  const order: string[] = [];
+  const events: string[] = [];
+  const handle = makeHandle({
+    parentPid: null,
+    memfsPublishPending: true,
+  });
+  const apiHandle = makeHandle({
+    runtimeId: handle.runtimeId,
+    pid: handle.pid,
+    parentPid: null,
+    vmPtr: handle.vmPtr + 1,
+  });
+  setRuntimeProcessOnExit(handle.runtimeId, handle.pid, (code) => {
+    order.push(`runtime-exit:${code}`);
+  });
+  addProcessExitWaiter(
+    handle,
+    (code) => {
+      order.push(`waiter-exit:${code}`);
+    },
+    (error) => {
+      order.push(`waiter-error:${error.message}`);
+    },
+  );
+  addRuntimeProcessExitWaiter(
+    apiHandle.runtimeId,
+    apiHandle.pid,
+    (code) => {
+      order.push(`runtime-waiter-exit:${code}`);
+    },
+    (error) => {
+      order.push(`runtime-waiter-error:${error.message}`);
+    },
+  );
+  const processHandles = new Map<number, ProcessHandle>([
+    [3, handle],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      events.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle(destroyHandle) {
+      order.push(`destroy:${destroyHandle.pid}`);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    notifyProcessExitProgress: () => {},
+    publishRuntimeFsState: () => {
+      order.push("publish-fs");
+      return 1;
+    },
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: () => {
+      order.push("release-start");
+      return new Promise<void>(() => {});
+    },
+    replaceRuntimeFsSnapshot: () => {},
+    requestPipeStateSync: async () => {},
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {
+      order.push("unregister");
+    },
+  });
+
+  try {
+    void helpers.completeProcessExit(handle, 0, 0);
+    await flushMicrotasks(100);
+
+    expect(order).toContain("publish-fs");
+    expect(order).toContain("runtime-exit:0");
+    expect(order).toContain("waiter-exit:0");
+    expect(order).toContain("runtime-waiter-exit:0");
+    expect(order).toContain("release-start");
+    expect(order.indexOf("waiter-exit:0")).toBeLessThan(order.indexOf("publish-fs"));
+    expect(order.indexOf("runtime-waiter-exit:0")).toBeLessThan(order.indexOf("publish-fs"));
+    expect(order.indexOf("runtime-exit:0")).toBeLessThan(order.indexOf("publish-fs"));
+    expect(order.indexOf("runtime-exit:0")).toBeLessThan(order.indexOf("release-start"));
+    expect(events).toContain("exit-notify:3:callback=1:handle=0:runtime=1");
+    expect(order).not.toContain("unregister");
+    expect(order).not.toContain("destroy:3");
+  } finally {
+    setRuntimeProcessOnExit(handle.runtimeId, handle.pid, undefined);
+  }
+});
+
+test("completeProcessExit keeps local process fs publish before exit notification", async () => {
+  const order: string[] = [];
+  const handle = makeHandle({
+    parentPid: null,
+    kernelWorkerRequest: undefined,
     memfsPublishPending: true,
     onExit: (code) => {
       order.push(`exit:${code}`);

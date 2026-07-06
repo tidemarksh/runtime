@@ -14,6 +14,12 @@ import {
 import {
   processOnError,
   processOnStdout,
+  rejectProcessExitWaiters,
+  rejectRuntimeProcessExitWaiters,
+  resolveProcessExitWaiters,
+  resolveRuntimeProcessExitWaiters,
+  takeRuntimeProcessOnError,
+  takeRuntimeProcessOnExit,
   takeProcessOnExit,
 } from "./process-callback-state.js";
 import { guestWriteWatchRegions } from "./guest-write-watch-state.js";
@@ -47,6 +53,7 @@ import {
 } from "./host-blocked-state.js";
 import { getHandleForkSharedSync } from "./fork-shared-sync-state.js";
 import {
+  clearProcessMemfsChanges,
   isProcessMemfsDirty,
   isProcessMemfsPublishPending,
   setProcessMemfsDirty,
@@ -1810,6 +1817,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       deps.publishRuntimeFsState(handle.runtimeId, entries);
       setProcessMemfsDirty(handle, false);
       setProcessMemfsPublishPending(handle, false);
+      clearProcessMemfsChanges(handle);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-fs-publish:${handle.pid}:${entries.length}`);
     } catch (error) {
       deps.appendRuntimeLifecycleEvent(
@@ -2074,7 +2082,23 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         return;
       }
       exitNotified = true;
-      takeProcessOnExit(handle)?.(exitCode);
+      const handleOnExit = takeProcessOnExit(handle);
+      const runtimeOnExit = takeRuntimeProcessOnExit(handle);
+      const exitCallbacks = new Set(
+        [handleOnExit, runtimeOnExit].filter(
+          (callback): callback is (code: number) => void => callback !== undefined,
+        ),
+      );
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-notify:${handle.pid}:callback=${exitCallbacks.size > 0 ? 1 : 0}`
+          + `:handle=${handleOnExit ? 1 : 0}:runtime=${runtimeOnExit ? 1 : 0}`,
+      );
+      resolveProcessExitWaiters(handle, exitCode);
+      resolveRuntimeProcessExitWaiters(handle, exitCode);
+      for (const onExit of exitCallbacks) {
+        onExit(exitCode);
+      }
     };
 
     try {
@@ -2102,8 +2126,13 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
         const finalDrain = deps.drainProcessOutput(handle);
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `exit-visible-output-after-final-drain:${handle.pid}:drained=${finalDrain ? 1 : 0}:${formatVisibleOutputDebug(handle)}`);
       }
-      await publishProcessFsStateOnExit(handle);
-      notifyExit();
+      if (processHasKernelWorkerOwnership(handle)) {
+        notifyExit();
+        await publishProcessFsStateOnExit(handle);
+      } else {
+        await publishProcessFsStateOnExit(handle);
+        notifyExit();
+      }
       await deps.releaseSharedHostStdio(handle);
     } catch (error) {
       cleanupError = error instanceof Error ? error : new Error(String(error));
@@ -2168,7 +2197,18 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       processLastDebugMessage(handle) ?? "debug=n/a",
     ].join(" "));
     deps.destroyProcessHandle(handle, 15, false);
-    processOnError(handle)?.(error);
+    rejectProcessExitWaiters(handle, error);
+    rejectRuntimeProcessExitWaiters(handle, error);
+    const handleOnError = processOnError(handle);
+    const runtimeOnError = takeRuntimeProcessOnError(handle);
+    const errorCallbacks = new Set(
+      [handleOnError, runtimeOnError].filter(
+        (callback): callback is (error: Error) => void => callback !== undefined,
+      ),
+    );
+    for (const onError of errorCallbacks) {
+      onError(error);
+    }
   }
 
   return {

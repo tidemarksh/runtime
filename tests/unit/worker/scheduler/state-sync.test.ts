@@ -1,6 +1,7 @@
 import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
+import { setProcessExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
 import {
   processHostStdio,
   processStderrPipe,
@@ -972,6 +973,215 @@ test("requestPipeStateSync falls back to visible stdio owner during kernel-owned
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
   expect(drainHiddenProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainHiddenProcessOutput).toHaveBeenCalledWith(child);
+});
+
+test("requestPipeStateSync skips empty direct exit pipe sync", async () => {
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "pipe-state-synced",
+    kernelState: {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0,
+      memfsHeaderBytes: 0,
+      memfsInodesBytes: 0,
+      memfsFirstChildBytes: 0,
+      memfsDirEntriesBytes: 0,
+      memfsDataBytes: 0,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 1n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    },
+  }));
+  const handle = makeHandle({
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  addKernelShareMember(handle);
+  setProcessExitInProgress(handle, true);
+  const drainProcessOutput = vi.fn(() => false);
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput,
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  try {
+    await helpers.requestPipeStateSync(handle, true);
+  } finally {
+    setProcessExitInProgress(handle, false);
+  }
+
+  expect(kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(drainProcessOutput).not.toHaveBeenCalled();
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    1,
+    "pipe-sync-skip-empty-exit:1:wake=1",
+  );
+});
+
+test("requestPipeStateSync keeps held pipe fd exit sync on kernel worker path", async () => {
+  const kernelWorkerRequest = vi.fn(async (msg) => {
+    expect(msg.type).toBe("sync-pipe-state");
+    return {
+      type: "pipe-state-synced",
+      requestId: 0,
+      kernelState: {
+        ...msg.kernelState,
+        pipeUsed: 5n,
+      },
+    };
+  });
+  const handle = makeHandle({
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 1 ? 4 : 0;
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === 4 ? handle.kernel.abi_fd_type_pipe() : 0;
+  handle.kernel.kernel_ofd_ino = (ofdId: number) => ofdId === 4 ? processHostStdio(handle).stdoutPipe : 0;
+  handle.kernel.kernel_ofd_host_fd = (ofdId: number) => ofdId === 4 ? -1 : -1;
+  addKernelShareMember(handle);
+  setProcessExitInProgress(handle, true);
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  try {
+    await helpers.requestPipeStateSync(handle, true);
+  } finally {
+    setProcessExitInProgress(handle, false);
+  }
+
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "pipe-sync-start:1:wake=1");
+  expect(appendRuntimeLifecycleEvent).not.toHaveBeenCalledWith(
+    1,
+    "pipe-sync-skip-empty-exit:1:wake=1",
+  );
+});
+
+test("requestSocketStateSync skips empty direct exit socket sync", async () => {
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "socket-state-synced",
+    kernelState: {
+      heapBase: 0,
+      heapPtr: 0,
+      ofdTablePtr: 0,
+      memfsPtr: 0,
+      memfsHeaderBytes: 0,
+      memfsInodesBytes: 0,
+      memfsFirstChildBytes: 0,
+      memfsDirEntriesBytes: 0,
+      memfsDataBytes: 0,
+      memStatePtr: 0,
+      epollTablePtr: 0,
+      socketTablePtr: 0,
+      socketUsed: 0,
+      pipeBase: 0,
+      pipeUsed: 1n,
+      netBufBase: 0,
+      netBufUsed: 0n,
+      sigSlotsPtr: 0,
+      processPendingPtr: 0,
+      processRuntimeStatePtr: 0,
+      timeStatePtr: 0,
+    },
+  }));
+  const handle = makeHandle({
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  addKernelShareMember(handle);
+  setProcessExitInProgress(handle, true);
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  try {
+    await helpers.requestSocketStateSync(handle, false);
+  } finally {
+    setProcessExitInProgress(handle, false);
+  }
+
+  expect(kernelWorkerRequest).not.toHaveBeenCalled();
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    1,
+    "socket-sync-skip-empty-exit:1:wake=0",
+  );
+});
+
+test("requestSocketStateSync keeps existing socket state exit sync on kernel worker path", async () => {
+  const kernelWorkerRequest = vi.fn(async (msg) => {
+    expect(msg.type).toBe("sync-socket-state");
+    return {
+      type: "socket-state-synced",
+      requestId: 0,
+      kernelState: {
+        ...msg.kernelState,
+        socketUsed: 1,
+      },
+    };
+  });
+  const handle = makeHandle({
+    pid: 1,
+    runtimeId: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  handle.kernelState = {
+    ...handle.kernelState,
+    socketUsed: 1,
+  };
+  addKernelShareMember(handle);
+  setProcessExitInProgress(handle, true);
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  try {
+    await helpers.requestSocketStateSync(handle, false);
+  } finally {
+    setProcessExitInProgress(handle, false);
+  }
+
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).not.toHaveBeenCalledWith(
+    1,
+    "socket-sync-skip-empty-exit:1:wake=0",
+  );
 });
 
 test("requestPipeStateSync drains hidden inherited host stdio after child fds close", async () => {

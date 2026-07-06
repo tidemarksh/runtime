@@ -1,6 +1,10 @@
 import type { KernelExports } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import {
+  processMemfsChangedInos,
+  processMemfsChangedPaths,
+} from "./process-memfs-state.js";
+import {
   alignUp,
   ensureKernelMemoryCapacity,
   kernelScratchBase,
@@ -305,11 +309,64 @@ export function readMemfsSymlink(exports: KernelExports, ino: number): Uint8Arra
   return new Uint8Array(exports.memory.buffer.slice(bufPtr, bufPtr + read));
 }
 
+interface SnapshotProcessFsOptions {
+  baselineEntries?: readonly FsSnapshotEntry[];
+}
+
+interface SnapshotProcessFsContext {
+  baselineFiles: Map<string, FsSnapshotEntry>;
+  changedPaths: Set<string>;
+  changedInos: Set<number>;
+}
+
+function createSnapshotProcessFsContext(
+  handle: ProcessHandle,
+  options: SnapshotProcessFsOptions,
+): SnapshotProcessFsContext {
+  const baselineFiles = new Map<string, FsSnapshotEntry>();
+  for (const entry of options.baselineEntries ?? []) {
+    if (entry.kind === "file") {
+      baselineFiles.set(normalizePath(entry.path), entry);
+    }
+  }
+  return {
+    baselineFiles,
+    changedPaths: new Set(processMemfsChangedPaths(handle).map(normalizePath)),
+    changedInos: new Set(processMemfsChangedInos(handle)),
+  };
+}
+
+function snapshotFileEntryData(
+  exports: KernelExports,
+  normalized: string,
+  ino: number,
+  size: number,
+  ctx: SnapshotProcessFsContext,
+): { data?: Uint8Array; backingExtent?: FsSnapshotEntry["backingExtent"] } {
+  const baseline = ctx.baselineFiles.get(normalized);
+  const baselineSize = baseline?.kind === "file"
+    ? baseline.size ?? baseline.data?.length ?? 0
+    : undefined;
+  const mustReadData = baseline === undefined
+    || ctx.changedPaths.has(normalized)
+    || ctx.changedInos.has(ino)
+    || baselineSize !== size;
+  if (!mustReadData) {
+    return {
+      backingExtent: baseline.kind === "file" && baseline.backingExtent
+        ? { ...baseline.backingExtent }
+        : undefined,
+    };
+  }
+  return { data: readMemfsFile(exports, ino) };
+}
+
 function snapshotMemfsTree(
   exports: KernelExports,
   ino: number,
   path: string,
   out: FsSnapshotEntry[],
+  ctx: SnapshotProcessFsContext,
 ): void {
   const normalized = normalizePath(path);
   const mode = exports.memfs_inode_mode(ino);
@@ -324,7 +381,7 @@ function snapshotMemfsTree(
       if (childIno === 0) {
         continue;
       }
-      snapshotMemfsTree(exports, childIno, childPath, out);
+      snapshotMemfsTree(exports, childIno, childPath, out, ctx);
     }
     return;
   }
@@ -346,8 +403,8 @@ function snapshotMemfsTree(
     return;
   }
 
-  const data = readMemfsFile(exports, ino);
   const size = Number(exports.memfs_file_size(ino));
+  const { data, backingExtent } = snapshotFileEntryData(exports, normalized, ino, size, ctx);
   out.push({
     kind: "file",
     path: normalized,
@@ -355,12 +412,17 @@ function snapshotMemfsTree(
     data,
     size: data?.length ?? size,
     mode: perms,
+    backingExtent,
   });
 }
 
-export function snapshotProcessFs(handle: ProcessHandle): FsSnapshotEntry[] {
+export function snapshotProcessFs(
+  handle: ProcessHandle,
+  options: SnapshotProcessFsOptions = {},
+): FsSnapshotEntry[] {
   const entries: FsSnapshotEntry[] = [];
-  snapshotMemfsTree(handle.kernel, 1, "/", entries);
+  const ctx = createSnapshotProcessFsContext(handle, options);
+  snapshotMemfsTree(handle.kernel, 1, "/", entries, ctx);
   return entries;
 }
 
