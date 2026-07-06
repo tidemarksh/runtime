@@ -18,6 +18,7 @@ export const RUNTIME_WORKER_DIST_DIR = resolve(__dirname, "../../dist");
 export const encoder = new TextEncoder();
 export const decoder = new TextDecoder();
 const TIMEOUT_OUTPUT_PREVIEW_BYTES = 4096;
+const TEST_STAGE_DEBUG_ENV = "TIDEMARK_TEST_STAGE_DEBUG";
 
 const originalWorker = globalThis.Worker;
 export let Runtime: typeof import("../../dist/index.mjs").Runtime;
@@ -80,6 +81,13 @@ export function logSkip(reason: string): null {
   }
   console.log(`test input unavailable: ${reason}`);
   return null;
+}
+
+export function testStageDebug(message: string): void {
+  if (!process.env[TEST_STAGE_DEBUG_ENV]) {
+    return;
+  }
+  console.error(`[tidemark:test] ${message}`);
 }
 
 function detectKernelWasmPath(): string | null {

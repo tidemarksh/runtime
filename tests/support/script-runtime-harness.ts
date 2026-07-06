@@ -44,6 +44,34 @@ export type ScriptRuntimeFailureBucket =
   | "consumer-runtime"
   | "unknown";
 
+const SCRIPT_RUNTIME_TIMEOUT_ENV = "TIDEMARK_TEST_SCRIPT_RUNTIME_TIMEOUT_MS";
+const SCRIPT_RUNTIME_TEST_TIMEOUT_ENV = "TIDEMARK_TEST_SCRIPT_RUNTIME_TEST_TIMEOUT_MS";
+
+function readPositiveIntegerEnv(name: string): number | null {
+  const raw = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.[name];
+  const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function resolveScriptRuntimeTimeoutMs(entry: ScriptRuntimeEntry): number {
+  return readPositiveIntegerEnv(SCRIPT_RUNTIME_TIMEOUT_ENV) ?? entry.timeoutMs;
+}
+
+export function resolveScriptRuntimeTestTimeoutMs(
+  entry: ScriptRuntimeEntry,
+  prepareHeadroomMs = 60_000,
+): number {
+  const timeoutMs = resolveScriptRuntimeTimeoutMs(entry);
+  const explicitTestTimeoutMs = readPositiveIntegerEnv(SCRIPT_RUNTIME_TEST_TIMEOUT_ENV);
+  if (explicitTestTimeoutMs !== null) {
+    return Math.max(20_000, explicitTestTimeoutMs);
+  }
+  const marginMs = timeoutMs === entry.timeoutMs ? prepareHeadroomMs : 180_000;
+  return Math.max(20_000, timeoutMs + marginMs);
+}
+
 export function buildScriptRuntimeSnapshot(entry: ScriptRuntimeEntry) {
   const result = buildSnapshotFromSources(entry.snapshotSources, {
     missingLabel: "script runtime artifact",
@@ -101,6 +129,7 @@ export async function runScriptRuntimeEntry(
   );
   let output = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutMs = resolveScriptRuntimeTimeoutMs(entry);
   proc.onStdout((data) => {
     output += new TextDecoder().decode(data);
   });
@@ -109,7 +138,7 @@ export async function runScriptRuntimeEntry(
     const exitCode = await Promise.race([
       proc.waitForExit(),
       new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`timeout after ${entry.timeoutMs}ms`)), entry.timeoutMs);
+        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
         if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
           timeoutId.unref();
         }
