@@ -142,7 +142,15 @@ export interface KernelExports {
 
   // Supervisor protocol
   supervisor_abi_version?(): number;
+  supervisor_debug_base_snapshot_bytes?(): number;
   supervisor_debug_snapshot_bytes?(): number;
+  supervisor_debug_replay_offset?(): number;
+  supervisor_replay_log_record_bytes?(): number;
+  supervisor_replay_log_payload_bytes?(): number;
+  supervisor_replay_log_capacity?(): number;
+  supervisor_replay_log_source_thread_event?(): number;
+  supervisor_replay_log_source_host_completion?(): number;
+  supervisor_replay_log_source_host_op?(): number;
   supervisor_thread_event_record_bytes?(): number;
   supervisor_thread_event_record_magic?(): number;
   supervisor_thread_event_kind_blocked?(): number;

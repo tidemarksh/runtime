@@ -43,6 +43,7 @@ import { runtimeStateSyncInFlight } from "../state-sync-inflight.js";
 import { networkConnections } from "../network-socket-state.js";
 import { workerDebugLog } from "../worker-debug-log.js";
 import { transferDebugStats, workerMessageDebugStats } from "../worker-debug-stats.js";
+import { ensureMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
 import { processMemoryOwnership } from "../memory-ownership-state.js";
 import {
   processDebugCommand,
@@ -228,6 +229,9 @@ export interface CpuDebugStats {
 }
 
 const decoder = new TextDecoder();
+const SUPERVISOR_DEBUG_BASE_SNAPSHOT_BYTES = 112;
+const SUPERVISOR_DEBUG_REPLAY_METADATA_BYTES = 32;
+const SUPERVISOR_DEBUG_SNAPSHOT_SCRATCH_OFFSET = 0x38000;
 
 function formatU64(value: bigint): string {
   return BigInt.asUintN(64, value).toString(16);
@@ -1509,6 +1513,101 @@ function formatExecveError(handle: ProcessHandle): string {
   ].join(":");
 }
 
+function supervisorReplaySourceName(handle: ProcessHandle, source: number): string {
+  const threadEvent = handle.kernel.supervisor_replay_log_source_thread_event?.() ?? 1;
+  const hostCompletion = handle.kernel.supervisor_replay_log_source_host_completion?.() ?? 2;
+  const hostOp = handle.kernel.supervisor_replay_log_source_host_op?.() ?? 3;
+  if (source === threadEvent) {
+    return "thread_event";
+  }
+  if (source === hostCompletion) {
+    return "host_completion";
+  }
+  if (source === hostOp) {
+    return "host_op";
+  }
+  return `unknown_${source}`;
+}
+
+function formatSupervisorReplayDebug(handle: ProcessHandle): string {
+  const snapshotBytes = handle.kernel.supervisor_debug_snapshot_bytes?.();
+  const readSnapshot = handle.kernel.supervisor_debug_snapshot;
+  if (snapshotBytes === undefined || snapshotBytes <= 0 || readSnapshot === undefined) {
+    return "unavailable";
+  }
+  try {
+    const memory = handle.kernel.memory ?? handle.memory;
+    const scratch = kernelScratchBase(handle.kernel) + SUPERVISOR_DEBUG_SNAPSHOT_SCRATCH_OFFSET;
+    ensureMemoryCapacity(memory, scratch + snapshotBytes);
+    const result = readSnapshot.call(handle.kernel, scratch, snapshotBytes);
+    if (result < SUPERVISOR_DEBUG_BASE_SNAPSHOT_BYTES) {
+      return `error=${result}`;
+    }
+    const view = new DataView(memory.buffer, scratch, Math.min(result, snapshotBytes));
+    const size = view.getUint32(8, true);
+    const threadEvents = view.getBigUint64(16, true).toString();
+    const hostCompletions = view.getBigUint64(24, true).toString();
+    const hostOpPolls = view.getBigUint64(32, true).toString();
+    const resumePolls = view.getBigUint64(40, true).toString();
+    const base = [
+      `size=${size}`,
+      `events=${threadEvents}`,
+      `completions=${hostCompletions}`,
+      `host_op_polls=${hostOpPolls}`,
+      `resume_polls=${resumePolls}`,
+    ];
+    if (view.byteLength < SUPERVISOR_DEBUG_BASE_SNAPSHOT_BYTES + SUPERVISOR_DEBUG_REPLAY_METADATA_BYTES) {
+      return base.join(":");
+    }
+
+    const recordBytes = view.getUint32(112, true);
+    const payloadBytes = view.getUint32(116, true);
+    const capacity = view.getUint32(120, true);
+    const count = view.getUint32(124, true);
+    const total = view.getBigUint64(128, true);
+    if (recordBytes < 32 || payloadBytes > recordBytes - 32) {
+      return [...base, `replay_error=bad_layout:${recordBytes}/${payloadBytes}`].join(":");
+    }
+    const replayOffset = handle.kernel.supervisor_debug_replay_offset?.()
+      ?? (SUPERVISOR_DEBUG_BASE_SNAPSHOT_BYTES + SUPERVISOR_DEBUG_REPLAY_METADATA_BYTES);
+    const maxRecords = Math.min(count, capacity, Math.floor((view.byteLength - replayOffset) / recordBytes));
+    const entries: string[] = [];
+    for (let index = 0; index < maxRecords; index += 1) {
+      const offset = replayOffset + index * recordBytes;
+      if (offset + 32 > view.byteLength) {
+        break;
+      }
+      const source = view.getUint32(offset, true);
+      const payloadLen = Math.min(view.getUint32(offset + 4, true), payloadBytes, recordBytes - 32);
+      const logSeq = view.getBigUint64(offset + 8, true);
+      const recordSeq = view.getBigUint64(offset + 16, true);
+      const entryHash = view.getBigUint64(offset + 24, true);
+      const payloadOffset = offset + 32;
+      const payloadKind = payloadLen >= 16 ? view.getUint32(payloadOffset + 12, true) : 0;
+      const payloadSeq = payloadLen >= 24 ? view.getBigUint64(payloadOffset + 16, true) : 0n;
+      entries.push(
+        `${index}:${supervisorReplaySourceName(handle, source)}`
+          + `:log=${logSeq.toString()}`
+          + `:record=${recordSeq.toString()}`
+          + `:kind=${payloadKind}`
+          + `:payload_seq=${payloadSeq.toString()}`
+          + `:len=${payloadLen}`
+          + `:hash=0x${entryHash.toString(16)}`,
+      );
+    }
+    return [
+      ...base,
+      `replay_record_bytes=${recordBytes}`,
+      `replay_payload_bytes=${payloadBytes}`,
+      `replay_total=${total.toString()}`,
+      `replay_count=${count}`,
+      `replay=[${entries.join(" ")}]`,
+    ].join(":");
+  } catch (error) {
+    return `error=${error instanceof Error ? JSON.stringify(error.message) : JSON.stringify(String(error))}`;
+  }
+}
+
 function formatSocketRecvBufferHeadTail(handle: ProcessHandle, socketIdx: number): string {
   if (socketIdx < 0) {
     return "-1/-1";
@@ -1714,6 +1813,7 @@ export function debugRuntimeProcessHandles(
           `network_fds=[${networkFdSummary}]`,
           `network_closed_fds=[${[...networkClosedFds(handle)].sort((left, right) => left - right).join(",")}]`,
           `socket_fds=[${socketFdSummary}]`,
+          `supervisor_replay=${formatSupervisorReplayDebug(handle)}`,
           `worker_log=[${workerDebugLog(handle).slice(-48).join(", ")}]`,
           `debug=${processLastDebugMessage(handle) ?? "n/a"}`,
           `execve_error=${formatExecveError(handle)}`,
@@ -1733,6 +1833,7 @@ export function debugRuntimeProcessHandles(
           `cmd=${JSON.stringify(processDebugCommand(handle))}`,
           `vm=0x${handle.vmPtr.toString(16)}`,
           `debug_error=${JSON.stringify(detail)}`,
+          `supervisor_replay=${formatSupervisorReplayDebug(handle)}`,
           `execve_error=${formatExecveError(handle)}`,
           `syscalls=[${formatProcessSyscallTrace(handle)}]`,
           `futex_trace=[${formatProcessFutexTrace(handle)}]`,
