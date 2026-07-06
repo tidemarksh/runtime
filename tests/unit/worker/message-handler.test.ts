@@ -514,6 +514,98 @@ test("messages delivered through a stale handle are rerouted to the transferred 
   expect(enqueueWorker).toHaveBeenCalledWith(childHandle, worker);
 });
 
+test("status with live child process pid is rerouted even when thread owner still points at parent", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  const thread = makeThreadState({ ownerPid: 1 });
+  threadWorkerStates.set(worker, thread);
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const enqueueWorker = vi.fn();
+  deps.enqueueWorker = enqueueWorker;
+  const parentHandle = {
+    pid: 1,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    vforkSnapshot: null,
+  } as unknown as ProcessHandle;
+  const childHandle = {
+    pid: 3,
+    parentPid: 1,
+    vmPtr: 0x1234,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Set<Worker>(),
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    ttyPtySlot: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    stdioOwner: null,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+    },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    kernelState: makeKernelState(),
+    kernel: makeSupervisorKernel({
+      abi_status_fault: () => 31,
+      abi_status_futex_wait: () => 12,
+      abi_status_vfork_wait: () => 11,
+      abi_status_execve_spawn: () => 13,
+      abi_status_clone_spawn: () => 25,
+      kernel_attach_runtime_state: () => {},
+      abi_max_threads: () => 1,
+      process_current_pid: () => 3,
+      thread_process_thread_count: () => 1,
+      process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
+      thread_process_ptr: () => 0x48000,
+      process_current_ppid: () => 1,
+      process_fd_ofd_id: () => 0,
+    }),
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(1, parentHandle);
+  deps.processHandles.set(3, childHandle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(parentHandle, worker, {
+    type: "status",
+    generation: 2,
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0x5000n,
+    sp: 0x6000n,
+    s11: 0x7000n,
+    vmPtr: 0x1234,
+    kernelState: childHandle.kernelState,
+    debug: "process_ptr=0x48000 process_pid_field=3 process_ppid_field=1",
+  } as ThreadWorkerOutbound);
+
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(getThreadOwnerPid(thread)).toBe(1);
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    parentHandle,
+    "reroute-message:pid=1->3:type=status:owner=1",
+  );
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    childHandle,
+    "status-route:0x1234:owner_pid=1:handle_pid=3:generation=2:status=0",
+  );
+  expect(enqueueWorker).toHaveBeenCalledWith(childHandle, worker);
+});
+
 test("clone child ready clears parent clone-spawn hold before resuming parent", () => {
   const parentWorker = {} as Worker;
   const childWorker = {} as Worker;

@@ -207,6 +207,103 @@ test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => 
   );
 });
 
+test("postThreadWorkerStatus treats completed pipe slots as pipe sync evidence", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const memory = new Uint8Array(kernelExports.memory.buffer);
+  const pipeSlotOffset = 0x2000 + 2 * 32;
+  memory.set(Uint8Array.from({ length: 32 }, (_, index) => 0x40 + index), pipeSlotOffset);
+  Object.assign(kernelExports, {
+    thread_take_completed_pipe_sync_slots: () => 1n << 2n,
+    thread_take_completed_pipe_sync_read_slots: () => 0n,
+    thread_take_completed_pipe_sync_write_slots: () => 1n << 2n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 9,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 0, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    syncEffects?: number;
+    pipeSlots?: Array<{ pipeSlot: number; mode?: number; slot: Uint8Array }>;
+  };
+  expect(msg.syncEffects).toBe(1);
+  expect(msg.pipeSlots).toHaveLength(1);
+  expect(msg.pipeSlots?.[0]?.pipeSlot).toBe(2);
+  expect(msg.pipeSlots?.[0]?.mode).toBe(2);
+  expect([...(msg.pipeSlots?.[0]?.slot ?? [])]).toEqual(
+    Array.from({ length: 32 }, (_, index) => 0x40 + index),
+  );
+});
+
+test("postThreadWorkerStatus snapshots traced pipe writes after fd table closes", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  Object.assign(kernelExports, {
+    kernel_pipe_region_bytes: () => 4 * (32 + 64),
+  });
+  const memory = new Uint8Array(kernelExports.memory.buffer);
+  const pipeSlotOffset = 0x2000 + 2 * (32 + 64);
+  const view = new DataView(kernelExports.memory.buffer);
+  view.setUint32(pipeSlotOffset, 0, true);
+  view.setUint32(pipeSlotOffset + 4, 4, true);
+  memory.set([0x6e, 0x6f, 0x64, 0x65], pipeSlotOffset + 32);
+  Object.assign(kernelExports, {
+    kernel_pipe_region_bytes: () => 4 * (32 + 64),
+    process_fd_ofd_id: () => 0,
+    supervisor_process_ofd_for_fd: () => 0,
+    debug_fd_syscall_trace_len: () => 1,
+    debug_fd_syscall_trace_vm_ptr: () => 0x1234,
+    debug_fd_syscall_trace_nr: () => 64n,
+    debug_fd_syscall_trace_arg0_ofd_id: () => 7,
+    debug_fd_syscall_trace_arg0_ofd_type: () => 2,
+    debug_fd_syscall_trace_arg0_ofd_ino: () => 2,
+    debug_fd_syscall_trace_arg1: () => 0x4000n,
+    debug_fd_syscall_trace_arg2: () => 4n,
+    debug_fd_syscall_trace_result: () => 4n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 10,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 3, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    syncEffects?: number;
+    pipeSlots?: Array<{ pipeSlot: number; mode?: number; slot: Uint8Array }>;
+  };
+  expect(msg.syncEffects).toBe(0);
+  expect(msg.pipeSlots).toHaveLength(1);
+  expect(msg.pipeSlots?.[0]?.pipeSlot).toBe(2);
+  expect(msg.pipeSlots?.[0]?.mode).toBe(2);
+  expect([...(msg.pipeSlots?.[0]?.slot.slice(32, 36) ?? [])]).toEqual([0x6e, 0x6f, 0x64, 0x65]);
+});
+
 test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics", () => {
   const postMessage = vi.fn();
   Object.defineProperty(globalThis, "postMessage", {

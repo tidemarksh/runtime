@@ -32,6 +32,7 @@ import type { SyncCause } from "./contracts/sync.js";
 
 interface WorkerLifecycleDeps {
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
+  drainHiddenProcessOutput(handle: ProcessHandle): boolean;
   drainProcessOutput(handle: ProcessHandle): boolean;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   getProcessByPid(pid: number): ProcessHandle | undefined;
@@ -110,13 +111,27 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     if (!beginProcessExit(handle)) {
       return false;
     }
-    if (processStdioOwner(handle) === null && !processHasKernelWorkerOwnership(handle)) {
+    const owner = processStdioOwner(handle);
+    if (owner !== null) {
+      deps.drainHiddenProcessOutput(handle);
+    } else if (!processHasKernelWorkerOwnership(handle)) {
       deps.drainProcessOutput(handle);
     }
     return true;
   }
 
   async function syncOwnedStateBeforeExit(handle: ProcessHandle): Promise<void> {
+    if (processStdioOwner(handle) !== null && processHasKernelWorkerOwnership(handle)) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-before-inherited-pipe-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
+      await deps.requestPipeStateSync(handle, true);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-owned-state-after-inherited-pipe-sync:${handle.pid}:${formatExitOwnedStateFdDebug(handle)}`,
+      );
+    }
     if (handle.pid > 0) {
       deps.appendRuntimeLifecycleEvent(
         handle.runtimeId,

@@ -165,6 +165,7 @@ function makeHandle(
 function makeLifecycleDeps(spies: ReturnType<typeof makeHandle>) {
   return createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent: () => {},
+    drainHiddenProcessOutput: () => false,
     drainProcessOutput: () => false,
     enqueueWorker: spies.enqueueWorker,
     getProcessByPid: () => undefined,

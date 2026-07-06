@@ -316,6 +316,11 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         s11: handle.kernel.thread_s11?.(candidateThread.vmPtr) ?? 0n,
       });
     }
+    const shouldApplyDetachedPipeSlots = (
+      !routeActions.adoptThreadKernelState
+      && (msg.pipeSlots?.length ?? 0) > 0
+      && !(activeVforkWorker && status === faultStatus)
+    );
     if (routeActions.adoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -352,6 +357,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           `status_adopt_break:src=0x${thread.vmPtr.toString(16)} target=0x${pre.vmPtr.toString(16)} pre_pc=0x${pre.pc.toString(16)} pre_sp=0x${pre.sp.toString(16)} pre_s11=0x${pre.s11.toString(16)} post_pc=0x${postPc.toString(16)} post_sp=0x${postSp.toString(16)} post_s11=0x${postS11.toString(16)} incoming_sig_slots=0x${msg.kernelState.sigSlotsPtr.toString(16)} incoming_process_pending=0x${msg.kernelState.processPendingPtr.toString(16)} incoming_process_runtime=0x${msg.kernelState.processRuntimeStatePtr.toString(16)}`,
         );
       }
+    } else if (shouldApplyDetachedPipeSlots) {
+      applyThreadPipeSlots(
+        handle,
+        msg.pipeSlots,
+        pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
+      );
     } else if (routeActions.applyFsMemoryWrites) {
       applyThreadKernelMemoryWrites(
         handle,
@@ -383,13 +394,22 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         deps.appendWorkerDebugLog(handle, `supervisor-thread-event:submit-error:${shadowThreadEventResult}`);
       }
     };
-    if (msg.waitInWorker) {
-      const waitInWorkerSyncEffects = (
-        status === handle.kernel.abi_status_ok()
-        && msg.syncEffects === undefined
+    const completedSyncEffectsForMessage = (
+      messageStatus: number,
+      message: ThreadWorkerStatusMessage,
+    ): number => {
+      const effects = (
+        messageStatus === handle.kernel.abi_status_ok()
+        && message.syncEffects === undefined
       )
         ? syncEffects.statusOkCompletedSyncEffects
-        : (msg.syncEffects ?? 0);
+        : (message.syncEffects ?? 0);
+      return (message.pipeSlots?.length ?? 0) > 0
+        ? effects | syncEffects.syncEffectPipeState
+        : effects;
+    };
+    if (msg.waitInWorker) {
+      const waitInWorkerSyncEffects = completedSyncEffectsForMessage(status, msg);
       submitShadowThreadEvent(msg, status, waitInWorkerSyncEffects);
       handleWaitInWorkerStatus(handle, worker, thread, msg, isRunningWorker);
       return;
@@ -453,12 +473,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       }
     }
 
-    const completedSyncEffects = (
-      transitionStatus === handle.kernel.abi_status_ok()
-      && transitionMsg.syncEffects === undefined
-    )
-      ? syncEffects.statusOkCompletedSyncEffects
-      : (transitionMsg.syncEffects ?? 0);
+    const completedSyncEffects = completedSyncEffectsForMessage(transitionStatus, transitionMsg);
     submitShadowThreadEvent(transitionMsg, transitionStatus, completedSyncEffects);
     const continueAfterOwnedStateSync = (): void => {
       handleStatusTransition({

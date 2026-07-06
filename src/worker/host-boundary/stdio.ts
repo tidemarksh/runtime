@@ -19,10 +19,13 @@ import {
 } from "../../layout/pipe.js";
 import type { KernelWorkerPipeSlotSnapshot } from "../../messages.js";
 import {
-  supervisorProcessPipeOfdForFd,
   supervisorProcessPipeSlotForFd,
 } from "../ownership/pipe-slot.js";
-import { supervisorProcessFdIsOpen } from "../ownership/fd-table.js";
+import {
+  supervisorProcessFdIsOpen,
+  supervisorProcessOfdForFd,
+} from "../ownership/fd-table.js";
+import { supervisorOfdFdType } from "../ownership/ofd-metadata.js";
 import { replacePendingPipeSlotSnapshotForSlot } from "../pending-pipe-slot-state.js";
 import { processOnStdout } from "../process-callback-state.js";
 import { outputBacklog, stdinQueue } from "../stdio-buffer-state.js";
@@ -212,8 +215,8 @@ export function stdioPipeSlotForFd(handle: ProcessHandle, fd: number): number {
   return supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);
 }
 
-function fdPipeOfdId(handle: ProcessHandle, fd: number): number {
-  return supervisorProcessPipeOfdForFd(handle, handle.vmPtr, fd);
+function fdOfdId(handle: ProcessHandle, fd: number): number {
+  return supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
 }
 
 function stdioFdUsesPipeSlot(handle: ProcessHandle, fd: number, pipeSlot: number): boolean {
@@ -222,6 +225,62 @@ function stdioFdUsesPipeSlot(handle: ProcessHandle, fd: number, pipeSlot: number
 
 function stdioFdIsDetached(handle: ProcessHandle, fd: number): boolean {
   return !supervisorProcessFdIsOpen(handle, handle.vmPtr, fd);
+}
+
+function fdTypeCarriesOutput(handle: ProcessHandle, ofdId: number): boolean {
+  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
+    return false;
+  }
+  const fdType = supervisorOfdFdType(handle, ofdId);
+  const ptySlaveType = handle.kernel.abi_fd_type_pty_slave?.();
+  const ptyMasterType = handle.kernel.abi_fd_type_pty_master?.();
+  return fdType === handle.kernel.abi_fd_type_pipe()
+    || (ptySlaveType !== undefined && fdType === ptySlaveType)
+    || (ptyMasterType !== undefined && fdType === ptyMasterType);
+}
+
+function outputPipeForFd(handle: ProcessHandle, fd: 1 | 2): number {
+  return fd === 1 ? processStdoutPipe(handle) : processStderrPipe(handle);
+}
+
+function hostOutputPipeForFd(handle: ProcessHandle, fd: 1 | 2): number {
+  return fd === 1 ? processHostStdio(handle).stdoutPipe : processHostStdio(handle).stderrPipe;
+}
+
+function inheritedHostOutputFallbackSlot(
+  handle: ProcessHandle,
+  fd: 1 | 2,
+  inheritedSlots: Set<number>,
+  ownerOfdId: number,
+): number {
+  const hostPipeSlot = hostOutputPipeForFd(handle, fd);
+  if (hostPipeSlot <= 0 || !inheritedSlots.has(hostPipeSlot)) {
+    return 0;
+  }
+  if (stdioFdIsDetached(handle, fd)) {
+    return hostPipeSlot;
+  }
+  const childOfdId = fdOfdId(handle, fd);
+  return childOfdId === ownerOfdId && fdTypeCarriesOutput(handle, childOfdId)
+    ? hostPipeSlot
+    : 0;
+}
+
+function hiddenOutputPipeForFd(
+  handle: ProcessHandle,
+  owner: ProcessHandle,
+  fd: 1 | 2,
+  inheritedSlots: Set<number>,
+): number {
+  const fdSlot = stdioPipeSlotForFd(handle, fd);
+  const ownerOfdId = fdOfdId(owner, fd);
+  if (inheritedSlots.has(fdSlot) && fdOfdId(handle, fd) === ownerOfdId) {
+    return fdSlot;
+  }
+  if (fdSlot > 0 && fdSlot === outputPipeForFd(handle, fd)) {
+    return fdSlot;
+  }
+  return inheritedHostOutputFallbackSlot(handle, fd, inheritedSlots, ownerOfdId);
 }
 
 function inheritedOutputPipeSlots(parent: ProcessHandle): Set<number> {
@@ -348,24 +407,8 @@ export function drainHiddenProcessOutput(handle: ProcessHandle): boolean {
   const inheritedSlots = inheritedOutputPipeSlots(owner);
   const target = outputTarget(handle);
   const source = handle;
-  const stdoutSlot = stdioPipeSlotForFd(handle, 1);
-  const stderrSlot = stdioPipeSlotForFd(handle, 2);
-  const ownerStdoutOfd = fdPipeOfdId(owner, 1);
-  const ownerStderrOfd = fdPipeOfdId(owner, 2);
-  const stdoutPipe = inheritedSlots.has(stdoutSlot) && fdPipeOfdId(handle, 1) === ownerStdoutOfd
-    ? stdoutSlot
-    : stdoutSlot > 0 && stdoutSlot === processStdoutPipe(handle)
-      ? stdoutSlot
-      : stdioFdIsDetached(handle, 1) && inheritedSlots.has(processHostStdio(handle).stdoutPipe)
-        ? processHostStdio(handle).stdoutPipe
-        : 0;
-  const stderrPipe = inheritedSlots.has(stderrSlot) && fdPipeOfdId(handle, 2) === ownerStderrOfd
-    ? stderrSlot
-    : stderrSlot > 0 && stderrSlot === processStderrPipe(handle)
-      ? stderrSlot
-      : stdioFdIsDetached(handle, 2) && inheritedSlots.has(processHostStdio(handle).stderrPipe)
-        ? processHostStdio(handle).stderrPipe
-        : 0;
+  const stdoutPipe = hiddenOutputPipeForFd(handle, owner, 1, inheritedSlots);
+  const stderrPipe = hiddenOutputPipeForFd(handle, owner, 2, inheritedSlots);
   const stdoutDrained = stdoutPipe !== 0
     ? drainPipeOutput(source, target, stdoutPipe)
     : false;
@@ -429,22 +472,21 @@ export async function settleInheritedChildOutput(
     "inherited-child",
   );
   const inheritedSlots = inheritedOutputPipeSlots(parent);
-  const slots = [stdioPipeSlotForFd(child, 1), stdioPipeSlotForFd(child, 2)]
-    .filter((slot) => inheritedSlots.has(slot))
+  const slots = [
+    hiddenOutputPipeForFd(child, parent, 1, inheritedSlots),
+    hiddenOutputPipeForFd(child, parent, 2, inheritedSlots),
+  ]
     .filter((slot, index, array) => slot > 0 && array.indexOf(slot) === index);
-  if (slots.length === 0) {
-    for (const slot of [processHostStdio(child).stdoutPipe, processHostStdio(child).stderrPipe]) {
-      if (slot > 0 && inheritedSlots.has(slot) && !slots.includes(slot)) {
-        slots.push(slot);
-      }
-    }
-  }
   if (slots.length === 0) {
     return false;
   }
   let stablePasses = 0;
 
   for (let pass = 0; pass < settlePlan.maxPasses; pass += 1) {
+    const preSyncDrainedChild = drainHiddenProcessOutput(child);
+    if (preSyncDrainedChild) {
+      await requestPipeStateSync(child, false);
+    }
     await requestPipeStateSync(child, false);
     const drainedParent = drainProcessOutput(parent);
     if (drainedParent) {
@@ -460,7 +502,7 @@ export async function settleInheritedChildOutput(
       if (parentCounters.tail === childCounters.tail && parentCounters.head === parentCounters.tail) {
         return true;
       }
-      return drainedChild && childCounters.head === childCounters.tail;
+      return (preSyncDrainedChild || drainedChild) && childCounters.head === childCounters.tail;
     });
     if (settled) {
       stablePasses += 1;

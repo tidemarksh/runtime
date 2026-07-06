@@ -50,8 +50,10 @@ import {
 } from "../ownership/ofd-peer.js";
 import {
   ofdIdsFromFdEntries,
+  supervisorProcessOfdForFd,
   snapshotProcessFdEntries,
 } from "../ownership/fd-table.js";
+import { supervisorProcessPipeSlotForFd } from "../ownership/pipe-slot.js";
 import {
   restoreProcessStates,
   snapshotProcessStates,
@@ -60,6 +62,10 @@ import {
   processHasKernelWorkerOwnership,
   requireKernelWorkerOwnership,
 } from "../kernel-worker-ownership.js";
+import {
+  processHostStdio,
+  processStdioOwner,
+} from "../process-stdio-state.js";
 import {
   composeHandlePipeUsed,
   expandPipePeerOfdIds,
@@ -169,6 +175,30 @@ function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
     deleteKernelShareSharedOfdId(handle, ofdId);
     deleteKernelShareOfdSlotSnapshot(handle, ofdId);
   }
+}
+
+function isInheritedOutputHostStdioPipeOfd(
+  handle: ProcessHandle,
+  sourceVmPtr: number,
+  ofdId: number,
+): boolean {
+  if (sourceVmPtr === 0 || processStdioOwner(handle) === null) {
+    return false;
+  }
+  const hostStdio = processHostStdio(handle);
+  for (const [fd, hostPipeSlot] of [
+    [1, hostStdio.stdoutPipe],
+    [2, hostStdio.stderrPipe],
+  ] as const) {
+    if (
+      hostPipeSlot > 0
+      && supervisorProcessOfdForFd(handle, sourceVmPtr, fd) === ofdId
+      && supervisorProcessPipeSlotForFd(handle, sourceVmPtr, fd) === hostPipeSlot
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface OwnedForkSharedStateSyncDeps {
@@ -312,9 +342,12 @@ export async function syncForkSharedStateViaKernelWorker(
     trackHeldForkSharedOfds(handle, options.sourceVmPtr ?? handle.vmPtr);
     pruneUnpeeredRegularFileSharedOfds(handle);
   }
-  const syncableForkSharedOfd = (ofdId: number): boolean => !isProcessHostStdioPipeOfd(handle, ofdId);
-  const runtimeNetworkSocketOfdIds = collectRuntimeNetworkSocketOfdIds(kernelShareMemberList(handle));
   const sourceVmPtr = options.sourceVmPtr ?? handle.vmPtr;
+  const syncableForkSharedOfd = (ofdId: number): boolean => (
+    !isProcessHostStdioPipeOfd(handle, ofdId)
+    || isInheritedOutputHostStdioPipeOfd(handle, sourceVmPtr, ofdId)
+  );
+  const runtimeNetworkSocketOfdIds = collectRuntimeNetworkSocketOfdIds(kernelShareMemberList(handle));
   const sourceFdEntries = memfsOnly ? [] : snapshotProcessFdEntries(handle, sourceVmPtr);
   const sourceFdOfdIds = memfsOnly
     ? []

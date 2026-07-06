@@ -37,6 +37,12 @@ import {
 
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
 const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
+const SYS_READ = 63n;
+const SYS_WRITE = 64n;
+const SYS_READV = 65n;
+const SYS_WRITEV = 66n;
+const PIPE_SLOT_MODE_READ = 1;
+const PIPE_SLOT_MODE_WRITE = 2;
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PIPE_SLOT_DEBUG ?? "") === "1";
@@ -325,6 +331,88 @@ function snapshotPipeSlot(
     slot: memory.slice(offset, offset + slotBytes),
     mode,
   };
+}
+
+function pipeSlotHasBufferedBytes(
+  kernelExports: KernelExports,
+  kernelState: KernelRuntimeState,
+  pipeSlot: number,
+): boolean {
+  const maxPipes = kernelExports.abi_max_pipes();
+  const slotBytes = kernelExports.kernel_pipe_region_bytes() / maxPipes;
+  if (
+    pipeSlot <= 0
+    || pipeSlot >= maxPipes
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= 0
+  ) {
+    return false;
+  }
+  const offset = kernelState.pipeBase + pipeSlot * slotBytes;
+  acquirePipeSlotForSnapshot(kernelExports.memory.buffer, offset);
+  const view = new DataView(kernelExports.memory.buffer);
+  return view.getUint32(offset, true) !== view.getUint32(offset + 4, true);
+}
+
+function fdTracePipeSlotMode(nr: bigint): number {
+  if (nr === SYS_READ || nr === SYS_READV) {
+    return PIPE_SLOT_MODE_READ;
+  }
+  if (nr === SYS_WRITE || nr === SYS_WRITEV) {
+    return PIPE_SLOT_MODE_WRITE;
+  }
+  return 0;
+}
+
+function snapshotTracedPipeSlots(
+  kernelExports: KernelExports,
+  kernelState: KernelRuntimeState,
+  processVmPtr: number,
+  existingSnapshots: readonly KernelWorkerPipeSlotSnapshot[],
+): KernelWorkerPipeSlotSnapshot[] {
+  const len = kernelExports.debug_fd_syscall_trace_len?.() ?? 0;
+  if (len <= 0 || !kernelExports.debug_fd_syscall_trace_arg0_ofd_ino) {
+    return [];
+  }
+  const existingSlots = new Set(existingSnapshots.map((snapshot) => snapshot.pipeSlot));
+  const pipeSlotModes = new Map<number, number>();
+  for (let index = len - 1; index >= 0; index -= 1) {
+    const traceVmPtr = kernelExports.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
+    if (traceVmPtr !== 0 && traceVmPtr !== processVmPtr) {
+      continue;
+    }
+    const nr = readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_nr?.(index));
+    if (nr === null) {
+      continue;
+    }
+    const mode = fdTracePipeSlotMode(nr);
+    if (mode === 0) {
+      continue;
+    }
+    if ((kernelExports.debug_fd_syscall_trace_arg0_ofd_type?.(index) ?? 0) !== kernelExports.abi_fd_type_pipe()) {
+      continue;
+    }
+    const result = readOptionalTraceI64(kernelExports.debug_fd_syscall_trace_result?.(index));
+    if (result === null || result <= 0n) {
+      continue;
+    }
+    const pipeSlot = kernelExports.debug_fd_syscall_trace_arg0_ofd_ino(index);
+    if (pipeSlot <= 0 || existingSlots.has(pipeSlot)) {
+      continue;
+    }
+    pipeSlotModes.set(pipeSlot, (pipeSlotModes.get(pipeSlot) ?? 0) | mode);
+  }
+  const snapshots: KernelWorkerPipeSlotSnapshot[] = [];
+  for (const [pipeSlot, mode] of pipeSlotModes) {
+    if (!pipeSlotHasBufferedBytes(kernelExports, kernelState, pipeSlot)) {
+      continue;
+    }
+    const snapshot = snapshotPipeSlot(kernelExports, kernelState, pipeSlot, mode);
+    if (snapshot) {
+      snapshots.push(snapshot);
+    }
+  }
+  return snapshots;
 }
 
 function snapshotCompletedPipeReadGuestMemory(
@@ -761,27 +849,35 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   publishThreadWorkerStage(102, status);
   const fdEntries = snapshotProcessFdEntries(kernelExports, vmPtr);
   publishThreadWorkerStage(103, status);
+  const completedPipeSlots = snapshotCompletedPipeSlots(kernelExports, kernelState);
+  const effectiveSyncEffects = completedPipeSlots.length > 0
+    ? syncEffects | SYNC_EFFECT_PIPE_STATE
+    : syncEffects;
   const shouldSnapshotPipeSlots = status === statusCodes.FAULT
-    || (syncEffects & SYNC_EFFECT_PIPE_STATE) !== 0;
+    || (effectiveSyncEffects & SYNC_EFFECT_PIPE_STATE) !== 0;
   const pipeSlots = shouldSnapshotPipeSlots
     ? (() => {
-        const completed = snapshotCompletedPipeSlots(kernelExports, kernelState);
-        if (completed.length > 0) {
-          return completed;
-        }
-        const processSlots = [
-          ...snapshotNonEmptyProcessPipeSlots(kernelExports, kernelState, fdEntries),
-        ];
-        return processSlots;
+        const fdPipeSlots = completedPipeSlots.length > 0
+          ? completedPipeSlots
+          : snapshotNonEmptyProcessPipeSlots(kernelExports, kernelState, fdEntries);
+        const tracedPipeSlots = snapshotTracedPipeSlots(
+          kernelExports,
+          kernelState,
+          vmPtr,
+          fdPipeSlots,
+        );
+        return tracedPipeSlots.length > 0
+          ? [...fdPipeSlots, ...tracedPipeSlots]
+          : fdPipeSlots;
       })()
     : undefined;
   publishThreadWorkerStage(104, status);
   const guestMemoryWrites = [
-    ...(snapshotCompletedPipeReadGuestMemory(kernelExports, status, syncEffects) ?? []),
+    ...(snapshotCompletedPipeReadGuestMemory(kernelExports, status, effectiveSyncEffects) ?? []),
     ...snapshotPendingFsRequestGuestMemory(kernelExports),
   ];
   publishThreadWorkerStage(105, status);
-  const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, syncEffects);
+  const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, effectiveSyncEffects);
   const kernelMemoryWrites = [
     ...(snapshotFsRingMemory(kernelExports, status) ?? []),
     ...snapshotProcessMemfsMemory(
@@ -843,7 +939,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
       : undefined,
     vmPtr,
     kernelState,
-    syncEffects,
+    syncEffects: effectiveSyncEffects,
     fdEntries,
     ofdSlots,
     processState: snapshotExecveProcessState(kernelExports, status),

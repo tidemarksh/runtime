@@ -446,6 +446,7 @@ function makeDeps(worker: Worker) {
     clearBlockedWorker: vi.fn(),
     completeProcessExit: vi.fn(async () => {}),
     commitNetworkConnect: vi.fn(async () => {}),
+    drainHiddenProcessOutput: vi.fn(() => false),
     enqueueWorker: vi.fn(),
     failProcess: vi.fn(),
     handleExecveSpawn: vi.fn(async () => {}),
@@ -1950,6 +1951,94 @@ test("STATUS_OK network pump syncs socket state before requeueing", async () => 
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("STATUS_OK drains hidden inherited output before pipe sync", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 7;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  deps.drainHiddenProcessOutput = vi.fn(() => true);
+  deps.requestPipeStateSync = vi.fn(async () => {});
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  });
+
+  expect(deps.drainHiddenProcessOutput).toHaveBeenCalledWith(handle);
+  expect(deps.requestPipeStateSync).toHaveBeenNthCalledWith(1, handle, true);
+  expect(deps.requestPipeStateSync).toHaveBeenCalledTimes(1);
+  expect(deps.drainHiddenProcessOutput.mock.invocationCallOrder[0])
+    .toBeLessThan(deps.requestPipeStateSync.mock.invocationCallOrder[0]);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+});
+
+test("STATUS_OK re-syncs when hidden inherited output appears after pipe sync", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 7;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  deps.drainHiddenProcessOutput = vi.fn()
+    .mockReturnValueOnce(false)
+    .mockReturnValueOnce(true);
+  deps.requestPipeStateSync = vi.fn(async () => {});
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  });
+
+  expect(deps.drainHiddenProcessOutput).toHaveBeenCalledTimes(2);
+  expect(deps.requestPipeStateSync).toHaveBeenNthCalledWith(1, handle, true);
+  expect(deps.requestPipeStateSync).toHaveBeenNthCalledWith(2, handle, false);
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
 });
 
 test("STATUS_OK pipe sync clears owner async state before requeueing", async () => {

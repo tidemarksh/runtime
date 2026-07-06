@@ -2,6 +2,7 @@ import { hostExecutionState } from "./host-execution-state.js";
 import { createWorkerControlMessageHandler } from "./message-handler/control.js";
 import { readProcessPidField } from "./diagnostics/format.js";
 import { createWorkerStatusMessageHandler } from "./message-handler/status/route.js";
+import { applyThreadPipeSlots } from "./ownership/pipe-control.js";
 import {
   supervisorProcessOwnerAbsent,
   supervisorProcessOwnerLiveMatches,
@@ -202,6 +203,18 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     return true;
   }
 
+  function processOwnerLiveMatchesHandle(
+    handle: ProcessHandle,
+    vmPtr: number,
+    runtimePid: number,
+  ): boolean {
+    try {
+      return supervisorProcessOwnerLiveMatches(handle.kernel, vmPtr, runtimePid);
+    } catch {
+      return false;
+    }
+  }
+
   return function handleWorkerMessage(
     handle: ProcessHandle,
     worker: Worker,
@@ -218,17 +231,22 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
     const isActiveVforkWorker = thread !== undefined
       && hostExecutionState(handle).vforkSnapshot !== null
       && hostExecutionState(handle).vforkWorker === worker;
-    const workerOwnerMatchesHandle = thread !== undefined && getThreadOwnerPid(thread) === handle.pid;
     if (
       !isActiveVforkWorker
-      && !workerOwnerMatchesHandle
       && handle.pid > 0
+      && msg.type === "status"
       && messageProcessPidField !== null
       && messageProcessPidField > 0
       && messageProcessPidField !== handle.pid
     ) {
       const rerouteHandle = deps.processHandles.get(messageProcessPidField);
-      if (rerouteHandle && rerouteHandle !== handle) {
+      if (
+        rerouteHandle
+        && rerouteHandle !== handle
+        && thread !== undefined
+        && processOwnerLiveMatchesHandle(rerouteHandle, thread.vmPtr, messageProcessPidField)
+      ) {
+        const previousOwnerPid = getThreadOwnerPid(thread);
         recordWorkerMessageDebugEvent(
           workerMessageDebugStats(handle),
           "rerouted",
@@ -236,9 +254,23 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         );
         deps.appendWorkerDebugLog(
           handle,
-          `reroute-message:pid=${handle.pid}->${messageProcessPidField}:type=${msg.type}`,
+          `reroute-message:pid=${handle.pid}->${messageProcessPidField}:type=${msg.type}`
+            + `:owner=${previousOwnerPid}`,
         );
-        handleWorkerMessage(rerouteHandle, worker, msg);
+        if (processExitInProgress(rerouteHandle)) {
+          recordWorkerMessageDebugEvent(
+            workerMessageDebugStats(rerouteHandle),
+            "exitInProgressDrops",
+            `exit-in-progress:${rerouteHandle.pid}:${msg.type}`,
+          );
+          return;
+        }
+        applyThreadPipeSlots(
+          rerouteHandle,
+          msg.pipeSlots,
+          undefined,
+        );
+        handleWorkerStatusMessage(rerouteHandle, worker, msg);
         return;
       }
     }

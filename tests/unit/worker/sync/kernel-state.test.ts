@@ -23,6 +23,7 @@ import {
   networkConnections,
 } from "../../../../src/worker/network-socket-state.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
+import { setProcessStdioState } from "../../../../src/worker/process-stdio-state.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
@@ -849,6 +850,64 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
   expect(processKernelWorkerRequest(child)).toHaveBeenCalledWith(expect.objectContaining({
     type: "sync-fork-shared-state",
     targetPids: [3],
+  }));
+});
+
+test("fork-shared sync publishes inherited child stdout without making stdin syncable", async () => {
+  const child = makeHandle(7, new Map([[0, 1], [1, 2]]));
+  const parent = makeHandle(3, new Map([[0, 1], [1, 2]]));
+  const hostStdio = {
+    stdinPipe: 3,
+    stdoutPipe: 4,
+    stderrPipe: 5,
+    refCount: 2,
+  };
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 1);
+  addKernelShareSharedOfdId(child, 2);
+  setProcessStdioState(parent, {
+    stdinPipe: 3,
+    stdoutPipe: 4,
+    stderrPipe: 5,
+    ttyPtySlot: 0,
+    hostStdio,
+    stdinClosed: false,
+    stdioOwner: null,
+  });
+  setProcessStdioState(child, {
+    stdinPipe: 3,
+    stdoutPipe: 4,
+    stderrPipe: 5,
+    ttyPtySlot: 0,
+    hostStdio,
+    stdinClosed: false,
+    stdioOwner: parent,
+  });
+  child.kernel.supervisor_process_private_pipe_slot_mask = () => (
+    (1n << 3n) | (1n << 4n)
+  );
+
+  seedOfd(child.memory, child.kernelState, 1, FD_TYPE_PIPE, 3, 3);
+  seedOfd(child.memory, child.kernelState, 2, FD_TYPE_PIPE, 4, -5);
+  seedOfd(parent.memory, parent.kernelState, 1, FD_TYPE_PIPE, 3, 3);
+  seedOfd(parent.memory, parent.kernelState, 2, FD_TYPE_PIPE, 4, -5);
+  seedPipeSlot(child.memory, child.kernelState, 3, 1, 1);
+  seedPipeSlot(child.memory, child.kernelState, 4, 1, 1);
+  seedPipeSlot(parent.memory, parent.kernelState, 3, 1, 1);
+  seedPipeSlot(parent.memory, parent.kernelState, 4, 1, 1);
+
+  await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-inherited-stdout-sync" },
+    deltaOfdIds: true,
+    includeMemfs: false,
+    trackHeldOfds: true,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(processKernelWorkerRequest(child)).toHaveBeenCalledWith(expect.objectContaining({
+    type: "sync-fork-shared-state",
+    ofdIds: [2],
   }));
 });
 

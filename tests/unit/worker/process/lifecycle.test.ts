@@ -119,6 +119,10 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
     appendRuntimeLifecycleEvent: () => {
       order.push("append");
     },
+    drainHiddenProcessOutput: () => {
+      order.push("drain-hidden");
+      return false;
+    },
     drainProcessOutput: () => {
       order.push("drain");
       return true;
@@ -169,7 +173,7 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
 });
 
-test("completeProcessExit skips child-side visible drain when stdio is owned by the parent", async () => {
+test("completeProcessExit publishes inherited output before fork-shared sync when stdio is owned by the parent", async () => {
   const parent = makeHandle({
     pid: 7,
     parentPid: null,
@@ -180,9 +184,19 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
     kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
   });
   const order: string[] = [];
+  const requestPipeStateSync = vi.fn(async () => {
+    order.push("sync-pipe");
+  });
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {
+    order.push("sync-fork");
+  });
   const lifecycle = createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent: () => {
       order.push("append");
+    },
+    drainHiddenProcessOutput: () => {
+      order.push("drain-hidden");
+      return false;
     },
     drainProcessOutput: () => {
       order.push("drain");
@@ -198,16 +212,12 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
     requestEpollStateSync: async () => {
       order.push("sync-epoll");
     },
-    requestPipeStateSync: async () => {
-      order.push("sync-pipe");
-    },
+    requestPipeStateSync,
     requestSocketStateSync: async () => {
       order.push("sync-socket");
     },
     resumeVforkParentViaKernelWorker: async () => {},
-    syncForkSharedStateViaKernelWorker: async () => {
-      order.push("sync-fork");
-    },
+    syncForkSharedStateViaKernelWorker,
     workerExitCompleteProcessExit: async () => {
       order.push("complete");
     },
@@ -216,14 +226,21 @@ test("completeProcessExit skips child-side visible drain when stdio is owned by 
 
   await lifecycle.completeProcessExit(handle, 0, 0);
 
-  expect(order[0]).toBe("append");
+  expect(order[0]).toBe("drain-hidden");
   expect(nonLifecycleEvents(order)).toEqual([
+    "drain-hidden",
+    "sync-pipe",
     "sync-fork",
     "sync-pipe",
     "sync-socket",
     "sync-epoll",
     "complete",
   ]);
+  expect(requestPipeStateSync).toHaveBeenCalledTimes(2);
+  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledTimes(1);
+  expect(requestPipeStateSync.mock.invocationCallOrder[0]).toBeLessThan(
+    syncForkSharedStateViaKernelWorker.mock.invocationCallOrder[0],
+  );
 });
 
 test("completeProcessExit delegates parent child-exit publication once", async () => {
@@ -238,6 +255,7 @@ test("completeProcessExit delegates parent child-exit publication once", async (
   const completedParents: number[] = [];
   const lifecycle = createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent: () => {},
+    drainHiddenProcessOutput: () => false,
     drainProcessOutput: () => false,
     enqueueWorker: () => {},
     getProcessByPid: (pid) => (pid === 7 ? parent : undefined),
@@ -269,6 +287,10 @@ test("completeProcessExit releases host stdio locally when no kernel-worker owns
   const lifecycle = createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent: () => {
       order.push("append");
+    },
+    drainHiddenProcessOutput: () => {
+      order.push("drain-hidden");
+      return false;
     },
     drainProcessOutput: () => {
       order.push("drain");
@@ -320,6 +342,7 @@ test("completeProcessExit releases host stdio locally exactly once for signaled 
   });
   const lifecycle = createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent: () => {},
+    drainHiddenProcessOutput: () => false,
     drainProcessOutput: () => false,
     enqueueWorker: () => {},
     getProcessByPid: () => undefined,
@@ -367,6 +390,7 @@ test("completeProcessExit runs only once while a kernel-worker-owned exit is alr
   });
   const lifecycle = createWorkerLifecycleHelpers({
     appendRuntimeLifecycleEvent,
+    drainHiddenProcessOutput: vi.fn(() => false),
     drainProcessOutput,
     enqueueWorker: () => {},
     getProcessByPid: () => undefined,

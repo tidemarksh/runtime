@@ -111,7 +111,15 @@ export function createWorkerSchedulerStateSyncHelpers(
       ].filter((slot) => slot > 0),
     );
     const fdPipeSlot = (fd: number): number => supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);
-    const hiddenSlots = [fdPipeSlot(1), fdPipeSlot(2)]
+    const hostOutputSlots = [
+      processHostStdio(handle).stdoutPipe,
+      processHostStdio(handle).stderrPipe,
+    ].filter((slot) => visibleSlots.has(slot));
+    const hiddenSlots = [
+      fdPipeSlot(1),
+      fdPipeSlot(2),
+      ...hostOutputSlots,
+    ]
       .filter((slot, index, slots) => slot > 0 && slots.indexOf(slot) === index);
     if (hiddenSlots.length === 0) {
       return false;

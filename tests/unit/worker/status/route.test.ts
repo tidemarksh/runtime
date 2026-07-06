@@ -62,6 +62,8 @@ function createWorkerStatusMessageHandler(deps: Parameters<typeof createRawWorke
     appendRuntimeLifecycleEvent: () => {},
     pruneDetachedProcessWorkers: () => {},
     pumpNetworkConnections: async () => false,
+    drainHiddenProcessOutput: () => false,
+    requestPipeStateSync: async () => {},
     requestSocketStateSync: async () => {},
     ...deps,
   } as Parameters<typeof createRawWorkerStatusMessageHandler>[0]);
@@ -2147,7 +2149,107 @@ test("status handler treats zero OK sync effects as explicit no-op", async () =>
   expect(requestPipeStateSync).not.toHaveBeenCalled();
 });
 
-test("status handler applies thread pipe slot snapshots before pipe sync", () => {
+test("status handler treats incoming pipe slots as pipe sync evidence when syncEffects is zero", async () => {
+  const requestPipeStateSync = vi.fn(async () => {});
+  const drainHiddenProcessOutput = vi.fn(() => false);
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
+  const thread = makeThreadState();
+  threadWorkerStates.set(worker, thread);
+
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog: () => {},
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    pumpProcess: () => {},
+    notifyWorkerStatusProgress: () => {},
+    failProcess: () => {},
+    requestPipeStateSync,
+    drainHiddenProcessOutput,
+    requestEpollStateSync: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    blockWorker: () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+
+  const memory = new WebAssembly.Memory({ initial: 80, maximum: 80, shared: true });
+  const kernelState = { ...makeKernelState(), pipeBase: 0x1000 };
+  const pipeSlot = 5;
+  const slot = new Uint8Array(PIPE_SLOT_SIZE);
+  const slotView = new DataView(slot.buffer);
+  slotView.setUint32(0, 0, true);
+  slotView.setUint32(4, 1, true);
+  slotView.setInt32(8, 1, true);
+  slotView.setInt32(12, 1, true);
+  slot[32] = 0x7a;
+  const handle = {
+    pid: 7,
+    memory,
+    workers: new Set([worker]),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    stdinQueue: [],
+    outputBacklog: [],
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: { notifySab: new SharedArrayBuffer(12), stateSab: new SharedArrayBuffer(176) },
+    kernel: makeKernel(7, {
+      memory,
+      abi_max_pipes: () => 64,
+      kernel_pipe_base: () => kernelState.pipeBase,
+      kernel_pipe_region_bytes: () => 64 * PIPE_SLOT_SIZE,
+      kernel_attach_runtime_state: vi.fn(),
+    }),
+    kernelState,
+    runningWorker: worker,
+  };
+
+  setThreadGeneration(thread as never, 1);
+  handler(handle, worker, {
+    type: "status",
+    status: 0,
+    generation: 1,
+    vmPtr: 0x1234,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0x2000n,
+    sp: 0x3000n,
+    s11: 0x4000n,
+    kernelState,
+    pipeSlots: [{ pipeSlot, slot }],
+    syncEffects: 0,
+  });
+
+  await Promise.resolve();
+  expect(drainHiddenProcessOutput).toHaveBeenCalledWith(handle);
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+});
+
+test("status handler applies thread pipe slot snapshots before pipe sync", async () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
   const thread = makeThreadState();
@@ -2194,6 +2296,12 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     syncEffectProcessMemfs: 128,
     statusDefersOwnedStateSync: () => false,
   } as never);
+  const settleStatusSync = async (): Promise<void> => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
 
   const memory = new WebAssembly.Memory({ initial: 80, maximum: 80, shared: true });
   const kernelState = { ...makeKernelState(), pipeBase: 0x1000 };
@@ -2220,6 +2328,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
       kernel_pipe_base: () => kernelState.pipeBase,
       kernel_pipe_region_bytes: () => 64 * PIPE_SLOT_SIZE,
       kernel_attach_runtime_state: vi.fn(),
+      supervisor_worker_status_sync_action: () => 0,
     }),
     kernelState,
     runningWorker: worker,
@@ -2240,6 +2349,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     pipeSlots: [{ pipeSlot, slot }],
     syncEffects: 0,
   });
+  await settleStatusSync();
 
   const applied = new Uint8Array(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
   const appliedView = new DataView(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
@@ -2275,6 +2385,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     pipeSlots: [{ pipeSlot, slot: staleReaderSlot }],
     syncEffects: 0,
   });
+  await settleStatusSync();
 
   expect(appliedView.getUint32(0, true)).toBe(9);
   expect(appliedView.getUint32(4, true)).toBe(9);
@@ -2312,6 +2423,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     pipeSlots: [{ pipeSlot, slot: writerSlot }],
     syncEffects: 0,
   });
+  await settleStatusSync();
 
   expect(appliedView.getUint32(0, true)).toBe(9);
   expect(appliedView.getUint32(4, true)).toBe(12);
@@ -2348,6 +2460,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     pipeSlots: [{ pipeSlot, slot: staleDrainedReaderSlot, mode: 1 }],
     syncEffects: 0,
   });
+  await settleStatusSync();
 
   expect(appliedView.getUint32(0, true)).toBe(9);
   expect(appliedView.getUint32(4, true)).toBe(12);
@@ -2385,6 +2498,7 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     pipeSlots: [{ pipeSlot, slot: drainedReaderSlot, mode: 1 }],
     syncEffects: 0,
   });
+  await settleStatusSync();
 
   expect(appliedView.getUint32(0, true)).toBe(20);
   expect(appliedView.getUint32(4, true)).toBe(20);
@@ -2394,6 +2508,126 @@ test("status handler applies thread pipe slot snapshots before pipe sync", () =>
     expect(pendingView.getUint32(0, true)).toBe(20);
     expect(pendingView.getUint32(4, true)).toBe(20);
   }
+});
+
+test("status handler preserves pipe slot snapshots from pid-mismatched output status without adopting kernel state", async () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
+  const thread = makeThreadState({ ownerPid: 1 });
+  threadWorkerStates.set(worker, thread);
+  const appendWorkerDebugLog = vi.fn();
+  const enqueueWorker = vi.fn();
+  const clearBlockedWorker = vi.fn();
+  const notifyWorkerStatusProgress = vi.fn();
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog,
+    clearBlockedWorker,
+    enqueueWorker,
+    notifyWorkerStatusProgress,
+    blockWorker: () => {},
+    pumpProcess: () => {},
+    releaseSharedHostStdio: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    commitNetworkConnect: async () => {},
+    resumeVforkParentViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+  const settleStatusSync = async (): Promise<void> => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  const memory = new WebAssembly.Memory({ initial: 80, maximum: 80, shared: true });
+  const kernelState = { ...makeKernelState(), pipeBase: 0x1000 };
+  const pipeSlot = 5;
+  const slot = new Uint8Array(PIPE_SLOT_SIZE);
+  const slotView = new DataView(slot.buffer);
+  slotView.setUint32(0, 0, true);
+  slotView.setUint32(4, 4, true);
+  slotView.setInt32(8, 1, true);
+  slotView.setInt32(12, 1, true);
+  slot.set([0x6e, 0x6f, 0x64, 0x65], 32);
+  const attachRuntimeState = vi.fn();
+  const handle = {
+    pid: 1,
+    memory,
+    workers: new Set([worker]),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    stdinQueue: [],
+    outputBacklog: [],
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: { notifySab: new SharedArrayBuffer(12), stateSab: new SharedArrayBuffer(176) },
+    kernel: makeKernel(1, {
+      memory,
+      abi_max_pipes: () => 64,
+      kernel_pipe_base: () => kernelState.pipeBase,
+      kernel_pipe_region_bytes: () => 64 * PIPE_SLOT_SIZE,
+      kernel_attach_runtime_state: attachRuntimeState,
+      supervisor_worker_status_sync_action: () => 0,
+    }),
+    kernelState,
+    runningWorker: worker,
+  };
+
+  setThreadGeneration(thread as never, 1);
+  handler(handle, worker, {
+    type: "status",
+    status: 0,
+    generation: 1,
+    vmPtr: 0x1234,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0x2000n,
+    sp: 0x3000n,
+    s11: 0x4000n,
+    kernelState: { ...kernelState, heapBase: 0xaaaa },
+    pipeSlots: [{ pipeSlot, slot }],
+    syncEffects: 0,
+    debug: "pc=0x2000 sp=0x3000 s11=0x4000 process_pid_field=5",
+  });
+  await settleStatusSync();
+
+  const applied = new Uint8Array(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
+  const appliedView = new DataView(memory.buffer, kernelState.pipeBase + pipeSlot * PIPE_SLOT_SIZE, PIPE_SLOT_SIZE);
+  expect(appliedView.getUint32(0, true)).toBe(0);
+  expect(appliedView.getUint32(4, true)).toBe(4);
+  expect([...applied.slice(32, 36)]).toEqual([0x6e, 0x6f, 0x64, 0x65]);
+  expect(pendingPipeSlotSnapshots(handle)).toHaveLength(1);
+  expect(attachRuntimeState).not.toHaveBeenCalled();
+  expect(handle.kernelState.heapBase).toBe(0);
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "status_debug:0x1234:handle_pid=1:process_pid_field=5",
+  );
 });
 
 test("status handler adopts kernel state for transient pid mismatch while the active vfork worker is running", () => {

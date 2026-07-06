@@ -187,9 +187,9 @@ function makeHandle(overrides: Record<string, unknown> = {}) {
   return handle;
 }
 
-test("requestPipeStateSync drains the visible stdio owner for hidden-child internal sync", async () => {
+test("requestPipeStateSync falls back to visible stdio owner when hidden-child internal sync has no output", async () => {
   const drainProcessOutput = vi.fn(() => true);
-  const drainHiddenProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => false);
   const retryHostBlockedWorker = vi.fn();
   const parent = makeHandle();
   const child = makeHandle({ pid: 2, stdioOwner: parent });
@@ -206,7 +206,8 @@ test("requestPipeStateSync drains the visible stdio owner for hidden-child inter
 
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
-  expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
+  expect(drainHiddenProcessOutput).toHaveBeenCalledTimes(1);
+  expect(drainHiddenProcessOutput).toHaveBeenCalledWith(child);
   expect(processKernelWorkerRequest(child)).toHaveBeenCalledTimes(1);
   expect(processKernelWorkerRequest(parent)).toHaveBeenCalledTimes(1);
   expect(retryHostBlockedWorker).not.toHaveBeenCalled();
@@ -948,9 +949,9 @@ test("requestSocketStateSync does not restore stale recv bytes after local socke
   expect(memory[netBufBase + 16]).toBe(0x44);
 });
 
-test("requestPipeStateSync drains visible stdio owner during kernel-owned waking sync", async () => {
+test("requestPipeStateSync falls back to visible stdio owner during kernel-owned waking sync", async () => {
   const drainProcessOutput = vi.fn(() => true);
-  const drainHiddenProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => false);
   const retryHostBlockedWorker = vi.fn();
   const parent = makeHandle({ pid: 1 });
   const child = makeHandle({ pid: 2, stdioOwner: parent });
@@ -969,7 +970,35 @@ test("requestPipeStateSync drains visible stdio owner during kernel-owned waking
   expect(processKernelWorkerRequest(parent)).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).toHaveBeenCalledWith(parent);
-  expect(drainHiddenProcessOutput).not.toHaveBeenCalled();
+  expect(drainHiddenProcessOutput).toHaveBeenCalledTimes(1);
+  expect(drainHiddenProcessOutput).toHaveBeenCalledWith(child);
+});
+
+test("requestPipeStateSync drains hidden inherited host stdio after child fds close", async () => {
+  const drainProcessOutput = vi.fn(() => true);
+  const drainHiddenProcessOutput = vi.fn(() => true);
+  const retryHostBlockedWorker = vi.fn();
+  const parent = makeHandle({ pid: 1 });
+  const child = makeHandle({
+    pid: 2,
+    vmPtr: 0x1234,
+    stdioOwner: parent,
+    hostStdio: processHostStdio(parent),
+  });
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput,
+    drainHiddenProcessOutput,
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(child, true);
+
+  expect(drainHiddenProcessOutput).toHaveBeenCalledTimes(1);
+  expect(drainHiddenProcessOutput).toHaveBeenCalledWith(child);
+  expect(drainProcessOutput).not.toHaveBeenCalled();
 });
 
 test("requestPipeStateSync re-syncs the visible owner after self-drain advances the read head", async () => {

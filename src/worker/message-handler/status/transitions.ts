@@ -251,6 +251,9 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (shouldSyncPipeState || shouldSyncSocketState || shouldSyncLifecycle) {
         deps.appendWorkerDebugLog(handle, `ok-sync-start:0x${thread.vmPtr.toString(16)}`);
         setThreadOwnerAsyncStatus(thread, status);
+        const drainedHiddenOutputBeforePipeSync = shouldSyncPipeState
+          ? deps.drainHiddenProcessOutput(handle)
+          : false;
         const syncPipeState = shouldSyncPipeState
           ? deps.requestPipeStateSync(handle, true)
           : Promise.resolve();
@@ -260,6 +263,17 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
         void syncPipeState
           .then(() => {
             assertHandleProcessIdentity("handleStatusTransition:after-pipe-sync");
+            if (
+              !shouldSyncPipeState
+              || drainedHiddenOutputBeforePipeSync
+              || !deps.drainHiddenProcessOutput(handle)
+            ) {
+              return undefined;
+            }
+            return deps.requestPipeStateSync(handle, false)
+              .then(() => {
+                assertHandleProcessIdentity("handleStatusTransition:after-hidden-output-drain");
+              });
           })
           .then(() => syncSocketState)
           .then(() => {

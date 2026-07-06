@@ -28,6 +28,7 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   commitNetworkConnect(handle: ProcessHandle, vmPtr: number, result?: bigint): Promise<void>;
+  drainHiddenProcessOutput(handle: ProcessHandle): boolean;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleExecveSpawn(handle: ProcessHandle, worker: Worker, thread: ThreadWorkerState): Promise<void>;

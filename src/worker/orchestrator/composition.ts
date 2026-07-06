@@ -263,6 +263,7 @@ const workerExitHelpers = createWorkerExitHelpers({
 });
 workerLifecycleHelpers = createWorkerLifecycleHelpers({
   appendRuntimeLifecycleEvent,
+  drainHiddenProcessOutput,
   drainProcessOutput,
   enqueueWorker,
   getProcessByPid: (pid) => processHandles.get(pid),
@@ -313,6 +314,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   clearVforkSnapshot,
   clearBlockedWorker,
   completeProcessExit,
+  drainHiddenProcessOutput,
   enqueueWorker,
   failProcess,
   handleExecveSpawn,

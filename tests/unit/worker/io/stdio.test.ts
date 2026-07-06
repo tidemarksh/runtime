@@ -83,6 +83,18 @@ function seedPipe(
   setPipeEnds(memory, kernelState, pipeSlot, 1, 0);
 }
 
+function clearPipe(
+  memory: WebAssembly.Memory,
+  kernelState: KernelRuntimeState,
+  pipeSlot: number,
+): void {
+  const view = new DataView(memory.buffer);
+  const base = kernelState.pipeBase + pipeSlot * (32 + 65_536);
+  view.setUint32(base, 0, true);
+  view.setUint32(base + 4, 0, true);
+  setPipeEnds(memory, kernelState, pipeSlot, 1, 0);
+}
+
 function makeHandle(
   overrides: Partial<ProcessHandle> = {},
 ): { handle: ProcessHandle; releaseHostStdio: ReturnType<typeof vi.fn> } {
@@ -101,6 +113,9 @@ function makeHandle(
     },
     process_fd_flags: () => 0,
     kernel_ofd_fd_type: (ofdId: number) => (ofdId >= 3 && ofdId <= 5 ? 2 : 0),
+    supervisor_ofd_fd_type(this: KernelExports, ofdId: number) {
+      return this.kernel_ofd_fd_type(ofdId);
+    },
     kernel_ofd_ino: (ofdId: number) => {
       if (ofdId === 3) return 0;
       if (ofdId === 4) return 4;
@@ -434,6 +449,38 @@ test("drainHiddenProcessOutput falls back to shared host stdout after child fds 
   expect(delivered).toEqual(["detached-child-out\n"]);
 });
 
+test("drainHiddenProcessOutput falls back to inherited host stdout when fd pipe slot is unavailable", () => {
+  const { handle: owner } = makeHandle();
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
+    stdioOwner: owner,
+    onStdout: undefined,
+  });
+  const pipeSlotForFd = child.kernel.supervisor_process_pipe_slot_for_fd?.bind(child.kernel);
+  child.kernel = {
+    ...child.kernel,
+    supervisor_process_pipe_slot_for_fd: (vmPtr: number, fd: number) => (
+      fd === 1 ? 0 : (pipeSlotForFd?.(vmPtr, fd) ?? 0)
+    ),
+    supervisor_process_pipe_ofd_for_fd: () => 0,
+  } as unknown as KernelExports;
+
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "slotless-child-out\n");
+
+  expect(drainHiddenProcessOutput(child)).toBe(true);
+  expect(delivered).toEqual(["slotless-child-out\n"]);
+});
+
 test("drainHiddenProcessOutput does not fall back to host stdout while child fd1 is a file", () => {
   const { handle: owner } = makeHandle();
   const delivered: string[] = [];
@@ -712,6 +759,42 @@ test("settleInheritedChildOutput drains child local stdout when parent has not m
 
   expect(syncCount).toBeGreaterThanOrEqual(2);
   expect(delivered).toEqual(["child-local\n"]);
+});
+
+test("settleInheritedChildOutput drains hidden child stdout before pipe sync can replace it", async () => {
+  const { handle: owner } = makeHandle();
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
+    stdioOwner: owner,
+    onStdout: undefined,
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+  });
+  setProcessKernelWorkerRequest(owner, vi.fn(async () => ({ type: "pipe-state-synced" } as never)));
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "pre-sync-child\n");
+
+  let childSyncCount = 0;
+  await settleInheritedChildOutput(child, async (handle) => {
+    if (handle !== child) {
+      return;
+    }
+    childSyncCount += 1;
+    if (childSyncCount === 1) {
+      clearPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe);
+    }
+  });
+
+  expect(childSyncCount).toBeGreaterThan(0);
+  expect(delivered).toEqual(["pre-sync-child\n"]);
 });
 
 test("drainProcessOutput drains hidden stdout bytes after stdout was remapped away from the host pipe", () => {
