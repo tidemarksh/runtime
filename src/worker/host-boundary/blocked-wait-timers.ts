@@ -73,15 +73,18 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     blocked: HostBlockedWorkerState,
     delayMs: number,
     reason: number,
+    hostOpSeq: bigint,
   ): void {
     if (!hasSupervisorShadowProtocol(handle.kernel)) {
       return;
     }
     const vmPtr = blocked.vmPtr;
     const status = handle.kernel.thread_status?.(vmPtr) ?? blocked.status;
+    const eventKind = supervisorThreadEventKindTimerFired(handle);
+    const sequence = getBlockedRpcGeneration(blocked);
     const result = submitSupervisorShadowStatusEvent(handle, {
-      eventKind: supervisorThreadEventKindTimerFired(handle),
-      sequence: getBlockedRpcGeneration(blocked),
+      eventKind,
+      sequence,
       vmPtr,
       pid: handle.pid,
       tid: handle.kernel.thread_tid?.(vmPtr) ?? 0,
@@ -93,7 +96,14 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     });
     if (result !== undefined && result < 0) {
       deps.appendWorkerDebugLog(handle, `supervisor-timer-fired-event:submit-error:${result}`);
+      return;
     }
+    deps.appendWorkerDebugLog(
+      handle,
+      `supervisor-timer-fired-event:submit:vm=0x${vmPtr.toString(16)}`
+        + `:seq=${sequence}:hostSeq=${hostOpSeq.toString()}:kind=${eventKind}:result=${result ?? "n/a"}`
+        + `:status=${status}:reason=${reason}:delay=${delayMs}`,
+    );
   }
 
   function scheduleHostBlockedRetry(
@@ -109,11 +119,11 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
       appendWorkerDebugLog: deps.appendWorkerDebugLog,
       failProcess: deps.failProcess,
-      onTimerFired: (delayMs, reason) => {
+      onTimerFired: (delayMs, reason, hostOpSeq) => {
         if (hostBlockedRetryTimers.get(blocked) === timer) {
           hostBlockedRetryTimers.delete(blocked);
         }
-        submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason);
+        submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason, hostOpSeq);
         deps.retryHostBlockedWorker(handle, worker);
       },
     });

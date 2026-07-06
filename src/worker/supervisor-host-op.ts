@@ -539,7 +539,7 @@ export function armSupervisorBlockedRetryTimer(
   record: SupervisorHostOpRecord,
   deps: Pick<WorkerMessageHandlerDeps, "appendRuntimeLifecycleEvent" | "appendWorkerDebugLog" | "failProcess">
     & {
-      onTimerFired(delayMs: number, reason: number): void;
+      onTimerFired(delayMs: number, reason: number, hostOpSeq: bigint): void;
     },
 ): ReturnType<typeof setTimeout> {
   const delayMs = bigintToSafeNumber(record.flags, "supervisor blocked retry delay");
@@ -549,15 +549,32 @@ export function armSupervisorBlockedRetryTimer(
     `supervisor-blocked-retry-timer-arm:${handle.pid}:vm=0x${record.parentVmPtr.toString(16)}`
       + `:seq=${record.seq.toString()}:delay=${delayMs}:reason=${reason}`,
   );
+  deps.appendWorkerDebugLog(
+    handle,
+    `supervisor-blocked-retry-timer-arm:vm=0x${record.parentVmPtr.toString(16)}`
+      + `:seq=${record.seq.toString()}:delay=${delayMs}:reason=${reason}`,
+  );
   return globalThis.setTimeout(() => {
     try {
+      const status = submitSupervisorHostOpCompletion(
+        handle,
+        record,
+        supervisorHostCompletionOutcomeSuccess(handle),
+        reason,
+      ) ?? 0;
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-blocked-retry-timer-fired:vm=0x${record.parentVmPtr.toString(16)}`
-          + `:seq=${record.seq.toString()}:delay=${delayMs}:reason=${reason}`,
+          + `:seq=${record.seq.toString()}:delay=${delayMs}:reason=${reason}:completion=${status}`,
       );
-      deps.onTimerFired(delayMs, reason);
+      deps.onTimerFired(delayMs, reason, record.seq);
     } catch (error) {
+      submitSupervisorHostOpCompletion(
+        handle,
+        record,
+        supervisorHostCompletionOutcomeFailure(handle),
+        reason,
+      );
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     }
   }, delayMs);

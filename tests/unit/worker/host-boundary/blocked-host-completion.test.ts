@@ -15,6 +15,7 @@ import {
 } from "../../../../src/worker/thread-host-state.js";
 import { setBlockedRpcGeneration } from "../../../../src/worker/host-blocked-state.js";
 import {
+  armSupervisorBlockedRetryTimer,
   armSupervisorHostTimer,
   drainSupervisorArmHostTimerHostOp,
 } from "../../../../src/worker/supervisor-host-op.js";
@@ -27,6 +28,7 @@ import {
   writeSupervisorArmHostTimerHostOpRecord,
   writeSupervisorBlockedRetryHostOpRecord,
 } from "../support/supervisor-abi.js";
+import { workerDebugLog } from "../../../../src/worker/worker-debug-log.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -156,6 +158,63 @@ test("host boundary executes supervisor arm timer HostOp through completion ABI"
   expect(completionViews[0].getUint32(36, true)).toBe(1);
   expect(runtimeEvents[0]).toContain("supervisor-host-timer-arm");
   expect(workerEvents[0]).toContain("supervisor-host-timer-fired");
+});
+
+test("host boundary records blocked retry timer HostCompletion and worker trace", async () => {
+  vi.useFakeTimers();
+  const worker = { postMessage: vi.fn() } as unknown as Worker;
+  const kernel = makeHostBoundaryKernel();
+  const handle = makeHostBoundaryHandle(kernel, worker);
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  const completionViews: DataView[] = [];
+  const runtimeEvents: string[] = [];
+  const workerEvents: string[] = [];
+  kernel.memory = memory;
+  handle.memory = memory;
+  Object.assign(kernel, {
+    supervisor_host_completion_record_bytes: () => 64,
+    supervisor_host_completion_record_magic: () => 0x4348_5354,
+    supervisor_host_completion_outcome_success: () => 1,
+    supervisor_host_completion_outcome_failure: () => 2,
+    supervisor_complete_host_op: vi.fn((completionPtr: number, completionLen: number) => {
+      completionViews.push(new DataView(kernel.memory!.buffer, completionPtr, completionLen));
+      return 0;
+    }),
+  });
+
+  armSupervisorBlockedRetryTimer(handle, {
+    kind: 15,
+    seq: 17n,
+    parentVmPtr: 0x1234,
+    childVmPtr: 0,
+    tid: 42,
+    processPtr: 0x2000,
+    status: kernel.abi_status_pipe_wait(),
+    flags: 1n,
+    childTidPtr: 0n,
+  }, {
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => runtimeEvents.push(event),
+    appendWorkerDebugLog: (_handle, event) => workerEvents.push(event),
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    onTimerFired: vi.fn(),
+  });
+
+  await vi.advanceTimersByTimeAsync(1);
+
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(completionViews[0]?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(completionViews[0]?.getUint32(12, true)).toBe(15);
+  expect(completionViews[0]?.getBigUint64(16, true)).toBe(17n);
+  expect(completionViews[0]?.getUint32(24, true)).toBe(0x1234);
+  expect(completionViews[0]?.getUint32(36, true)).toBe(1);
+  expect(completionViews[0]?.getUint32(40, true)).toBe(0);
+  expect(runtimeEvents[0]).toBe("supervisor-blocked-retry-timer-arm:1:vm=0x1234:seq=17:delay=1:reason=0");
+  expect(workerEvents).toEqual([
+    "supervisor-blocked-retry-timer-arm:vm=0x1234:seq=17:delay=1:reason=0",
+    "supervisor-blocked-retry-timer-fired:vm=0x1234:seq=17:delay=1:reason=0:completion=0",
+  ]);
 });
 
 test("host boundary drains timer HostOp by kind without consuming pending clone", () => {
@@ -321,6 +380,7 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
   handle.memory = memory;
   addProcessWorker(handle, blockedWorker);
   hostExecutionState(handle).runningWorker = runningWorker;
+  const completionViews: DataView[] = [];
   const submittedEvents: Array<{
     kind: number;
     vmPtr: number;
@@ -347,6 +407,14 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     supervisor_abi_version: () => 1,
     supervisor_host_op_record_bytes: () => 64,
     supervisor_host_op_kind_retry_blocked_worker: () => 15,
+    supervisor_host_completion_record_bytes: () => 64,
+    supervisor_host_completion_record_magic: () => 0x4348_5354,
+    supervisor_host_completion_outcome_success: () => 1,
+    supervisor_host_completion_outcome_failure: () => 2,
+    supervisor_complete_host_op: vi.fn((completionPtr: number, completionLen: number) => {
+      completionViews.push(new DataView(kernel.memory!.buffer, completionPtr, completionLen));
+      return 0;
+    }),
     supervisor_next_host_op: vi.fn((_outPtr: number, outLen: number) => {
       expect(outLen).toBe(64);
       return 0;
@@ -419,6 +487,13 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
 
   await vi.advanceTimersByTimeAsync(1);
 
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledWith(expect.any(Number), 64);
+  expect(completionViews[0]?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(completionViews[0]?.getUint32(12, true)).toBe(15);
+  expect(completionViews[0]?.getBigUint64(16, true)).toBe(17n);
+  expect(completionViews[0]?.getUint32(24, true)).toBe(blockedThread.vmPtr);
+  expect(completionViews[0]?.getUint32(36, true)).toBe(1);
+  expect(completionViews[0]?.getUint32(40, true)).toBe(0);
   expect(supervisorSubmitThreadEvent).toHaveBeenCalledWith(expect.any(Number), 80);
   expect(submittedEvents[0]).toEqual({
     kind: 6,
@@ -428,4 +503,10 @@ test("host boundary reports blocked retry timer expiry to supervisor before retr
     blockedReason: 0,
     detail: 1n,
   });
+  expect(workerDebugLog(handle)).toEqual(expect.arrayContaining([
+    `supervisor-blocked-retry-timer-arm:vm=0x${blockedThread.vmPtr.toString(16)}:seq=17:delay=1:reason=0`,
+    `supervisor-blocked-retry-timer-fired:vm=0x${blockedThread.vmPtr.toString(16)}:seq=17:delay=1:reason=0:completion=0`,
+    `supervisor-timer-fired-event:submit:vm=0x${blockedThread.vmPtr.toString(16)}`
+      + `:seq=3:hostSeq=17:kind=6:result=0:status=${kernel.abi_status_pipe_wait()}:reason=0:delay=1`,
+  ]));
 });

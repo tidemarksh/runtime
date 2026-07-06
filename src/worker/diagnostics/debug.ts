@@ -363,6 +363,19 @@ function findLastWorkerLogEntry(
   return null;
 }
 
+function workerLogEntryReferencesVm(entry: string, vmTag: string): boolean {
+  return entry.includes(vmTag) || entry.includes(`vm=${vmTag}`);
+}
+
+function workerLogEntryMatchesPrefix(
+  entry: string,
+  prefix: string,
+  vmTag: string,
+): boolean {
+  return entry.startsWith(`${prefix}:${vmTag}`)
+    || (entry.startsWith(`${prefix}:`) && workerLogEntryReferencesVm(entry, vmTag));
+}
+
 function collectWorkerEventTail(
   workerDebugLog: readonly string[],
   vmPtr: number,
@@ -379,14 +392,29 @@ function collectWorkerEventTail(
     "sleep",
     "yield",
     "fault_debug",
+    "supervisor-blocked-retry-timer-arm",
+    "supervisor-blocked-retry-timer-fired",
+    "supervisor-timer-fired-event",
+    "supervisor-host-timer-fired",
+    "supervisor-thread-event",
+    "supervisor-resume",
+    "blocked-rpc-start",
+    "blocked-rpc-stage",
+    "blocked-rpc-done",
+    "blocked-rpc-stale",
+    "blocked-rpc-defer-pipe-supervisor",
+    "pipe-retry-host-boundary",
+    "blocked-retry-host-boundary",
+    "epoll-retry-resume-host-boundary",
+    "epoll-retry-resume-rpc",
   ];
   const out: string[] = [];
   for (let index = workerDebugLog.length - 1; index >= 0; index -= 1) {
     const entry = workerDebugLog[index];
-    if (!entry?.includes(vmTag)) {
+    if (!entry || !workerLogEntryReferencesVm(entry, vmTag)) {
       continue;
     }
-    if (!prefixes.some((prefix) => entry.startsWith(`${prefix}:${vmTag}`))) {
+    if (!prefixes.some((prefix) => workerLogEntryMatchesPrefix(entry, prefix, vmTag))) {
       continue;
     }
     if (entry.startsWith(`write:${vmTag}`) && !entry.includes("write_data=")) {
@@ -415,14 +443,29 @@ function collectWorkerStatusTail(
     "resume",
     "fdtrace",
     "fault_debug",
+    "supervisor-blocked-retry-timer-arm",
+    "supervisor-blocked-retry-timer-fired",
+    "supervisor-timer-fired-event",
+    "supervisor-host-timer-fired",
+    "supervisor-thread-event",
+    "supervisor-resume",
+    "blocked-rpc-start",
+    "blocked-rpc-stage",
+    "blocked-rpc-done",
+    "blocked-rpc-stale",
+    "blocked-rpc-defer-pipe-supervisor",
+    "pipe-retry-host-boundary",
+    "blocked-retry-host-boundary",
+    "epoll-retry-resume-host-boundary",
+    "epoll-retry-resume-rpc",
   ];
   const out: string[] = [];
   for (let index = workerDebugLog.length - 1; index >= 0; index -= 1) {
     const entry = workerDebugLog[index];
-    if (!entry?.includes(vmTag)) {
+    if (!entry || !workerLogEntryReferencesVm(entry, vmTag)) {
       continue;
     }
-    if (!prefixes.some((prefix) => entry.startsWith(`${prefix}:${vmTag}`))) {
+    if (!prefixes.some((prefix) => workerLogEntryMatchesPrefix(entry, prefix, vmTag))) {
       continue;
     }
     out.push(entry);
@@ -678,7 +721,10 @@ function collectLoggedWorkerVmPtrs(
 ): number[] {
   const vmPtrs = new Set<number>();
   for (const entry of workerDebugLog) {
-    const match = entry.match(/^[a-z_-]+:0x([0-9a-f]+)/);
+    const match = entry.match(/^[a-z_-]+:0x([0-9a-f]+)/)
+      ?? entry.match(/:vm=0x([0-9a-f]+)/)
+      ?? entry.match(/^supervisor-resume:[^:]+:[^:]+:0x([0-9a-f]+)/)
+      ?? entry.match(/^blocked-rpc-(?:start|done|stale):[0-9]+:0x([0-9a-f]+)/);
     if (!match) {
       continue;
     }

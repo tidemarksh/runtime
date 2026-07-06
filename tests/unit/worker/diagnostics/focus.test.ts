@@ -71,3 +71,35 @@ test("summarizeProcessWorkerLogFocus finds the last credible state outside the s
   expect(focus?.lastStatus).toBe("status:0x1234@3:pc=0x2:ra=0x0:sp=0x0:s11=0x0:process_thread_count=0");
   expect(focus?.lastCredibleState).toBe("status:0x1234@0:pc=0x67c5be:ra=0x67cda6:sp=0x197d2a0:s11=0x1");
 });
+
+test("summarizeProcessWorkerLogFocus keeps supervisor retry cause-chain entries for detached workers", () => {
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    initialized: boolean;
+    waitingInWorkerStatus: number | null;
+  }>();
+  const workerDebugLog = [
+    "supervisor-blocked-retry-timer-arm:vm=0x1234:seq=17:delay=1:reason=0",
+    "supervisor-blocked-retry-timer-fired:vm=0x1234:seq=17:delay=1:reason=0:completion=0",
+    "supervisor-timer-fired-event:submit:vm=0x1234:seq=3:hostSeq=17:kind=6:result=0:status=12:reason=0:delay=1",
+    "blocked-rpc-start:12:0x1234",
+    "blocked-rpc-stage:12:start:pid=1:0x1234",
+    "blocked-rpc-done:0:0x1234",
+    "supervisor-resume:runnable:selected:0x1234:tid=42:seq=18:process=0x2000:status=0",
+  ];
+  const handle = {
+    workers: new Set<Worker>(),
+    runningWorker: null,
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    workerDebugLog,
+    kernel: {},
+  } as never;
+  seedProcessHandleStateFixture(handle);
+
+  const [focus] = summarizeProcessWorkerLogFocus(handle, threadWorkerStates);
+  expect(focus?.vmPtr).toBe(0x1234);
+  expect(focus?.ownerState).toBe("detached");
+  expect(focus?.eventTail).toEqual(workerDebugLog);
+  expect(focus?.statusTail).toEqual(workerDebugLog);
+});
