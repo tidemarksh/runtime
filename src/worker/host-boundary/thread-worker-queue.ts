@@ -67,6 +67,7 @@ import {
   formatSchedulerStepDebugSuffix,
   formatSchedulerStepFdSnapshot,
   hasBrokenSchedulerThreadState,
+  schedulerQueueDebugLogEnabled,
 } from "../diagnostics/scheduler-queue.js";
 import type {
   ThreadWorkerInbound,
@@ -79,6 +80,16 @@ const MIN_SCHEDULER_STEP_BUDGET = 1_000;
 const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
 let nextThreadWorkerGeneration = 1;
+
+function appendDetailedSchedulerQueueDebugLog(
+  handle: ProcessHandle,
+  formatEvent: () => string,
+): void {
+  if (!schedulerQueueDebugLogEnabled()) {
+    return;
+  }
+  appendSchedulerQueueDebugLog(handle, formatEvent());
+}
 
 function readSchedulerStepBudget(): number {
   const hostConfigured = (globalThis as typeof globalThis & {
@@ -381,7 +392,10 @@ export function createWorkerSchedulerQueueHelpers(
     const vmPtr = thread?.vmPtr;
     if (vmPtr !== undefined) {
       const brokenThreadState = hasBrokenSchedulerThreadState(handle, vmPtr);
-      appendSchedulerQueueDebugLog(handle, `runnable-published:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`);
+      appendDetailedSchedulerQueueDebugLog(
+        handle,
+        () => `runnable-published:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
+      );
       if (brokenThreadState) {
         deps.appendWorkerDebugLog(
           handle,
@@ -510,7 +524,10 @@ export function createWorkerSchedulerQueueHelpers(
         atMs: activity.lastStepAtMs,
       });
       const brokenThreadState = hasBrokenSchedulerThreadState(handle, vmPtr);
-      appendSchedulerQueueDebugLog(handle, `step:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`);
+      appendDetailedSchedulerQueueDebugLog(
+        handle,
+        () => `step:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
+      );
       if (brokenThreadState) {
         deps.appendWorkerDebugLog(
           handle,
@@ -537,9 +554,9 @@ export function createWorkerSchedulerQueueHelpers(
     if (stepOfdSlots !== undefined) {
       stepMessage.ofdSlots = stepOfdSlots;
     }
-    appendSchedulerQueueDebugLog(
+    appendDetailedSchedulerQueueDebugLog(
       handle,
-      `step-fds:0x${(vmPtr ?? 0).toString(16)}:${formatSchedulerStepFdSnapshot(handle, vmPtr, fdEntries, stepOfdSlots)}`,
+      () => `step-fds:0x${(vmPtr ?? 0).toString(16)}:${formatSchedulerStepFdSnapshot(handle, vmPtr, fdEntries, stepOfdSlots)}`,
     );
     const pendingPipeSlots = takePendingPipeSlotsForNextStep(thread);
     if (pendingPipeSlots.length > 0) {

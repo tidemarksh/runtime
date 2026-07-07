@@ -22,6 +22,10 @@ const SCHEDULER_QUEUE_DEBUG_LOG_PREFIXES = [
 ] as const;
 const HOT_PC_COUNTER_LIMIT = 32;
 
+export function schedulerQueueDebugLogEnabled(): boolean {
+  return SCHEDULER_QUEUE_DEBUG_LOG_ENABLED;
+}
+
 export function formatSchedulerStepDebugSuffix(handle: ProcessHandle, vmPtr: number): string {
   const parts: string[] = [];
   const pid = handle.kernel.process_current_pid?.(vmPtr);

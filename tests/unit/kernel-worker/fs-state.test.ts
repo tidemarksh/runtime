@@ -1435,6 +1435,36 @@ test("kernel-worker flushes dirty resident pages to backing and leaves clean res
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
+test("kernel-worker tracks dirty resident inode state for backing source decisions", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const pageTableCalls: Array<Parameters<NonNullable<KernelExports["supervisor_fs_page_table_source_decision"]>>> = [];
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  const originalDecision = canonicalExports.supervisor_fs_page_table_source_decision;
+  expect(originalDecision).toBeTypeOf("function");
+  canonicalExports.supervisor_fs_page_table_source_decision = ((...args) => {
+    pageTableCalls.push(args);
+    return originalDecision!.apply(canonicalExports, args);
+  }) as NonNullable<KernelExports["supervisor_fs_page_table_source_decision"]>;
+
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
+    .toBe("abcdef");
+  expect(Number(pageTableCalls.at(-1)?.[1] ?? -1)).toBe(0);
+
+  expect(fsState.writeDirtyResidentFileByInode(ino, 3, encoder.encode("XYZ"))).toBe(3);
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
+    .toBe("abcXYZ");
+  expect(Number(pageTableCalls.at(-1)?.[1] ?? -1)).toBe(1);
+
+  expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
+  expect(new TextDecoder().decode(fsState.readBackingFileRangeByInode(ino, 0, 6) ?? new Uint8Array()))
+    .toBe("abcXYZ");
+  expect(Number(pageTableCalls.at(-1)?.[1] ?? -1)).toBe(0);
+
+  canonicalExports.supervisor_fs_page_table_source_decision = originalDecision;
+});
+
 test("kernel-worker flushes source-backed dirty resident ranges without full source materialization", () => {
   const { fsState, sabPageCache } = makeFsState();
   const source = encoder.encode("abcdef");
@@ -1782,6 +1812,36 @@ test("kernel-worker restorePublishedRegularFileDataFromPageCache externalizes wi
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:"))).toBe(false);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:"))).toBe(false);
   expectBytesEqual(fsState.readFile("/lib/runtime.bin"), publishedData);
+});
+
+test("kernel-worker restorePublishedRegularFileDataForInode avoids dirty scan input when published file object is enough", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const publishedData = encoder.encode("published-data");
+  const staleInlineData = encoder.encode("stale-inline!!");
+  const decisionCalls: Array<Parameters<NonNullable<KernelExports["supervisor_fs_data_sync_decision"]>>> = [];
+
+  expect(staleInlineData.length).toBe(publishedData.length);
+  fsState.writeFile("/lib/runtime.bin", publishedData, 0o755, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  canonicalExports.overwriteFile("/lib/runtime.bin", staleInlineData);
+
+  const originalDecision = canonicalExports.supervisor_fs_data_sync_decision;
+  expect(originalDecision).toBeTypeOf("function");
+  canonicalExports.supervisor_fs_data_sync_decision = ((...args) => {
+    decisionCalls.push(args);
+    return originalDecision!.apply(canonicalExports, args);
+  }) as NonNullable<KernelExports["supervisor_fs_data_sync_decision"]>;
+  canonicalExports.opLog.length = 0;
+
+  expect(fsState.restorePublishedRegularFileDataForInode(ino)).toBe(true);
+
+  const restoreCall = decisionCalls.find((args) => Number(args[0]) === 2 && Number(args[1]) === ino);
+  expect(restoreCall).toBeDefined();
+  expect(Number(restoreCall?.[9] ?? 0)).toBeGreaterThan(0);
+  expect(Number(restoreCall?.[10] ?? -1)).toBe(0);
+  expect(canonicalExports.opLog).toContain(`external:/lib/runtime.bin:${publishedData.length}`);
+
+  canonicalExports.supervisor_fs_data_sync_decision = originalDecision;
 });
 
 test("kernel-worker restorePublishedRegularFileDataForInode only externalizes the selected inode", () => {

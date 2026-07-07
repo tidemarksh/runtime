@@ -77,6 +77,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const backingSourcesByIdentity = new Map<string, KernelWorkerBackingSource>();
   const asyncBackingSourcesByIdentity = new Map<string, AsyncBackingSource>();
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
+  const dirtyResidentInodes = new Set<number>();
 
   function replaceBackingFile(
     ino: number,
@@ -126,6 +127,17 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
     const stat = backingStore.stat(fileObjectId);
     return stat ? { fileObjectId: stat.fileObjectId, generation: stat.generation } : undefined;
+  }
+
+  function trackedHasDirtyResidentPages(ino: number): boolean {
+    if (!dirtyResidentInodes.has(ino)) {
+      return false;
+    }
+    const hasDirtyPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
+    if (!hasDirtyPages) {
+      dirtyResidentInodes.delete(ino);
+    }
+    return hasDirtyPages;
   }
 
   function registerBackingSource(sourceIdentity: string, data: Uint8Array): void {
@@ -841,9 +853,11 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return stat.fileObjectId;
   }
 
-  function residentPageMapIsNewerThanBacking(ino: number): boolean {
-    const hasDirtyPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
-    const published = readInodeRecord(deps.getSabPageCache(), ino);
+  function residentPageMapIsNewerThanBackingWithState(
+    ino: number,
+    hasDirtyPages: boolean,
+    published: ReturnType<typeof readInodeRecord>,
+  ): boolean {
     const fileObjectId = fileObjectIdsByIno.get(ino);
     const backingStat = fileObjectId === undefined ? null : backingStore.stat(fileObjectId);
     return supervisorPageTableUsesResident(
@@ -853,6 +867,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       published,
       backingStat,
     );
+  }
+
+  function residentPageMapIsNewerThanBacking(ino: number): boolean {
+    const hasDirtyPages = trackedHasDirtyResidentPages(ino);
+    const published = readInodeRecord(deps.getSabPageCache(), ino);
+    return residentPageMapIsNewerThanBackingWithState(ino, hasDirtyPages, published);
   }
 
   function readBackingFileByInode(ino: number): Uint8Array | null {
@@ -950,7 +970,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         published,
         sourceIsRegular,
         sourceFileObjectId,
-        hasDirtyResidentPages: hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino),
+        hasDirtyResidentPages: trackedHasDirtyResidentPages(ino),
       });
       if (prepare.result < 0) {
         return prepare.result;
@@ -983,6 +1003,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         supervisorDirtyPageAuthority(sourceExports),
       );
       if (written >= 0) {
+        dirtyResidentInodes.add(ino);
         clearSeedBackingExtentForInode(ino);
       }
       return written;
@@ -996,9 +1017,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
     const sab = deps.getSabPageCache();
-    const hasDirtyPages = hasDirtyResidentPagesForInode(sab, ino);
-    const pageMapNewer = residentPageMapIsNewerThanBacking(ino);
     const record = readInodeRecord(sab, ino);
+    const hasDirtyPages = trackedHasDirtyResidentPages(ino);
+    const pageMapNewer = residentPageMapIsNewerThanBackingWithState(ino, hasDirtyPages, record);
     const supervisorRecord = record ?? {
       size: Number(deps.getCanonicalExports().memfs_file_size(ino)),
       fileObjectId: 0,
@@ -1039,6 +1060,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       supervisorResidentPageTableAuthority(deps.getCanonicalExports()),
     );
     if (cleaned) {
+      dirtyResidentInodes.delete(ino);
       backingExtentsByIno.delete(ino);
       clearSeedBackingExtentForInode(ino);
     }
@@ -1066,7 +1088,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         published,
         sourceIsRegular,
         sourceFileObjectId,
-        hasDirtyResidentPages: hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino),
+        hasDirtyResidentPages: trackedHasDirtyResidentPages(ino),
       });
       if (prepare.result < 0) {
         return prepare.result;
@@ -1089,6 +1111,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         supervisorDirtyPageAuthority(deps.getCanonicalExports()),
       );
       if (truncated >= 0) {
+        dirtyResidentInodes.add(ino);
+        if (!trackedHasDirtyResidentPages(ino)) {
+          dirtyResidentInodes.delete(ino);
+        }
         clearSeedBackingExtentForInode(ino);
       }
       return truncated;
@@ -1464,7 +1490,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         targetMode,
         targetSize: canonicalSize,
         published: publishedRecord,
-        hasDirtyResidentPages: hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino),
+        hasDirtyResidentPages: trackedHasDirtyResidentPages(ino),
         pageMapNewer: residentPageMapIsNewerThanBacking(ino),
         hasBackingFile: hasBackingFile(ino),
       });
@@ -1504,6 +1530,11 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   ): boolean {
     const sab = deps.getSabPageCache();
     const published = readInodeRecord(sab, ino);
+    const hasBacking = hasBackingFile(ino);
+    const hasPublishedFileObject = (published?.fileObjectId ?? 0) !== 0;
+    const hasDirtyResidentPages = published && !hasBacking && !hasPublishedFileObject
+      ? trackedHasDirtyResidentPages(ino)
+      : false;
     const mode = targetExports.memfs_inode_mode(ino);
     const size = Number(targetExports.memfs_file_size(ino));
     const action = supervisorDataSyncAction(targetExports, {
@@ -1514,9 +1545,9 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       targetMode: mode,
       targetSize: size,
       published,
-      hasDirtyResidentPages: hasDirtyResidentPagesForInode(sab, ino),
+      hasDirtyResidentPages,
       pageMapNewer: false,
-      hasBackingFile: hasBackingFile(ino),
+      hasBackingFile: hasBacking,
     });
     if (action !== "externalize" || !published) {
       return false;
@@ -1592,7 +1623,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
     let published = readInodeRecord(deps.getSabPageCache(), ino);
-    const hasDirtyResidentPages = hasDirtyResidentPagesForInode(deps.getSabPageCache(), ino);
+    const hasDirtyResidentPages = trackedHasDirtyResidentPages(ino);
     const sourceSize = fileType === MEMFS_S_IFREG ? Number(sourceExports.memfs_file_size(ino)) : 0;
     const backingMeta = backingMetaForInode(ino);
     const decision = supervisorMetadataSync(sourceExports, {
