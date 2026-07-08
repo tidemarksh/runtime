@@ -1,4 +1,5 @@
 import { processKernelWorkerRequest, setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
+import { addProcessWorker } from "../../../../src/worker/process-worker-state.js";
 import { addKernelShareMember, addKernelShareSharedOfdId, kernelShareHasSharedOfdId, kernelShareMembers, kernelShareSharedOfdIdList, processKernelShareGroup, setProcessKernelShareGroup } from "../../../../src/worker/kernel-share.js";
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import { setProcessExitInProgress } from "../../../../src/worker/process-lifecycle-state.js";
@@ -1317,5 +1318,97 @@ test("requestPipeStateSync defers while active vfork child owns the worker pid",
 
   expect(supervisorVforkChildOwnerMismatch).toHaveBeenCalledWith(0x1234, 1);
   expect(processKernelWorkerRequest(handle)).not.toHaveBeenCalled();
+  expect(drainProcessOutput).not.toHaveBeenCalled();
+});
+
+test("requestPipeStateSync defers before request when an attached worker belongs to another pid", async () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    ownerPid: number;
+    generation: number;
+    waitingInWorkerStatus: number | null;
+  }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    ownerPid: 1,
+    generation: 1,
+    waitingInWorkerStatus: null,
+  });
+  const supervisorProcessOwnerMismatch = vi.fn(() => 1);
+  const drainProcessOutput = vi.fn(() => true);
+  const handle = makeHandle({
+    pid: 1,
+    vmPtr: 0x1234,
+  });
+  handle.kernel.supervisor_process_owner_mismatch = supervisorProcessOwnerMismatch;
+  addProcessWorker(handle, worker);
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: vi.fn(),
+    drainProcessOutput,
+    drainHiddenProcessOutput: vi.fn(() => true),
+    threadWorkerStates,
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(supervisorProcessOwnerMismatch).toHaveBeenCalledWith(0x1234, 1);
+  expect(processKernelWorkerRequest(handle)).not.toHaveBeenCalled();
+  expect(drainProcessOutput).not.toHaveBeenCalled();
+});
+
+test("requestPipeStateSync clears an in-flight request when worker owner changes during sync", async () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, {
+    vmPtr: number;
+    ownerPid: number;
+    generation: number;
+    waitingInWorkerStatus: number | null;
+  }>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    ownerPid: 1,
+    generation: 1,
+    waitingInWorkerStatus: null,
+  });
+  let currentPid = 1;
+  let handle: ReturnType<typeof makeHandle>;
+  const kernelWorkerRequest = vi.fn(async () => {
+    currentPid = 4;
+    return {
+      type: "pipe-state-synced",
+      kernelState: handle.kernelState,
+    };
+  });
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const drainProcessOutput = vi.fn(() => true);
+  handle = makeHandle({
+    pid: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  handle.kernel.supervisor_process_owner_mismatch = vi.fn((_vmPtr: number, runtimePid: number) =>
+    currentPid === runtimePid ? 0 : 1
+  );
+  const clearStateSync = vi.fn(() => 0);
+  handle.kernel.supervisor_state_sync_clear = clearStateSync;
+  addProcessWorker(handle, worker);
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput,
+    drainHiddenProcessOutput: vi.fn(() => true),
+    threadWorkerStates,
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    handle.runtimeId,
+    "pipe-sync-owner-mismatch-defer:1:after-run",
+  );
+  expect(clearStateSync).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).not.toHaveBeenCalled();
 });

@@ -36,6 +36,7 @@ import {
 import { supervisorProcessPipeSlotForFd } from "../ownership/pipe-slot.js";
 import {
   assertHandleWorkerProcessIdentity,
+  supervisorProcessOwnerMismatch,
   supervisorVforkChildOwnerMismatch,
 } from "../process-identity.js";
 import {
@@ -82,6 +83,8 @@ interface WorkerSchedulerStateSyncDeps {
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
+type StateSyncKind = "pipe" | "epoll" | "socket";
+
 export function createWorkerSchedulerStateSyncHelpers(
   deps: WorkerSchedulerStateSyncDeps,
 ): WorkerSchedulerStateSyncHelpers {
@@ -103,6 +106,45 @@ export function createWorkerSchedulerStateSyncHelpers(
       return false;
     }
     return supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
+  }
+
+  function hasAttachedWorkerOwnerMismatch(handle: ProcessHandle): boolean {
+    const seenVmPtrs = new Set<number>();
+    const checkVmPtr = (vmPtr: number): boolean => {
+      if (vmPtr === 0 || seenVmPtrs.has(vmPtr)) {
+        return false;
+      }
+      seenVmPtrs.add(vmPtr);
+      return supervisorProcessOwnerMismatch(handle.kernel, vmPtr, handle.pid);
+    };
+
+    if (checkVmPtr(handle.vmPtr)) {
+      return true;
+    }
+    return processWorkerList(handle).some((worker) => {
+      const thread = deps.threadWorkerStates.get(worker);
+      return thread !== undefined && checkVmPtr(thread.vmPtr);
+    });
+  }
+
+  function hasStateSyncOwnerMismatch(handle: ProcessHandle): boolean {
+    return hasActiveVforkChildOwnerMismatch(handle) || hasAttachedWorkerOwnerMismatch(handle);
+  }
+
+  function deferStateSyncForOwnerMismatch(
+    handle: ProcessHandle,
+    kind: StateSyncKind,
+    phase: string,
+  ): boolean {
+    if (!hasStateSyncOwnerMismatch(handle)) {
+      return false;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `${kind}-sync-owner-mismatch-defer:${handle.pid}:${phase}`,
+    );
+    supervisorStateSyncClear(handle.kernel, handle.vmPtr, kind);
+    return true;
   }
 
   function shouldDrainHiddenInheritedOutput(
@@ -256,7 +298,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function requestEpollStateSync(handle: ProcessHandle, retryWaiters = false): Promise<void> {
     const heldEpollOfd = collectHeldEpollOfdIds(handle).length > 0;
     const startAction = supervisorStateSyncStartAction(handle.kernel, "epoll", {
-      activeVforkChildOwnerMismatch: hasActiveVforkChildOwnerMismatch(handle),
+      activeVforkChildOwnerMismatch: hasStateSyncOwnerMismatch(handle),
       kernelWorkerAvailable: false,
       epollStateKernelOwns: kernelWorkerOwnsEpollState(handle),
       heldEpollOfd,
@@ -304,12 +346,18 @@ export function createWorkerSchedulerStateSyncHelpers(
           }
           const shouldRetry = run.wakeWaiters;
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-sync-start:${handle.pid}:retry=${shouldRetry ? 1 : 0}`);
+          if (deferStateSyncForOwnerMismatch(handle, "epoll", "before-run")) {
+            break;
+          }
           await syncEpollStateViaKernelWorker(
             handle,
             shouldRetry
               ? blockedRpcSyncCause(handle.kernel.abi_status_epoll_wait())
               : syscallSyncCause("epoll-state-sync"),
           );
+          if (deferStateSyncForOwnerMismatch(handle, "epoll", "after-run")) {
+            break;
+          }
           assertProcessIdentity(handle, "requestEpollStateSync");
           if (shouldRetry) {
             retryEpollWaitersInKernelShare(handle);
@@ -513,7 +561,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function requestPipeStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     transferDebugStats(handle).pipeSyncRequests += 1;
     const startAction = supervisorStateSyncStartAction(handle.kernel, "pipe", {
-      activeVforkChildOwnerMismatch: hasActiveVforkChildOwnerMismatch(handle),
+      activeVforkChildOwnerMismatch: hasStateSyncOwnerMismatch(handle),
       kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
       epollStateKernelOwns: false,
       heldEpollOfd: false,
@@ -567,6 +615,9 @@ export function createWorkerSchedulerStateSyncHelpers(
           }
           const shouldWake = run.wakeWaiters;
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-start:${handle.pid}:wake=${shouldWake ? 1 : 0}`);
+          if (deferStateSyncForOwnerMismatch(handle, "pipe", "before-run")) {
+            break;
+          }
           transferDebugStats(handle).pipeSyncKernelCalls += 1;
           const pipeUsed = await syncPipeStateViaKernelWorker(
             handle,
@@ -575,6 +626,9 @@ export function createWorkerSchedulerStateSyncHelpers(
               : syscallSyncCause("pipe-state-sync"),
           );
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `pipe-sync-canonical:${handle.pid}:used=${pipeUsed.toString()}`);
+          if (deferStateSyncForOwnerMismatch(handle, "pipe", "after-run")) {
+            break;
+          }
           assertProcessIdentity(handle, "requestPipeStateSync");
           const visibleHandle = visibleOutputHandle(handle);
           const drainedHiddenOutput = shouldDrainHiddenInheritedOutput(handle, visibleHandle)
@@ -650,7 +704,7 @@ export function createWorkerSchedulerStateSyncHelpers(
   function requestSocketStateSync(handle: ProcessHandle, wakeWaiters = false): Promise<void> {
     transferDebugStats(handle).socketSyncRequests += 1;
     const startAction = supervisorStateSyncStartAction(handle.kernel, "socket", {
-      activeVforkChildOwnerMismatch: hasActiveVforkChildOwnerMismatch(handle),
+      activeVforkChildOwnerMismatch: hasStateSyncOwnerMismatch(handle),
       kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
       epollStateKernelOwns: false,
       heldEpollOfd: false,
@@ -704,12 +758,18 @@ export function createWorkerSchedulerStateSyncHelpers(
           }
           const shouldWake = run.wakeWaiters;
           transferDebugStats(handle).socketSyncKernelCalls += 1;
+          if (deferStateSyncForOwnerMismatch(handle, "socket", "before-run")) {
+            break;
+          }
           const { socketUsed, netBufUsed, socketState } = await syncSocketStateViaKernelWorker(
             handle,
             shouldWake
               ? blockedRpcSyncCause(handle.kernel.abi_status_socket_recv())
               : syscallSyncCause("socket-state-sync"),
           );
+          if (deferStateSyncForOwnerMismatch(handle, "socket", "after-run")) {
+            break;
+          }
           assertProcessIdentity(handle, "requestSocketStateSync");
           if (shouldWake) {
             if (socketState) {
