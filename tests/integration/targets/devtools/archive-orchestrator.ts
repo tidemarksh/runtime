@@ -60,6 +60,7 @@ export const gzipRoundtripArchiveEntry: ArchiveOrchestratorEntry = {
   targetClass: "major developer tools",
   workflowKind: "archive / compression roundtrip",
   guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/gzip"), guestPath: "/usr/bin/gzip", mode: 0o755 },
     {
@@ -72,7 +73,7 @@ export const gzipRoundtripArchiveEntry: ArchiveOrchestratorEntry = {
     commandStep({
       id: "gzip-compress",
       executableName: "gzip",
-      argv: ["/usr/bin/gzip", "-kf", "/work/input.txt"],
+      argv: ["/usr/bin/gzip", "-n", "-kf", "/work/input.txt"],
     }),
     commandStep({
       id: "gzip-decompress",
@@ -132,6 +133,7 @@ export const cmakeScriptArchiveEntry: ArchiveOrchestratorEntry = {
   targetClass: "major developer tools",
   workflowKind: "build orchestrator / generator",
   guestMemoryPolicyLimitBytes: 512 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: devtoolsSnapshotSources([
     { kind: "file", hostPath: resolve(toolsetDir, "usr/bin/cmake"), guestPath: "/usr/bin/cmake", mode: 0o755 },
     { kind: "tree", hostPath: resolve(toolsetDir, "usr/share/cmake"), guestPath: "/usr/share/cmake" },

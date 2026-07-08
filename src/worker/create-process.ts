@@ -78,6 +78,7 @@ import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
 const DEFAULT_PROCESS_STACK_SIZE_BYTES = 8 * 1024 * 1024;
 const KERNEL_HEAP_BASE_FALLBACK_BYTES = 12 * 1024 * 1024;
 const DEBUG_GUEST_WRITE_WATCH_ENV = "TIDEMARK_DEBUG_GUEST_WRITE_WATCH";
+const DYNAMIC_PROCESS_CREATE_SCRATCH_HEADROOM_BYTES = 2 * 1024 * 1024;
 
 const encoder = new TextEncoder();
 const WORKER_DEBUG_LOG_ENABLED = false;
@@ -570,7 +571,13 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       throw new Error("ELF inspection failed");
     }
 
-    const runtimeScratchBase = detachedKernelScratchBase(exports.memory, guestBase, elfBrk);
+    // process_create loads PT_INTERP and reserves a hidden brk prefix before
+    // copying staged argv/env strings, so dynamic ELF scratch must sit above
+    // that transient guest range rather than only above the raw main brk.
+    const scratchGuestUsedBytes = readElfInterpPath(elfData)
+      ? elfBrk + DYNAMIC_PROCESS_CREATE_SCRATCH_HEADROOM_BYTES
+      : elfBrk;
+    const runtimeScratchBase = detachedKernelScratchBase(exports.memory, guestBase, scratchGuestUsedBytes);
     let scratchOffset = 0;
     const elfOffset = writeDetachedKernelScratch(exports, runtimeScratchBase, elfData, scratchOffset);
     scratchOffset = alignUp(scratchOffset + elfData.length, 16);

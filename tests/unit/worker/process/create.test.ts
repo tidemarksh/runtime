@@ -63,6 +63,24 @@ function readCString(memory: WebAssembly.Memory, ptr: number): string {
   return decoder.decode(bytes.subarray(ptr, end));
 }
 
+function minimalDynamicElfWithInterp(interp = "/lib/ld-linux-riscv64-lp64d.so.1"): Uint8Array {
+  const interpBytes = encoder.encode(`${interp}\0`);
+  const phOff = 64;
+  const phEntSize = 56;
+  const interpOffset = 128;
+  const elf = new Uint8Array(interpOffset + interpBytes.length);
+  elf.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]);
+  const view = new DataView(elf.buffer);
+  view.setBigUint64(32, BigInt(phOff), true);
+  view.setUint16(54, phEntSize, true);
+  view.setUint16(56, 1, true);
+  view.setUint32(phOff, 3, true);
+  view.setBigUint64(phOff + 8, BigInt(interpOffset), true);
+  view.setBigUint64(phOff + 32, BigInt(interpBytes.length), true);
+  elf.set(interpBytes, interpOffset);
+  return elf;
+}
+
 type FakeProcessKernel = KernelExports & {
   argPtrs: number[];
   envPtrs: number[];
@@ -417,6 +435,47 @@ test("createProcess stages argv/env strings and seeds full memfs for standalone 
     worker: handle.worker,
     vmPtr: 0x1234,
   });
+});
+
+test("createProcess keeps dynamic ELF argv scratch above interpreter brk headroom", async () => {
+  const processHandles = new Map<number, ProcessHandle>();
+  const kernelMemory = new WebAssembly.Memory({ initial: 16, maximum: 128, shared: true });
+  const fakeKernel = makeFakeProcessKernel(kernelMemory);
+  vi.mocked(fakeKernel.process_guest_base_for_address_profile).mockImplementation(() => 0x100000n);
+  vi.mocked(fakeKernel.process_inspect_elf_brk_with_memory_policy).mockImplementation(() => 0x2000);
+  vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
+    exports: fakeKernel,
+  } as unknown as WebAssembly.Instance);
+  const factory = createWorkerProcessFactory({
+    processHandles,
+    attachThreadWorker: vi.fn(),
+    assertProcessStandardFdIntegrity: vi.fn(),
+    ensureCompiledModule: async () => ({}) as WebAssembly.Module,
+    getRuntimeFsEntries: () => [],
+    initializeProcessLifecycleViaKernelWorker: vi.fn(async () => {}),
+    registerProcessWithKernelWorker: vi.fn(async () => {}),
+    resolveProcessCwdInoViaKernelWorker: vi.fn(async () => 0),
+    bootstrapMemoryBytes: 64 * 1024 * 1024,
+    wasmPageSize: 65536,
+    wasmMaxPages: 65536,
+  });
+
+  await factory.createProcess(
+    new Uint8Array([0]),
+    minimalDynamicElfWithInterp(),
+    {
+      argv: ["/usr/bin/gzip", "--version"],
+      env: ["PATH=/usr/bin:/bin"],
+      preloadEntries: [],
+    },
+  );
+
+  const dynamicScratchFloor = 0x100000 + 0x2000 + 2 * 1024 * 1024 + 0x10000;
+  expect(fakeKernel.argPtrs[0]).toBeGreaterThan(dynamicScratchFloor);
+  expect(fakeKernel.argPtrs.map((ptr) => readCString(kernelMemory, ptr))).toEqual([
+    "/usr/bin/gzip",
+    "--version",
+  ]);
 });
 
 test("createProcess configures debug guest write watch before attaching the worker", async () => {
