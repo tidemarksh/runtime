@@ -33,6 +33,10 @@ const directSonames = [
   "libxxhash.so.0",
   "libcap.so.2",
 ] as const;
+const plainForkLargeFileTimeoutMs = 90_000;
+const dynamicLargeWriteTimeoutMs = 180_000;
+const dynamicForkLargeFileTimeoutMs = 120_000;
+const testTimeoutHeadroomMs = 15_000;
 
 function candidateLibraryPaths(root: string, soname: string): string[] {
   return [
@@ -519,7 +523,7 @@ test("plain fork preserves page-cache-backed large snapshot file reads", async (
       probeBytes,
       ["/work/fork-large-file"],
       ["LC_ALL=C"],
-      90_000,
+      plainForkLargeFileTimeoutMs,
     );
     expect(
       result.exitCode,
@@ -530,7 +534,7 @@ test("plain fork preserves page-cache-backed large snapshot file reads", async (
   } finally {
     runtime.destroy();
   }
-});
+}, plainForkLargeFileTimeoutMs + testTimeoutHeadroomMs);
 
 test("dynamic fork large regular-file write preserves loader bytes", async () => {
   const wasmBytes = readKernelWasm();
@@ -579,7 +583,7 @@ test("dynamic fork large regular-file write preserves loader bytes", async () =>
       probeBytes,
       ["/work/dynamic-fork-large-write-loader", "9379800"],
       ["LC_ALL=C"],
-      180_000,
+      dynamicLargeWriteTimeoutMs,
     );
     expect(
       result.exitCode,
@@ -592,7 +596,7 @@ test("dynamic fork large regular-file write preserves loader bytes", async () =>
   } finally {
     runtime.destroy();
   }
-});
+}, dynamicLargeWriteTimeoutMs + testTimeoutHeadroomMs);
 
 test("dynamic exec fanout large regular-file write preserves loader bytes", async () => {
   const wasmBytes = readKernelWasm();
@@ -647,7 +651,7 @@ test("dynamic exec fanout large regular-file write preserves loader bytes", asyn
       probeBytes,
       ["/work/apt-fanout-loader-probe", "9379800"],
       ["LC_ALL=C"],
-      180_000,
+      dynamicLargeWriteTimeoutMs,
     );
     expect(
       result.exitCode,
@@ -663,7 +667,7 @@ test("dynamic exec fanout large regular-file write preserves loader bytes", asyn
   } finally {
     runtime.destroy();
   }
-});
+}, dynamicLargeWriteTimeoutMs + testTimeoutHeadroomMs);
 
 test("dynamic plain fork preserves page-cache-backed large snapshot file reads", async () => {
   const wasmBytes = readKernelWasm();
@@ -720,7 +724,7 @@ test("dynamic plain fork preserves page-cache-backed large snapshot file reads",
       probeBytes,
       ["/work/dynamic-fork-large-file"],
       ["LC_ALL=C"],
-      120_000,
+      dynamicForkLargeFileTimeoutMs,
     );
     expect(
       result.exitCode,
@@ -731,4 +735,4 @@ test("dynamic plain fork preserves page-cache-backed large snapshot file reads",
   } finally {
     runtime.destroy();
   }
-});
+}, dynamicForkLargeFileTimeoutMs + testTimeoutHeadroomMs);

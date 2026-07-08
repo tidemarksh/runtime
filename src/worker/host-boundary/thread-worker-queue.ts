@@ -478,20 +478,24 @@ export function createWorkerSchedulerQueueHelpers(
       );
       return;
     }
-    supervisorResumeHostBoundary.drainSupervisorResumeQueue(handle);
+    const supervisorResumeSelected = supervisorResumeHostBoundary.drainSupervisorResumeQueue(handle);
     if (completeFaultedProcessWithoutWorkers(handle)) {
       return;
     }
     let next: Worker | undefined;
-    const supervisorSelected = supervisorResumeHostBoundary.selectSupervisorRunnableWorker(handle);
-    if (supervisorSelected !== undefined) {
-      next = supervisorSelected ?? undefined;
+    if (supervisorResumeSelected !== null) {
+      next = supervisorResumeSelected;
     } else {
-      deps.appendWorkerDebugLog(
-        handle,
-        `supervisor-resume:runnable:missing-export:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
-      );
-      return;
+      const supervisorSelected = supervisorResumeHostBoundary.selectSupervisorRunnableWorker(handle);
+      if (supervisorSelected !== undefined) {
+        next = supervisorSelected ?? undefined;
+      } else {
+        deps.appendWorkerDebugLog(
+          handle,
+          `supervisor-resume:runnable:missing-export:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+        );
+        return;
+      }
     }
     if (!next) {
       return;

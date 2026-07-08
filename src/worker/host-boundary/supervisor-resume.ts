@@ -43,7 +43,7 @@ export interface SupervisorResumeHostBoundaryDeps {
 
 export interface SupervisorResumeHostBoundary {
   selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined;
-  drainSupervisorResumeQueue(handle: ProcessHandle): void;
+  drainSupervisorResumeQueue(handle: ProcessHandle): Worker | null;
 }
 
 function supervisorResumeRecordBytes(handle: ProcessHandle): number {
@@ -332,17 +332,16 @@ export function createSupervisorResumeHostBoundary(
     );
   }
 
-  function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): void {
+  function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): Worker | null {
     if (record.kind === supervisorResumeKindRunnableThread(handle)) {
-      selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
-      return;
+      return selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
     }
     if (record.kind !== supervisorResumeKindFutexWake(handle)) {
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:unknown-kind:${record.kind}:vm=0x${record.vmPtr.toString(16)}:seq=${record.seq.toString()}`,
       );
-      return;
+      return null;
     }
     const worker = findWorkerByVmPtr(handle, record.vmPtr);
     const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
@@ -351,20 +350,22 @@ export function createSupervisorResumeHostBoundary(
         handle,
         `supervisor-resume:futex-wake:missing:0x${record.vmPtr.toString(16)}:seq=${record.seq.toString()}`,
       );
-      return;
+      return null;
     }
     recordSupervisorResumeSelection(handle, worker, thread, record);
+    return null;
   }
 
-  function drainSupervisorResumeQueue(handle: ProcessHandle): void {
+  function drainSupervisorResumeQueue(handle: ProcessHandle): Worker | null {
     const nextResume = handle.kernel.supervisor_next_resume;
     if (nextResume === undefined) {
-      return;
+      return null;
     }
     const recordBytes = supervisorResumeRecordBytes(handle);
     const memory = handle.kernel.memory ?? handle.memory;
     const scratch = supervisorResumeScratchBase(handle);
     ensureMemoryCapacity(memory, scratch + recordBytes);
+    let selectedWorker: Worker | null = null;
     for (let drained = 0; drained < SUPERVISOR_RESUME_DRAIN_LIMIT; drained += 1) {
       const result = nextResume.call(handle.kernel, scratch, recordBytes);
       if (result === 0) {
@@ -379,8 +380,12 @@ export function createSupervisorResumeHostBoundary(
         deps.appendWorkerDebugLog(handle, `supervisor-resume:decode-error:${result}`);
         continue;
       }
-      handleSupervisorResumeRecord(handle, record);
+      const recordWorker = handleSupervisorResumeRecord(handle, record);
+      if (selectedWorker === null && recordWorker !== null) {
+        selectedWorker = recordWorker;
+      }
     }
+    return selectedWorker;
   }
 
   return {
