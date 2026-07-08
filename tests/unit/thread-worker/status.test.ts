@@ -1,6 +1,10 @@
 // Thread-worker tests in this file validate status outbound assembly ownership.
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import type { KernelExports, StatusCodes } from "../../../src/abi.js";
+import {
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../../src/layout/ofd.js";
 import { applyThreadWorkerInboundState } from "../../../src/thread-worker/inbound-state.js";
 import { postThreadWorkerStatus } from "../../../src/thread-worker/status.js";
 
@@ -302,6 +306,62 @@ test("postThreadWorkerStatus snapshots traced pipe writes after fd table closes"
   expect(msg.pipeSlots?.[0]?.pipeSlot).toBe(2);
   expect(msg.pipeSlots?.[0]?.mode).toBe(2);
   expect([...(msg.pipeSlots?.[0]?.slot.slice(32, 36) ?? [])]).toEqual([0x6e, 0x6f, 0x64, 0x65]);
+});
+
+test("postThreadWorkerStatus patches eventfd OFD offset from fd trace", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const maxFds = 8;
+  const slotBytes = 32;
+  const ofdId = 4;
+  const eventfdType = 9;
+  const slotOffset = 0x1000 + ofdId * slotBytes;
+  const slotView = new DataView(kernelExports.memory.buffer, slotOffset, slotBytes);
+  slotView.setInt32(OFD_TYPE_OFFSET, eventfdType, true);
+  slotView.setBigInt64(OFD_OFFSET_OFFSET, 0n, true);
+  Object.assign(kernelExports, {
+    abi_max_fds: () => maxFds,
+    kernel_ofd_table_bytes: () => maxFds * slotBytes,
+    abi_fd_type_eventfd: () => eventfdType,
+    supervisor_process_ofd_for_fd: (_vmPtr: number, fd: number) => fd === 3 ? ofdId : 0,
+    debug_fd_syscall_trace_len: () => 1,
+    debug_fd_syscall_trace_vm_ptr: () => 0x1234,
+    debug_fd_syscall_trace_nr: () => 64n,
+    debug_fd_syscall_trace_arg0_ofd_id: () => ofdId,
+    debug_fd_syscall_trace_arg0_ofd_type: () => eventfdType,
+    debug_fd_syscall_trace_arg0_ofd_offset: () => 1n,
+    debug_fd_syscall_trace_result: () => 8n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 11,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 0, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    fdTraceArg0OfdOffset?: bigint;
+    ofdSlots?: Array<{ ofdId: number; slot: Uint8Array }>;
+  };
+  expect(msg.fdTraceArg0OfdOffset).toBe(1n);
+  const snapshot = msg.ofdSlots?.find((entry) => entry.ofdId === ofdId);
+  expect(snapshot).toBeDefined();
+  expect(new DataView(
+    snapshot?.slot.buffer ?? new ArrayBuffer(0),
+    snapshot?.slot.byteOffset ?? 0,
+    snapshot?.slot.byteLength ?? 0,
+  ).getBigInt64(OFD_OFFSET_OFFSET, true)).toBe(1n);
 });
 
 test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics", () => {

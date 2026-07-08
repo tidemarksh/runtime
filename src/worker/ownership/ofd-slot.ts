@@ -30,10 +30,20 @@ interface StatusMessageLike {
   fdEntries?: readonly ({ fd: number } & FdEntryLike)[];
   ofdSlots?: readonly OfdSlotSnapshotLike[];
   syscallNr?: bigint;
+  fdTraceSyscallNr?: bigint;
+  fdTraceArg0OfdId?: number;
+  fdTraceArg0OfdType?: number;
+  fdTraceArg0OfdOffset?: bigint;
+  fdTraceResult?: bigint;
   trustRegularFileOfdOffsets?: boolean;
+  recordRegularFileOfdOffsets?: boolean;
 }
 
 const SUPERVISOR_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
+const SYS_READ = 63n;
+const SYS_WRITE = 64n;
+const SYS_READV = 65n;
+const SYS_WRITEV = 66n;
 
 interface OfdSlotCandidate {
   type: number;
@@ -336,54 +346,107 @@ function recordRegularFileOfdOffsets(
   }
 }
 
+function applyEventfdTraceOffset(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  slotBytes: number,
+): boolean {
+  const eventfdType = handle.kernel.abi_fd_type_eventfd?.();
+  if (
+    eventfdType === undefined
+    || (
+      msg.fdTraceSyscallNr !== SYS_READ
+      && msg.fdTraceSyscallNr !== SYS_WRITE
+      && msg.fdTraceSyscallNr !== SYS_READV
+      && msg.fdTraceSyscallNr !== SYS_WRITEV
+    )
+    || msg.fdTraceArg0OfdType !== eventfdType
+    || msg.fdTraceArg0OfdId === undefined
+    || msg.fdTraceArg0OfdOffset === undefined
+    || msg.fdTraceResult === undefined
+    || msg.fdTraceResult < 0n
+  ) {
+    return false;
+  }
+  const ofdId = msg.fdTraceArg0OfdId;
+  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
+    return false;
+  }
+  const offset = handle.kernelState.ofdTablePtr + ofdId * slotBytes;
+  if (offset < 0 || offset + slotBytes > handle.memory.buffer.byteLength) {
+    return false;
+  }
+  const view = new DataView(handle.memory.buffer, offset, slotBytes);
+  if (view.getInt32(OFD_TYPE_OFFSET, true) !== eventfdType) {
+    return false;
+  }
+  view.setBigInt64(OFD_OFFSET_OFFSET, msg.fdTraceArg0OfdOffset, true);
+  return true;
+}
+
+export function applyThreadEventfdTraceOffset(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+): boolean {
+  const maxFds = handle.kernel.abi_max_fds();
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes();
+  const slotBytes = tableBytes / maxFds;
+  if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
+    return false;
+  }
+  return applyEventfdTraceOffset(handle, msg, slotBytes);
+}
+
 export function applyThreadOfdSlots(
   handle: ProcessHandle,
   msg: StatusMessageLike,
   appendStatusSocketDebug?: (handle: ProcessHandle, event: string) => void,
 ): void {
   restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
-  if (!msg.ofdSlots || msg.ofdSlots.length === 0) {
-    return;
-  }
   const maxFds = handle.kernel.abi_max_fds();
-  const protectedNetworkOfds = new Set(networkConnectionOfds(handle).values());
   const tableBytes = handle.kernel.kernel_ofd_table_bytes();
   const slotBytes = tableBytes / maxFds;
   if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     return;
   }
-  const memory = new Uint8Array(handle.memory.buffer);
-  const decide = requireSupervisorOfdSlotRestoreAction(handle);
-  const skipAction = requireSupervisorRestoreActionSkip(handle);
-  const syscallNr = msg.syscallNr ?? SUPERVISOR_RESTORE_SYSCALL_NONE;
-  const trustRegularFileOfdOffsets = msg.trustRegularFileOfdOffsets === true;
-  for (const snapshot of msg.ofdSlots) {
-    if (
-      snapshot.ofdId <= 0
-      || snapshot.ofdId >= maxFds
-      || snapshot.slot.length !== slotBytes
-    ) {
-      continue;
+  if (msg.ofdSlots && msg.ofdSlots.length > 0) {
+    const protectedNetworkOfds = new Set(networkConnectionOfds(handle).values());
+    const memory = new Uint8Array(handle.memory.buffer);
+    const decide = requireSupervisorOfdSlotRestoreAction(handle);
+    const skipAction = requireSupervisorRestoreActionSkip(handle);
+    const syscallNr = msg.syscallNr ?? SUPERVISOR_RESTORE_SYSCALL_NONE;
+    const trustRegularFileOfdOffsets = msg.trustRegularFileOfdOffsets === true;
+    for (const snapshot of msg.ofdSlots) {
+      if (
+        snapshot.ofdId <= 0
+        || snapshot.ofdId >= maxFds
+        || snapshot.slot.length !== slotBytes
+      ) {
+        continue;
+      }
+      if (protectedNetworkOfds.has(snapshot.ofdId)) {
+        continue;
+      }
+      if (
+        ofdSnapshotWouldClobberExistingSlot(
+          handle,
+          msg.fdEntries,
+          snapshot,
+          slotBytes,
+          decide,
+          skipAction,
+          trustRegularFileOfdOffsets,
+          syscallNr,
+        )
+      ) {
+        continue;
+      }
+      memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
     }
-    if (protectedNetworkOfds.has(snapshot.ofdId)) {
-      continue;
+    if (msg.recordRegularFileOfdOffsets !== false) {
+      recordRegularFileOfdOffsets(handle, msg, slotBytes);
     }
-    if (
-      ofdSnapshotWouldClobberExistingSlot(
-        handle,
-        msg.fdEntries,
-        snapshot,
-        slotBytes,
-        decide,
-        skipAction,
-        trustRegularFileOfdOffsets,
-        syscallNr,
-      )
-    ) {
-      continue;
-    }
-    memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
   }
+  applyEventfdTraceOffset(handle, msg, slotBytes);
   restoreNetworkOfdSlotWatermarks(handle, appendStatusSocketDebug);
-  recordRegularFileOfdOffsets(handle, msg, slotBytes);
 }

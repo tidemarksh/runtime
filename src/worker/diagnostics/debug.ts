@@ -137,6 +137,12 @@ export interface WorkerExecutionStats {
     pc: string;
     syscallNr: string | null;
     fdTraceSyscallNr: string | null;
+    fdTraceArg0OfdId: number | null;
+    fdTraceArg0OfdType: number | null;
+    fdTraceArg0OfdOffset: string | null;
+    fdTraceArg1: string | null;
+    fdTraceArg2OfdId: number | null;
+    fdTraceArg2OfdType: number | null;
     fdTraceResult: string | null;
     futexWaitAddr: string | null;
     futexBlockedAddr: string | null;
@@ -299,10 +305,19 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
       const ageMs = Math.max(0, nowMs - entry.atMs);
       const syscallNr = entry.syscallNr === null ? "null" : entry.syscallNr.toString();
       const fdTraceSyscallNr = entry.fdTraceSyscallNr === null ? "null" : entry.fdTraceSyscallNr.toString();
+      const fdTraceArg0OfdId = entry.fdTraceArg0OfdId === null ? "null" : entry.fdTraceArg0OfdId.toString();
+      const fdTraceArg0OfdType = entry.fdTraceArg0OfdType === null ? "null" : entry.fdTraceArg0OfdType.toString();
+      const fdTraceArg0OfdOffset = entry.fdTraceArg0OfdOffset === null ? "null" : entry.fdTraceArg0OfdOffset.toString();
+      const fdTraceArg1 = entry.fdTraceArg1 === null ? "null" : entry.fdTraceArg1.toString();
+      const fdTraceArg2OfdId = entry.fdTraceArg2OfdId === null ? "null" : entry.fdTraceArg2OfdId.toString();
+      const fdTraceArg2OfdType = entry.fdTraceArg2OfdType === null ? "null" : entry.fdTraceArg2OfdType.toString();
       const fdTraceResult = entry.fdTraceResult === null ? "null" : entry.fdTraceResult.toString();
       const futexWaitAddr = entry.futexWaitAddr === null ? "null" : `0x${entry.futexWaitAddr.toString(16)}`;
       const futexBlockedAddr = entry.futexBlockedAddr === null ? "null" : `0x${entry.futexBlockedAddr.toString(16)}`;
-      return `${index}:status=${entry.status}:pc=0x${entry.pc.toString(16)}:sys=${syscallNr}:fdSys=${fdTraceSyscallNr}:fdRet=${fdTraceResult}:futex=${futexWaitAddr}:blocked=${futexBlockedAddr}:ageMs=${ageMs}`;
+      return `${index}:status=${entry.status}:pc=0x${entry.pc.toString(16)}:sys=${syscallNr}`
+        + `:fdSys=${fdTraceSyscallNr}:fd0Ofd=${fdTraceArg0OfdId}:fd0Type=${fdTraceArg0OfdType}`
+        + `:fd0Off=${fdTraceArg0OfdOffset}:fdArg1=${fdTraceArg1}:fd2Ofd=${fdTraceArg2OfdId}:fd2Type=${fdTraceArg2OfdType}`
+        + `:fdRet=${fdTraceResult}:futex=${futexWaitAddr}:blocked=${futexBlockedAddr}:ageMs=${ageMs}`;
     })
     .join("|");
   const lastStepAgeMs = activity.lastStepAtMs === null ? "null" : Math.max(0, nowMs - activity.lastStepAtMs);
@@ -1062,6 +1077,12 @@ export function debugRuntimeExecutionStats(
                 pc: formatOptionalBigIntHex(entry.pc) ?? "0x0",
                 syscallNr: entry.syscallNr === null ? null : entry.syscallNr.toString(),
                 fdTraceSyscallNr: entry.fdTraceSyscallNr === null ? null : entry.fdTraceSyscallNr.toString(),
+                fdTraceArg0OfdId: entry.fdTraceArg0OfdId,
+                fdTraceArg0OfdType: entry.fdTraceArg0OfdType,
+                fdTraceArg0OfdOffset: entry.fdTraceArg0OfdOffset === null ? null : entry.fdTraceArg0OfdOffset.toString(),
+                fdTraceArg1: entry.fdTraceArg1 === null ? null : entry.fdTraceArg1.toString(),
+                fdTraceArg2OfdId: entry.fdTraceArg2OfdId,
+                fdTraceArg2OfdType: entry.fdTraceArg2OfdType,
                 fdTraceResult: entry.fdTraceResult === null ? null : entry.fdTraceResult.toString(),
                 futexWaitAddr: formatOptionalBigIntHex(entry.futexWaitAddr),
                 futexBlockedAddr: formatOptionalBigIntHex(entry.futexBlockedAddr),
@@ -1199,6 +1220,23 @@ function readAbsoluteCString(handle: ProcessHandle, ptr: number): string | null 
     out.push(value);
   }
   return null;
+}
+
+function readAbsoluteBytes(handle: ProcessHandle, ptr: number, len: number, maxLen = 256): string | null {
+  if (
+    !Number.isFinite(ptr)
+    || !Number.isFinite(len)
+    || ptr <= 0
+    || len <= 0
+    || ptr >= handle.memory.buffer.byteLength
+  ) {
+    return null;
+  }
+  const clampedLen = Math.min(len, maxLen);
+  if (ptr + clampedLen > handle.memory.buffer.byteLength) {
+    return null;
+  }
+  return decoder.decode(new Uint8Array(handle.memory.buffer, ptr, clampedLen));
 }
 
 function readGuestU64(handle: ProcessHandle, addr: bigint | number): bigint | null {
@@ -1471,10 +1509,25 @@ function formatProcessFdTrace(handle: ProcessHandle): string {
       + `:a2=${arg2?.toString() ?? "n/a"}/ofd=${arg2Ofd}/type=${arg2Type}`
       + `:a3=${arg3?.toString() ?? "n/a"}`
       + `:status=${status}:result=${result?.toString() ?? "n/a"}`
-      + `:pid=${pidSample0?.toString() ?? "n/a"}/${pidSample1?.toString() ?? "n/a"}`,
+      + `:pid=${pidSample0?.toString() ?? "n/a"}/${pidSample1?.toString() ?? "n/a"}`
+      + formatFdTracePathArg(handle, nr, arg1),
     );
   }
   return entries.join(" ");
+}
+
+function formatFdTracePathArg(handle: ProcessHandle, nr: bigint | number | undefined, arg1: bigint | number | undefined): string {
+  const syscallNr = Number(nr ?? -1);
+  if (
+    syscallNr !== 48 // faccessat
+    && syscallNr !== 56 // openat
+    && syscallNr !== 78 // readlinkat
+    && syscallNr !== 79 // newfstatat
+  ) {
+    return "";
+  }
+  const path = readGuestCString(handle, arg1 ?? 0n);
+  return `:path=${JSON.stringify(path ?? "")}`;
 }
 
 function formatProcessPathTrace(handle: ProcessHandle): string {
@@ -1489,9 +1542,11 @@ function formatProcessPathTrace(handle: ProcessHandle): string {
     const dirfd = handle.kernel.debug_path_syscall_trace_dirfd?.(index);
     const status = handle.kernel.debug_path_syscall_trace_status?.(index) ?? 0;
     const result = handle.kernel.debug_path_syscall_trace_result?.(index);
-    const path = readAbsoluteCString(handle, handle.kernel.debug_path_syscall_trace_path_ptr?.(index) ?? 0);
+    const pathPtr = handle.kernel.debug_path_syscall_trace_path_ptr?.(index) ?? 0;
+    const pathLen = handle.kernel.debug_path_syscall_trace_path_len?.(index) ?? 0;
+    const path = readAbsoluteBytes(handle, pathPtr, pathLen) ?? readAbsoluteCString(handle, pathPtr);
     entries.push(
-      `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}:dirfd=${dirfd?.toString() ?? "n/a"}:status=${status}:result=${result?.toString() ?? "n/a"}:path=${JSON.stringify(path ?? "")}`,
+      `${index}:vm=0x${traceVmPtr.toString(16)}:nr=${nr?.toString() ?? "n/a"}:dirfd=${dirfd?.toString() ?? "n/a"}:status=${status}:result=${result?.toString() ?? "n/a"}:path_ptr=0x${pathPtr.toString(16)}:path_len=${pathLen}:path=${JSON.stringify(path ?? "")}`,
     );
   }
   return entries.join(" ");

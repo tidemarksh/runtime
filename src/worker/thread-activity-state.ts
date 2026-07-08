@@ -39,6 +39,12 @@ export interface ThreadWorkerStatusSnapshot {
   pc: bigint;
   syscallNr: bigint | null;
   fdTraceSyscallNr: bigint | null;
+  fdTraceArg0OfdId: number | null;
+  fdTraceArg0OfdType: number | null;
+  fdTraceArg0OfdOffset: bigint | null;
+  fdTraceArg1: bigint | null;
+  fdTraceArg2OfdId: number | null;
+  fdTraceArg2OfdType: number | null;
   fdTraceResult: bigint | null;
   futexWaitAddr: bigint | null;
   futexBlockedAddr: bigint | null;
@@ -88,6 +94,13 @@ export function maybeThreadActivityState(
   return thread === null || thread === undefined
     ? undefined
     : threadActivityStates.get(thread);
+}
+
+export function threadLatestStepAnswered(thread: ThreadWorkerState): boolean {
+  const state = threadActivityStates.get(thread);
+  return state !== undefined
+    && state.stepCount > 0
+    && state.statusCount >= state.stepCount;
 }
 
 export function resetThreadActivityState(thread: ThreadWorkerState): ThreadWorkerActivityState {

@@ -64,7 +64,10 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadWaitingInWorkerStatus,
 } from "../../thread-host-state.js";
-import { applyStatusOfdSlots } from "./ofd-slots.js";
+import {
+  applyStatusEventfdTraceOffset,
+  applyStatusOfdSlots,
+} from "./ofd-slots.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 import {
   readSupervisorFaultExitDecision,
@@ -80,6 +83,9 @@ import {
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_CLONE_SPAWN_DEBUG ?? "") === "1";
+const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_LIFECYCLE_DEBUG ?? "") === "1";
 
 interface ThreadRegisterSnapshot {
   vmPtr: number;
@@ -88,6 +94,20 @@ interface ThreadRegisterSnapshot {
   s11: bigint;
 }
 
+function appendFsStatusRouteTiming(
+  deps: WorkerMessageHandlerDeps,
+  handle: ProcessHandle,
+  phase: string,
+  vmPtr: number,
+  detail = "",
+): void {
+  if (!FS_LIFECYCLE_DEBUG_ENABLED) {
+    return;
+  }
+  const event = `fs-status-route-${phase}:${handle.pid}:0x${vmPtr.toString(16)}:t=${Date.now()}${detail}`;
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
+  console.error(`[tidemark-fs] ${event}`);
+}
 
 export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps) {
   const syncEffects = resolveWorkerMessageHandlerSyncEffects(deps);
@@ -100,6 +120,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
     worker: Worker,
     msg: ThreadWorkerStatusMessage,
   ): void {
+    const handlerStartMs = FS_LIFECYCLE_DEBUG_ENABLED ? Date.now() : 0;
     const thread = deps.threadWorkerStates.get(worker);
     if (!thread) {
       if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, msg.status)) {
@@ -137,6 +158,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       return;
     }
     const status = msg.status;
+    const fsStatus = handle.kernel.abi_status_fs?.();
+    const traceFsStatus = fsStatus !== undefined && status === fsStatus;
+    const traceFsStatusTiming = traceFsStatus && FS_LIFECYCLE_DEBUG_ENABLED;
+    if (traceFsStatusTiming) {
+      appendFsStatusRouteTiming(deps, handle, "entry", msg.vmPtr);
+    }
     const processPidField = readProcessPidField(msg.debug);
     const localProcessPid = readLocalProcessPid(handle, msg.vmPtr);
     const transientProcessOwnerMismatch = processPidField !== null
@@ -183,10 +210,57 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       statusStateBelongsToHandle,
       kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
     });
+    const isRunningWorker = hostExecutionState(handle).runningWorker === worker;
+    const shouldApplyDetachedEventfdTraceOffset = (
+      !routeActions.applyStatusFdState
+      && getThreadOwnerPid(thread) === handle.pid
+      && thread.vmPtr === msg.vmPtr
+    );
+    const detachedEventfdTraceOffsetApplied = shouldApplyDetachedEventfdTraceOffset
+      ? applyStatusEventfdTraceOffset(handle, msg)
+      : false;
+    if (
+      STATUS_SOCKET_DEBUG_LOG_ENABLED
+      && msg.fdTraceArg0OfdType === handle.kernel.abi_fd_type_eventfd?.()
+    ) {
+      appendStatusSocketDebug(
+        handle,
+        `status-route-eventfd:${handle.pid}:0x${msg.vmPtr.toString(16)}:status=${status}`
+          + `:belongs=${statusStateBelongsToHandle ? 1 : 0}`
+          + `:applyFd=${routeActions.applyStatusFdState ? 1 : 0}`
+          + `:adopt=${routeActions.adoptThreadKernelState ? 1 : 0}`
+          + `:traceApply=${detachedEventfdTraceOffsetApplied ? 1 : 0}`
+          + `:fd0Ofd=${msg.fdTraceArg0OfdId ?? "n/a"}`
+          + `:fd0Off=${msg.fdTraceArg0OfdOffset?.toString() ?? "n/a"}`
+          + `:ret=${msg.fdTraceResult?.toString() ?? "n/a"}`,
+      );
+    }
+    const trustRegularFileOfdOffsets = traceFsStatus || isRunningWorker;
+    if (traceFsStatusTiming) {
+      appendFsStatusRouteTiming(
+        deps,
+        handle,
+        "route-actions",
+        thread.vmPtr,
+        `:adopt=${routeActions.adoptThreadKernelState ? 1 : 0}`
+          + `:applyFd=${routeActions.applyStatusFdState ? 1 : 0}`
+          + `:fsWrites=${routeActions.applyFsMemoryWrites ? 1 : 0}`
+          + `:dt=${Date.now() - handlerStartMs}`,
+      );
+    }
     if (routeActions.applyStatusFdState) {
-      applyStatusOfdSlots(handle, msg);
+      applyStatusOfdSlots(handle, msg, { trustRegularFileOfdOffsets });
       applyStatusFdEntries(handle, msg);
       pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
+    }
+    if (traceFsStatusTiming) {
+      appendFsStatusRouteTiming(
+        deps,
+        handle,
+        "after-status-fd",
+        thread.vmPtr,
+        `:dt=${Date.now() - handlerStartMs}`,
+      );
     }
     if (STATUS_SOCKET_DEBUG_LOG_ENABLED && msg.fdEntries) {
       appendStatusSocketDebug(
@@ -220,6 +294,12 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       pc: msg.pc,
       syscallNr: msg.syscallNr ?? null,
       fdTraceSyscallNr: msg.fdTraceSyscallNr ?? null,
+      fdTraceArg0OfdId: msg.fdTraceArg0OfdId ?? null,
+      fdTraceArg0OfdType: msg.fdTraceArg0OfdType ?? null,
+      fdTraceArg0OfdOffset: msg.fdTraceArg0OfdOffset ?? null,
+      fdTraceArg1: msg.fdTraceArg1 ?? null,
+      fdTraceArg2OfdId: msg.fdTraceArg2OfdId ?? null,
+      fdTraceArg2OfdType: msg.fdTraceArg2OfdType ?? null,
       fdTraceResult: msg.fdTraceResult ?? null,
       futexWaitAddr: msg.futexWaitAddr ?? null,
       futexBlockedAddr: msg.futexBlockedAddr ?? null,
@@ -295,7 +375,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
 
-    const isRunningWorker = hostExecutionState(handle).runningWorker === worker;
     if (!isRunningWorker) {
       recordWorkerMessageDebugEvent(
         workerMessageDebugStats(handle),
@@ -336,7 +415,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
       );
-      applyStatusOfdSlots(handle, msg);
+      applyStatusOfdSlots(handle, msg, { trustRegularFileOfdOffsets });
       applyStatusFdEntries(handle, msg);
       applyThreadSocketState(handle, msg);
       for (const pre of adoptPreSnapshots) {
@@ -371,6 +450,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
+    }
+    if (traceFsStatusTiming) {
+      appendFsStatusRouteTiming(
+        deps,
+        handle,
+        "after-state-apply",
+        thread.vmPtr,
+        `:dt=${Date.now() - handlerStartMs}`,
+      );
     }
     const submitShadowThreadEvent = (
       shadowMsg: ThreadWorkerStatusMessage,
@@ -408,7 +496,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         ? effects | syncEffects.syncEffectPipeState
         : effects;
     };
-    if (msg.waitInWorker) {
+    const waitInWorkerRequiresLocalWaitHandling = msg.waitInWorker
+      && status !== handle.kernel.abi_status_connect();
+    if (waitInWorkerRequiresLocalWaitHandling) {
       const waitInWorkerSyncEffects = completedSyncEffectsForMessage(status, msg);
       submitShadowThreadEvent(msg, status, waitInWorkerSyncEffects);
       handleWaitInWorkerStatus(handle, worker, thread, msg, isRunningWorker);
@@ -426,6 +516,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       ? false
       : drainProcessOutput(handle);
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState);
+    if (traceFsStatusTiming) {
+      appendFsStatusRouteTiming(
+        deps,
+        handle,
+        "after-host-io",
+        thread.vmPtr,
+        `:wrote=${wroteToPipe ? 1 : 0}:drained=${drainedPipe ? 1 : 0}:dt=${Date.now() - handlerStartMs}`,
+      );
+    }
     if (isRunningWorker) {
       hostExecutionState(handle).runningWorker = null;
       clearThreadRunningGeneration(thread);
@@ -475,6 +574,15 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
 
     const completedSyncEffects = completedSyncEffectsForMessage(transitionStatus, transitionMsg);
     submitShadowThreadEvent(transitionMsg, transitionStatus, completedSyncEffects);
+    if (traceFsStatusTiming) {
+      appendFsStatusRouteTiming(
+        deps,
+        handle,
+        "before-transition",
+        thread.vmPtr,
+        `:dt=${Date.now() - handlerStartMs}`,
+      );
+    }
     const continueAfterOwnedStateSync = (): void => {
       handleStatusTransition({
         handle,

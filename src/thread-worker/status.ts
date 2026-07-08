@@ -34,6 +34,10 @@ import {
   FS_RING_TOTAL_BYTES,
   fsRingRequestEntryOffset,
 } from "../layout/fs-ring.js";
+import {
+  OFD_OFFSET_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../layout/ofd.js";
 
 const SYNC_EFFECT_PIPE_STATE = 1 << 0;
 const SYNC_EFFECT_PROCESS_MEMFS = 1 << 7;
@@ -58,6 +62,17 @@ let generation = 0;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let lastResumeBlockedDebug: string | undefined;
 let lastFutexWaitDebug: string | undefined;
+
+interface LatestFdTraceSnapshot {
+  nr: bigint;
+  arg0OfdId?: number;
+  arg0OfdType?: number;
+  arg0OfdOffset?: bigint;
+  arg1?: bigint;
+  arg2OfdId?: number;
+  arg2OfdType?: number;
+  result?: bigint;
+}
 
 export interface ThreadWorkerStatusContext {
   kernelExports: KernelExports;
@@ -275,15 +290,7 @@ function readOptionalTraceI64(value: bigint | number | undefined): bigint | null
 function snapshotLatestFdTraceForStatus(
   kernelExports: KernelExports,
   vmPtr: number,
-): {
-  nr: bigint;
-  arg0OfdId?: number;
-  arg0OfdType?: number;
-  arg1?: bigint;
-  arg2OfdId?: number;
-  arg2OfdType?: number;
-  result?: bigint;
-} | null {
+): LatestFdTraceSnapshot | null {
   const len = kernelExports.debug_fd_syscall_trace_len?.() ?? 0;
   for (let index = len - 1; index >= 0; index -= 1) {
     const traceVmPtr = kernelExports.debug_fd_syscall_trace_vm_ptr?.(index) ?? 0;
@@ -298,6 +305,7 @@ function snapshotLatestFdTraceForStatus(
       nr,
       arg0OfdId: kernelExports.debug_fd_syscall_trace_arg0_ofd_id?.(index),
       arg0OfdType: kernelExports.debug_fd_syscall_trace_arg0_ofd_type?.(index),
+      arg0OfdOffset: readOptionalTraceI64(kernelExports.debug_fd_syscall_trace_arg0_ofd_offset?.(index)) ?? undefined,
       arg1: readOptionalTraceU64(kernelExports.debug_fd_syscall_trace_arg1?.(index)) ?? undefined,
       arg2OfdId: kernelExports.debug_fd_syscall_trace_arg2_ofd_id?.(index),
       arg2OfdType: kernelExports.debug_fd_syscall_trace_arg2_ofd_type?.(index),
@@ -362,6 +370,46 @@ function fdTracePipeSlotMode(nr: bigint): number {
     return PIPE_SLOT_MODE_WRITE;
   }
   return 0;
+}
+
+function patchEventfdOfdSlotsFromTrace(
+  kernelExports: KernelExports,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[],
+  latestFdTrace: LatestFdTraceSnapshot | null,
+): void {
+  const eventfdType = kernelExports.abi_fd_type_eventfd?.();
+  if (
+    eventfdType === undefined
+    || latestFdTrace === null
+    || (
+      latestFdTrace.nr !== SYS_READ
+      && latestFdTrace.nr !== SYS_WRITE
+      && latestFdTrace.nr !== SYS_READV
+      && latestFdTrace.nr !== SYS_WRITEV
+    )
+    || latestFdTrace.arg0OfdType !== eventfdType
+    || latestFdTrace.arg0OfdId === undefined
+    || latestFdTrace.arg0OfdOffset === undefined
+    || latestFdTrace.result === undefined
+    || latestFdTrace.result < 0n
+  ) {
+    return;
+  }
+
+  for (const snapshot of ofdSlots) {
+    if (
+      snapshot.ofdId !== latestFdTrace.arg0OfdId
+      || snapshot.slot.byteLength < OFD_OFFSET_OFFSET + 8
+    ) {
+      continue;
+    }
+    const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+    if (view.getInt32(OFD_TYPE_OFFSET, true) !== eventfdType) {
+      return;
+    }
+    view.setBigInt64(OFD_OFFSET_OFFSET, latestFdTrace.arg0OfdOffset, true);
+    return;
+  }
 }
 
 function snapshotTracedPipeSlots(
@@ -890,6 +938,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   const ofdSlots = snapshotOfdSlotsForFdEntries(kernelExports, kernelState, vmPtr, fdEntries);
   publishThreadWorkerStage(107, status);
   const latestFdTrace = snapshotLatestFdTraceForStatus(kernelExports, vmPtr);
+  patchEventfdOfdSlotsFromTrace(kernelExports, ofdSlots, latestFdTrace);
   publishThreadWorkerStage(108, status);
   const socketState = snapshotSocketState(kernelExports, kernelState);
   publishThreadWorkerStage(109, status);
@@ -951,6 +1000,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     fdTraceSyscallNr: latestFdTrace?.nr,
     fdTraceArg0OfdId: latestFdTrace?.arg0OfdId,
     fdTraceArg0OfdType: latestFdTrace?.arg0OfdType,
+    fdTraceArg0OfdOffset: latestFdTrace?.arg0OfdOffset,
     fdTraceArg1: latestFdTrace?.arg1,
     fdTraceArg2OfdId: latestFdTrace?.arg2OfdId,
     fdTraceArg2OfdType: latestFdTrace?.arg2OfdType,
