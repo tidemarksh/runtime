@@ -1115,7 +1115,8 @@ export function writeDirtyResidentFileData(
   const meta = readInodeMeta(sab, ino);
   const residentPages = new Map<number, ResidentPageSnapshot>();
   const touchedPages = new Set<number>();
-  const firstPage = Math.floor(offset / DEFAULT_RESIDENT_PAGE_SIZE);
+  const fillStart = offset > record.size ? record.size : offset;
+  const firstPage = Math.floor(fillStart / DEFAULT_RESIDENT_PAGE_SIZE);
   const lastPage = Math.floor((end - 1) / DEFAULT_RESIDENT_PAGE_SIZE);
   let newDirtyPageCount = 0;
   for (let pageIndex = firstPage; pageIndex <= lastPage; pageIndex += 1) {
@@ -1123,11 +1124,12 @@ export function writeDirtyResidentFileData(
     const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, nextSize - pageStart);
     const writeStart = Math.max(offset, pageStart);
     const writeEnd = Math.min(end, pageStart + pageLen);
-    const pageWriteStart = writeStart - pageStart;
-    const pageWriteEnd = writeEnd - pageStart;
+    const writesPage = writeEnd > writeStart;
+    const pageWriteStart = writesPage ? writeStart - pageStart : 0;
+    const pageWriteEnd = writesPage ? writeEnd - pageStart : 0;
     const existing = meta ? readResidentPageSnapshot(sab, meta, pageIndex) : null;
     let pageBytes: Uint8Array;
-    if (pageWriteStart === 0 && pageWriteEnd === pageLen) {
+    if (writesPage && pageWriteStart === 0 && pageWriteEnd === pageLen) {
       pageBytes = new Uint8Array(pageLen);
     } else if (existing) {
       pageBytes = existing.bytes.length === pageLen ? new Uint8Array(existing.bytes) : new Uint8Array(pageLen);
@@ -1142,13 +1144,30 @@ export function writeDirtyResidentFileData(
     if (!existing?.dirty) {
       newDirtyPageCount += 1;
     }
-    pageBytes.set(data.subarray(writeStart - offset, writeEnd - offset), pageWriteStart);
+    let dirtyStart = existing?.dirty ? existing.dirtyStart : pageLen;
+    let dirtyEnd = existing?.dirty ? existing.dirtyEnd : 0;
+    if (offset > record.size) {
+      const holeStart = Math.max(record.size, pageStart);
+      const holeEnd = Math.min(offset, pageStart + pageLen);
+      if (holeEnd > holeStart) {
+        dirtyStart = Math.min(dirtyStart, holeStart - pageStart);
+        dirtyEnd = Math.max(dirtyEnd, holeEnd - pageStart);
+      }
+    }
+    if (writesPage) {
+      pageBytes.set(data.subarray(writeStart - offset, writeEnd - offset), pageWriteStart);
+      dirtyStart = Math.min(dirtyStart, pageWriteStart);
+      dirtyEnd = Math.max(dirtyEnd, pageWriteEnd);
+    }
+    if (dirtyEnd <= dirtyStart) {
+      continue;
+    }
     residentPages.set(pageIndex, {
       pageIndex,
       bytes: pageBytes,
       dirty: true,
-      dirtyStart: existing?.dirty ? Math.min(existing.dirtyStart, pageWriteStart) : pageWriteStart,
-      dirtyEnd: existing?.dirty ? Math.max(existing.dirtyEnd, pageWriteEnd) : pageWriteEnd,
+      dirtyStart,
+      dirtyEnd,
     });
     touchedPages.add(pageIndex);
   }

@@ -1310,6 +1310,51 @@ test("kernel-worker sparse dirty resident writes read source bytes then zero hol
     .toBe("XYZ");
 });
 
+test("kernel-worker sparse dirty resident output writes publish zero holes without backing", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  fsState.mkdir("/work", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/work");
+  const name = encoder.encode("out.bin");
+  const namePtr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, namePtr);
+  const ino = canonicalExports.memfs_create_file(parentIno, namePtr, name.length);
+  expect(ino).toBeGreaterThan(1);
+  expect(Number(canonicalExports.memfs_set_mode(ino, 0o644))).toBe(0);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: 0,
+    parentIno,
+    name,
+    nextSibling: 0,
+  });
+
+  const head = new Uint8Array(3544);
+  for (let index = 0; index < head.length; index += 1) {
+    head[index] = (index * 17 + 3) & 0xff;
+  }
+  const tail = encoder.encode("tailtail");
+
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, head)).toBe(head.length);
+  const firstWrite = fsState.readBackingFileRangeByInode(ino, 0, head.length);
+  expect(firstWrite).not.toBeNull();
+  expectBytesEqual(firstWrite!, head);
+  expect(canonicalExports.memfs_set_file_size_shallow(ino, BigInt(head.length))).toBe(BigInt(head.length));
+  expect(fsState.writeDirtyResidentFileByInode(ino, 4112, tail)).toBe(tail.length);
+  const residentAfterSparseWrite = readResidentFileData(sabPageCache, ino, 0, head.length);
+  expect(residentAfterSparseWrite).not.toBeNull();
+  expectBytesEqual(residentAfterSparseWrite!, head);
+
+  const firstPage = fsState.readBackingFileRangeByInode(ino, 0, 4096);
+  expect(firstPage).not.toBeNull();
+  expectBytesEqual(firstPage!.subarray(0, head.length), head);
+  expect(firstPage!.subarray(head.length)).toEqual(new Uint8Array(4096 - head.length));
+
+  const tailPage = fsState.readBackingFileRangeByInode(ino, 4096, 24);
+  expect(tailPage).not.toBeNull();
+  expect(tailPage!.subarray(0, 16)).toEqual(new Uint8Array(16));
+  expect(new TextDecoder().decode(tailPage!.subarray(16))).toBe("tailtail");
+});
+
 test("kernel-worker applies supervisor dirty write denial without publishing resident pages", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
 

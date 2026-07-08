@@ -54,8 +54,9 @@ const gccCompileEntry: ToolchainExecEntry = {
     "HOME=/tmp",
     "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
   ],
-  timeoutMs: 20_000,
+  timeoutMs: 60_000,
   guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: cToolchainSnapshotSources([
     {
       kind: "inlineFile",
@@ -126,7 +127,7 @@ const collect2LinkEntry: ToolchainExecEntry = {
     "COMPILER_PATH=/usr/libexec/gcc/riscv64-linux-gnu/16/:/usr/libexec/gcc/riscv64-linux-gnu/:/usr/lib/gcc/riscv64-linux-gnu/16/:/usr/lib/gcc/riscv64-linux-gnu/:/usr/bin/",
     "LIBRARY_PATH=/usr/lib/gcc/riscv64-linux-gnu/16/:/usr/lib/riscv64-linux-gnu/:/usr/lib/",
   ],
-  timeoutMs: 10_000,
+  timeoutMs: 120_000,
   guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
   snapshotSources: [],
   artifactChecks: [{ path: "/work/hello", minSize: 1 }],
