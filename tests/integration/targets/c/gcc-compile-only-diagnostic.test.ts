@@ -25,8 +25,9 @@ const gccCompileEntry: ToolchainExecEntry = {
     "HOME=/tmp",
     "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
   ],
-  timeoutMs: 20_000,
+  timeoutMs: 60_000,
   guestMemoryPolicyLimitBytes: 768 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: cToolchainSnapshotSources([
     {
       kind: "inlineFile",
