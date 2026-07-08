@@ -177,6 +177,46 @@ function readPipeCounters(handle: ProcessHandle, pipeSlot: number): {
   };
 }
 
+function writePipeHead(handle: ProcessHandle, pipeSlot: number, head: number): void {
+  const base = handle.kernelState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
+  const u32 = new Uint32Array(handle.memory.buffer);
+  Atomics.store(u32, (base + PIPE_HEAD_OFFSET) >>> 2, head);
+}
+
+function mirrorDrainedPipeReadProgress(
+  source: ProcessHandle,
+  target: ProcessHandle,
+  pipeSlot: number,
+): boolean {
+  if (source === target || pipeSlot <= 0) {
+    return false;
+  }
+  const sourceCounters = readPipeCounters(source, pipeSlot);
+  if (sourceCounters.head !== sourceCounters.tail) {
+    return false;
+  }
+  const targetCounters = readPipeCounters(target, pipeSlot);
+  if (
+    targetCounters.head === targetCounters.tail
+    || targetCounters.tail !== sourceCounters.tail
+  ) {
+    return false;
+  }
+  writePipeHead(target, pipeSlot, sourceCounters.head);
+  queueDrainedPipeReadProgress(target, pipeSlot);
+  return true;
+}
+
+function drainHiddenPipeOutput(
+  source: ProcessHandle,
+  target: ProcessHandle,
+  pipeSlot: number,
+): boolean {
+  const drained = drainPipeOutput(source, target, pipeSlot);
+  const mirrored = mirrorDrainedPipeReadProgress(source, target, pipeSlot);
+  return drained || mirrored;
+}
+
 function snapshotPipeSlotReadProgress(
   handle: ProcessHandle,
   pipeSlot: number,
@@ -410,10 +450,10 @@ export function drainHiddenProcessOutput(handle: ProcessHandle): boolean {
   const stdoutPipe = hiddenOutputPipeForFd(handle, owner, 1, inheritedSlots);
   const stderrPipe = hiddenOutputPipeForFd(handle, owner, 2, inheritedSlots);
   const stdoutDrained = stdoutPipe !== 0
-    ? drainPipeOutput(source, target, stdoutPipe)
+    ? drainHiddenPipeOutput(source, target, stdoutPipe)
     : false;
   const stderrDrained = stderrPipe !== 0 && stderrPipe !== stdoutPipe
-    ? drainPipeOutput(source, target, stderrPipe)
+    ? drainHiddenPipeOutput(source, target, stderrPipe)
     : false;
   return stdoutDrained || stderrDrained;
 }

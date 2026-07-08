@@ -327,6 +327,33 @@ test("drainHiddenProcessOutput flushes child bytes into the visible parent outpu
   expect(delivered).toEqual(["child-out\n"]);
 });
 
+test("drainHiddenProcessOutput mirrors inherited pipe read progress to the visible parent", () => {
+  const { handle: owner } = makeHandle();
+  const delivered: string[] = [];
+  owner.onStdout = (data) => {
+    delivered.push(new TextDecoder().decode(data));
+  };
+
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: processStdoutPipe(owner),
+    stderrPipe: processStderrPipe(owner),
+    stdioOwner: owner,
+    onStdout: undefined,
+  });
+
+  seedPipe(child.memory, child.kernelState, processHostStdio(child).stdoutPipe, "child-out\n");
+  seedPipe(owner.memory, owner.kernelState, processHostStdio(owner).stdoutPipe, "child-out\n");
+
+  expect(drainHiddenProcessOutput(child)).toBe(true);
+  expect(drainProcessOutput(owner)).toBe(false);
+  expect(delivered).toEqual(["child-out\n"]);
+  expect(pendingPipeSlotSnapshotCount(owner)).toBe(1);
+});
+
 test("drainHiddenProcessOutput flushes child PTY slave output inherited from the parent", () => {
   const { handle: owner } = makeHandle({
     stdinPipe: 0,
