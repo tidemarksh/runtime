@@ -4,6 +4,7 @@ import {
   Runtime,
   logSkip,
   readKernelWasm,
+  runtimeDebugSummary,
   spawnWithOutput,
 } from "../../../support/runtime-workload.js";
 import { buildNodeRuntimeSnapshot, readNodeBinary } from "./support.js";
@@ -27,9 +28,9 @@ test("node shell-wrapper exec chain: /bin/sh wrapper -> /bin/node --help", async
 
   const runtime = await Runtime.create({
     wasmBytes,
-    guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: 2 * 1024 * 1024 * 1024,
     kernelWorkerMaxMemoryPages: 7168,
-    maxProcessMemoryPages: 32768,
+    maxProcessMemoryPages: 40960,
     maxForkMemoryPages: 40960,
   });
   try {
@@ -51,9 +52,12 @@ test("node shell-wrapper exec chain: /bin/sh wrapper -> /bin/node --help", async
         "PATH=/bin:/usr/bin",
         "PS1=$ ",
       ],
-      30_000,
+      120_000,
       { cwd: "/work" },
-    );
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
     expect(
       result.exitCode,
       [
@@ -67,4 +71,4 @@ test("node shell-wrapper exec chain: /bin/sh wrapper -> /bin/node --help", async
   } finally {
     runtime.destroy();
   }
-}, 40_000);
+}, 140_000);

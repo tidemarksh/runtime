@@ -10,7 +10,11 @@ import type {
   ThreadWorkerOutbound,
 } from "../../../../src/messages.js";
 import { FS_RING_TOTAL_BYTES } from "../../../../src/layout/fs-ring.js";
-import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+import {
+  makeSupervisorAbiStubs,
+  writeSupervisorFaultExitDecisionRecord,
+} from "../support/supervisor-abi.js";
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 
 type WorkerModule = typeof import("../../../../src/worker.js");
 type ProcessMemoryOwnershipFn =
@@ -130,7 +134,8 @@ class FakeWorker {
 
   emit(message: ThreadWorkerOutbound): void {
     if (message.type === "status") {
-      const kernel = createdKernelExports[createdWorkers.indexOf(this)];
+      const kernel = createdKernelExports[createdWorkers.indexOf(this)] ?? createdKernelExports[0];
+      kernel?.setThreadStatus(message.status, message.vmPtr);
       kernel?.setThreadExitStatus(message.exitCode, message.termSignal);
     }
     this.onmessage?.({ data: message } as MessageEvent<ThreadWorkerOutbound>);
@@ -161,6 +166,7 @@ const createdKernelExports: Array<
 	    retainedOfds: number[];
 	    liveThreadVmPtrs: number[];
 	    fsProcessCalls: number;
+	    setThreadStatus(status: number, vmPtr?: number): void;
 	    setThreadExitStatus(exitCode: number, termSignal: number): void;
 	    memfsCreateCalls: Array<[number, number]>;
     memfsTruncateCalls: Array<[number, number]>;
@@ -197,7 +203,7 @@ function makeKernelState(): KernelRuntimeState {
     socketUsed: 0,
     pipeBase: 0x270000,
     pipeRegionBytes: 64 * MOCK_PIPE_SLOT_BYTES,
-    pipeUsed: 0n,
+    pipeUsed: 1n,
     netBufBase: 0x280000,
     netBufPoolBytes: 1050624,
     netBufUsed: 0n,
@@ -205,8 +211,6 @@ function makeKernelState(): KernelRuntimeState {
     sigSlotsBytes: 256,
     processPendingPtr: 0xc10000,
     processPendingBytes: 512,
-    signalfdStatePtr: undefined,
-    signalfdStateBytes: undefined,
     processRuntimeStatePtr: 0xc20000,
     processRuntimeStateBytes: 4096,
     timeStatePtr: 0xc30000,
@@ -272,6 +276,48 @@ async function flushMicrotasks(turns = 20): Promise<void> {
   }
 }
 
+async function supervisorKernelWorkerRequest(msg: KernelWorkerRequest): Promise<KernelWorkerOutbound> {
+  switch (msg.type) {
+    case "register-process":
+      return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+    case "initialize-process-lifecycle":
+      return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+    case "sync-process-lifecycle":
+      return { type: "process-lifecycle-synced", requestId: 0, kernelState: msg.kernelState };
+    case "sync-process-memfs":
+      return { type: "process-memfs-synced", requestId: 0, kernelState: msg.kernelState };
+    case "sync-epoll-state":
+      return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+    case "sync-pipe-state":
+      return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+    case "sync-socket-state":
+      return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+    case "process-fs":
+      createdKernelExports[0]?.setThreadStatus(0, msg.vmPtr);
+      return {
+        type: "fs-processed",
+        requestId: 0,
+        kernelState: { ...msg.kernelState, heapPtr: msg.kernelState.heapPtr + 0x10 },
+        result: 0n,
+        memfsMutated: false,
+        ofdStateChanged: false,
+      };
+    case "resume-connect":
+      createdKernelExports[0]?.setThreadStatus(0, msg.vmPtr);
+      return {
+        type: "connect-resumed",
+        requestId: 0,
+        kernelState: { ...msg.kernelState, heapPtr: msg.kernelState.heapPtr + 0x20 },
+      };
+    case "release-host-stdio":
+      return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
+    case "unregister-process":
+      return { type: "process-unregistered", requestId: 0 };
+    default:
+      throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+  }
+}
+
 function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let nextVmPtr = 0x2000;
   let runtimeState = makeKernelState();
@@ -288,6 +334,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   const memfsCreateWithDataCalls: Array<[number, number]> = [];
   let threadExitCode = 0;
   let threadTermSignal = 0;
+  const threadStatuses = new Map<number, number>([[0x1234, 0]]);
   let nextIno = 10;
   interface MockProcessIdentity {
     pid: number;
@@ -469,7 +516,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
       return 0x1234;
     },
     thread_step: () => 0,
-    thread_status: () => 0,
+    thread_status: (vmPtr) => threadStatuses.get(vmPtr) ?? 0,
     thread_exit_code: () => threadExitCode,
     thread_term_signal: () => threadTermSignal,
     thread_pc: () => 0n,
@@ -481,11 +528,23 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     thread_pending_fs_effects: () => 0,
     thread_pending_fs_target_ino: () => 0,
     thread_pending_fs_opcode: () => 0,
+    supervisor_fs_pending_ring_request: () => 0,
+    supervisor_fs_pending_regular_file_fd: () => -1,
+    supervisor_fs_pending_regular_file_ofd: () => 0,
+    supervisor_fs_completion_flag_memfs_dirty: () => 1,
+    supervisor_fs_completion_flag_memfs_publish_ready: () => 2,
+    supervisor_fs_completion_flag_ofd_state_changed: () => 4,
+    supervisor_fs_completion_flag_regular_file_request: () => 8,
+    supervisor_fs_completion_decision: () => 0,
     thread_process_fs: () => {
       fsProcessCalls += 1;
       runtimeState = { ...runtimeState, heapPtr: runtimeState.heapPtr + 0x10 };
     },
     thread_resume_fs: () => 0,
+    thread_resume_fs_result: (vmPtr, result) => {
+      threadStatuses.set(vmPtr, exports.abi_status_ok());
+      return result;
+    },
     thread_futex_wait_addr: () => 0n,
     thread_futex_wait_timeout: () => 0n,
     thread_futex_wait_expected: () => 0,
@@ -651,6 +710,9 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     recordedChildExits,
     retainedOfds,
     liveThreadVmPtrs,
+    setThreadStatus(status, vmPtr = 0x1234) {
+      threadStatuses.set(vmPtr, status);
+    },
     setThreadExitStatus(exitCode, termSignal) {
       threadExitCode = exitCode;
       threadTermSignal = termSignal;
@@ -670,6 +732,10 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     cloneSpawnParentVmPtr: () => 0x1234,
     currentExports: () => exports,
   }));
+  exports.supervisor_complete_host_op = () => {
+    threadStatuses.set(0x1234, exports.abi_status_ok());
+    return 0;
+  };
   createdKernelExports.push(exports);
   return exports;
 }
@@ -731,7 +797,10 @@ afterEach(() => {
 
 
 test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
 
   expect(handle.vmPtr).toBe(0x1234);
@@ -749,7 +818,8 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
-
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
   expect(createdWorkers).toHaveLength(2);
   expect(createdWorkers[1].postedMessages).toEqual([
     expect.objectContaining({
@@ -774,12 +844,15 @@ test("createProcess spawns a child worker on STATUS_CLONE_SPAWN", async () => {
 });
 
 test("ready adopts worker kernel state before first step", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
   const readyState = {
     ...makeKernelState(),
     heapPtr: makeKernelState().heapPtr + 0x88,
-    pipeUsed: 0x40n,
+    pipeUsed: makeKernelState().pipeUsed,
     processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr + 0x20,
   };
 
@@ -789,6 +862,8 @@ test("ready adopts worker kernel state before first step", async () => {
   expect(handle.kernelState).toEqual({
     ...readyState,
     processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr,
+    signalfdStatePtr: undefined,
+    signalfdStateBytes: undefined,
   });
   expect(worker.postedMessages).toEqual([
     {
@@ -803,7 +878,10 @@ test("ready adopts worker kernel state before first step", async () => {
 });
 
 test("clone spawn refreshes kernel state before child init and parent resume", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
   const refreshedState = {
@@ -843,6 +921,9 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
     kernelState: makeKernelState(),
   });
 
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
   expect(handle.kernelState).toEqual({
     ...refreshedState,
     processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr,
@@ -875,7 +956,10 @@ test("clone spawn refreshes kernel state before child init and parent resume", a
 
 
 test("clone child init caps preserved guest bytes to guest policy limit", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
   handle.guestMemoryPolicyLimitBytes = 0x2000n;
 
@@ -893,6 +977,9 @@ test("clone child init caps preserved guest bytes to guest policy limit", async 
     kernelState: makeKernelState(),
   });
 
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
   expect(createdWorkers).toHaveLength(2);
   expect(createdWorkers[1].postedMessages[0]).toMatchObject({
     type: "init",
@@ -903,7 +990,10 @@ test("clone child init caps preserved guest bytes to guest policy limit", async 
 });
 
 test("clone child init preserves only live guest bytes when kernel debug memory state is narrower", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
   handle.guestMemoryPolicyLimitBytes = 0x200000n;
   handle.kernel.debug_memory_brk_current = () => 0x4000n;
@@ -925,6 +1015,9 @@ test("clone child init preserves only live guest bytes when kernel debug memory 
     kernelState: makeKernelState(),
   });
 
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
   expect(createdWorkers).toHaveLength(2);
   expect(createdWorkers[1].postedMessages[0]).toMatchObject({
     type: "init",
@@ -934,8 +1027,11 @@ test("clone child init preserves only live guest bytes when kernel debug memory 
   expect(createdWorkers[1].postedMessages[0]).not.toHaveProperty("guestBytes");
 });
 
-test("clone child first ready->step uses refreshed canonical kernel state", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+test("clone child ready retains refreshed canonical state across duplicate parent completion", async () => {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const parentWorker = createdWorkers[0];
   const kernel = createdKernelExports[0];
   const staleState = makeKernelState();
@@ -976,6 +1072,9 @@ test("clone child first ready->step uses refreshed canonical kernel state", asyn
     kernelState: staleState,
   });
 
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
   const adoptedRefreshedState = {
     ...refreshedState,
     processRuntimeStatePtr: makeKernelState().processRuntimeStatePtr,
@@ -986,6 +1085,8 @@ test("clone child first ready->step uses refreshed canonical kernel state", asyn
   const childWorker = createdWorkers[1];
   childWorker.clearPostedMessages();
   emitReady(childWorker, 0x2000);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
   expect(handle.kernelState).toEqual(adoptedRefreshedState);
   expect(readPublishedKernelRuntimeState(handle.runtimeBridge))
     .toEqual(withoutRuntimeStateMetadata(adoptedRefreshedState));
@@ -1001,9 +1102,11 @@ test("clone child first ready->step uses refreshed canonical kernel state", asyn
     kernelState: refreshedState,
   });
 
-  expect(childWorker.postedMessages).toEqual([
-    { type: "step", budget: 20_000, kernelState: adoptedRefreshedState },
-  ]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
+  expect(parentWorker.postedMessages).toEqual([]);
+  expect(childWorker.postedMessages).toEqual([]);
 });
 
 test("clone child ready syncs owned epoll state before scheduling", async () => {
@@ -1135,9 +1238,10 @@ test("clone child ready ignores stale local pipe writes under kernel-worker-owne
 
   expect(stdoutChunks).toEqual([]);
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(false);
-  expect(childWorker.postedMessages).toEqual([
+  expect(parentWorker.postedMessages).toEqual([
     { type: "step", budget: 20_000, kernelState: makeKernelState() },
   ]);
+  expect(childWorker.postedMessages).toEqual([]);
 });
 
 test("STATUS_OK with kernel-worker-owned pipe state syncs without local stdout drain", async () => {
@@ -1196,7 +1300,10 @@ test("STATUS_OK with kernel-worker-owned pipe state syncs without local stdout d
 });
 
 test("running worker prunes stale blocked workers after the live thread table shrinks", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const parentWorker = createdWorkers[0];
   const kernel = createdKernelExports[0];
 
@@ -1211,6 +1318,9 @@ test("running worker prunes stale blocked workers after the live thread table sh
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
 
   const childWorker = createdWorkers[1];
   kernel.liveThreadVmPtrs.splice(0, kernel.liveThreadVmPtrs.length, 0x1234, 0x2000);
@@ -1227,6 +1337,7 @@ test("running worker prunes stale blocked workers after the live thread table sh
   });
 
   kernel.liveThreadVmPtrs.splice(0, kernel.liveThreadVmPtrs.length, 0x1234);
+  kernel.setThreadStatus(kernel.abi_status_fault());
   parentWorker.clearPostedMessages();
   parentWorker.emit({
     type: "status",
@@ -1238,19 +1349,40 @@ test("running worker prunes stale blocked workers after the live thread table sh
     kernelState: makeKernelState(),
   });
 
-  expect((handle as { hostBlockedWorkers: Map<Worker, unknown> }).hostBlockedWorkers.has(childWorker as unknown as Worker))
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+
+  expect(hostExecutionState(handle).hostBlockedWorkers.has(childWorker as unknown as Worker))
     .toBe(false);
-  expect(processHasWorker(handle, childWorker as unknown as Worker)).toBe(true);
+  expect(processHasWorker(handle, childWorker as unknown as Worker)).toBe(false);
 });
 
 test("fault exits the process when the live thread table is empty despite a stale positive thread count", async () => {
   const onExit = vi.fn();
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { onExit });
+  const errors: Error[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+    onExit,
+    onError: (error) => errors.push(error),
+  });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
 
   kernel.thread_process_thread_count = () => 1;
   kernel.liveThreadVmPtrs.splice(0, kernel.liveThreadVmPtrs.length);
+  kernel.supervisor_fault_exit_decision = (vmPtr, outPtr) =>
+    writeSupervisorFaultExitDecisionRecord(kernel.memory!, outPtr, {
+      kind: kernel.supervisor_fault_exit_kind_process_exit(),
+      vmPtr,
+      exitVmPtr: vmPtr,
+      processPtr: kernel.thread_process_ptr(vmPtr),
+      remainingThreads: 1,
+      liveThreads: 0,
+      exitCode: 139,
+      termSignal: 11,
+      status: kernel.abi_status_fault(),
+    });
 
   emitReady(worker);
   worker.clearPostedMessages();
@@ -1263,15 +1395,24 @@ test("fault exits the process when the live thread table is empty despite a stal
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks();
 
+  expect(errors).toEqual([]);
   expect(onExit).toHaveBeenCalledWith(139);
   expect(processWorkerCount(handle)).toBe(0);
   expect(worker.terminated).toBe(true);
 });
 
 test("createProcess processes STATUS_FS and resumes worker with refreshed kernel state", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: supervisorKernelWorkerRequest,
+  });
   const worker = createdWorkers[0];
 
   emitReady(worker);
@@ -1285,7 +1426,10 @@ test("createProcess processes STATUS_FS and resumes worker with refreshed kernel
     vmPtr: 0x1234,
     kernelState: makeKernelState(),
   });
-  await flushMicrotasks();
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(worker.postedMessages).toEqual([
     {
@@ -1322,6 +1466,7 @@ test("createProcess handles STATUS_FS through kernel-worker before publishing re
         case "sync-process-memfs":
           return { type: "process-memfs-synced", requestId: 0, kernelState: msg.kernelState };
         case "process-fs":
+          createdKernelExports[0]?.setThreadStatus(0, msg.vmPtr);
           return {
             type: "fs-processed",
             requestId: 0,
@@ -1440,8 +1585,11 @@ test("STATUS_FS does not sync fork-shared OFD state when no fork-share peers exi
   expect(requests.some((msg) => msg.type === "sync-fork-shared-state")).toBe(false);
 });
 
-test("createProcess resumes STATUS_CONNECT from the process owner", async () => {
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+test("createProcess rejects STATUS_CONNECT without supervisor process ownership", async () => {
+  const errors: Error[] = [];
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    onError: (error) => errors.push(error),
+  });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
   const resumeConnect = vi.fn();
@@ -1459,14 +1607,11 @@ test("createProcess resumes STATUS_CONNECT from the process owner", async () => 
     kernelState: makeKernelState(),
   });
 
-  expect(resumeConnect).toHaveBeenCalledWith(0x1234, -111n);
-  expect(worker.postedMessages).toEqual([
-    {
-      type: "step",
-      budget: 20_000,
-      kernelState: makeKernelState(),
-    },
-  ]);
+  await flushMicrotasks();
+  expect(resumeConnect).not.toHaveBeenCalled();
+  expect(worker.postedMessages).toEqual([]);
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.message).toContain("requires kernel-worker ownership");
 });
 
 test("createProcess resumes STATUS_CONNECT through kernel-worker when it owns process state", async () => {
@@ -1493,6 +1638,7 @@ test("createProcess resumes STATUS_CONNECT through kernel-worker when it owns pr
         case "release-host-stdio":
           return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
         case "resume-connect":
+          createdKernelExports[0]?.setThreadStatus(0, msg.vmPtr);
           return {
             type: "connect-resumed",
             requestId: 0,
@@ -1550,7 +1696,14 @@ test("createProcess resumes STATUS_CONNECT through kernel-worker when it owns pr
 });
 
 test("createProcess blocks STATUS_CONNECT until socket timeout expires", async () => {
-  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]));
+  const requests: KernelWorkerRequest[] = [];
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+    pid: 1,
+    kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
+      requests.push(msg);
+      return supervisorKernelWorkerRequest(msg);
+    },
+  });
   const worker = createdWorkers[0];
   const kernel = createdKernelExports[0];
   let status = 28;
@@ -1577,10 +1730,10 @@ test("createProcess blocks STATUS_CONNECT until socket timeout expires", async (
   });
 
   expect(resumeConnect).not.toHaveBeenCalled();
-  expect(handle.hostBlockedWorkers.size).toBe(1);
   await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks();
-  expect(resumeSocketTimeout).toHaveBeenCalledWith(0x1234);
+  expect(requests.some((msg) => msg.type === "resume-connect")).toBe(true);
+  expect(resumeSocketTimeout).not.toHaveBeenCalled();
 });
 
 test("kernel-worker child exit bookkeeping records child exit and delegates parent wait4 resume", async () => {
@@ -1717,7 +1870,7 @@ test("kernel-worker child exit bookkeeping records child exit and delegates pare
 
   expect(requests.some((msg) => msg.type === "resume-wait4" && msg.pid === 1)).toBe(true);
   expect(resumeWait4).not.toHaveBeenCalled();
-  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0x100);
+  expect(parentKernel.kernel_heap_ptr()).toBe(makeKernelState().heapPtr + 0xc0);
   expect(parentWorker.postedMessages).toEqual([]);
   vi.useRealTimers();
 });

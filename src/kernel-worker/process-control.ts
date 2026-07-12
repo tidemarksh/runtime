@@ -11,15 +11,26 @@ import type {
   GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
+  KernelWorkerRegularFileFsSnapshot,
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
 import {
   DEFAULT_RESIDENT_PAGE_SIZE,
   publishResidentPage,
+  readDirEpoch,
   readResidentFileData,
   resetPageCache,
 } from "../fs/sab-page-cache.js";
-import { FS_OP_EXECVE } from "../layout/fs-ring.js";
+import {
+  FS_OP_EXECVE,
+  FS_OP_MMAP,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  FS_RING_SUBMIT_QUEUE_SIZE,
+  FS_RING_SUBMIT_TAIL_OFFSET,
+  FS_RING_TOTAL_BYTES,
+  FS_RING_REQUEST_VM_PTR_OFFSET,
+  fsRingRequestEntryOffset,
+} from "../layout/fs-ring.js";
 import {
   clearSupervisorPendingBackingFill,
   supervisorBackingFillSpan,
@@ -45,6 +56,8 @@ import {
 const FS_PUBLICATION_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_PUBLICATION_DEBUG ?? "") === "1";
+const DIRECT_MMAP_REUSE_RESIDENT_TAIL_BYTES = 32 * 1024;
+const DIRECT_MMAP_REUSE_TAIL_MAX_SPAN_BYTES = 2 * 1024 * 1024;
 
 interface CanonicalProcessEntry {
   pid: number;
@@ -71,6 +84,11 @@ interface PendingMmapGuestWriteRequest {
   length: number;
 }
 
+interface PendingRegularFileFsRequest {
+  fd: number;
+  ofdId: number;
+}
+
 type PendingBackingFillRequest = SupervisorPendingBackingFillRequest;
 
 interface ExecveBackingRetryStats {
@@ -91,6 +109,7 @@ interface ProcessFsProgress {
 type ProcessFsDebug = (phase: string, detail?: string) => void;
 
 interface PendingFsMutationContext {
+  opcode: number;
   effects: number;
   pendingPath: string | null;
   pendingSecondaryPath: string | null;
@@ -138,7 +157,11 @@ interface KernelWorkerProcessControlDeps {
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
   restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
-  restorePublishedRegularFileDataForInode?(ino: number, targetExports?: KernelExports): boolean;
+  restorePublishedRegularFileDataForInode?(
+    ino: number,
+    targetExports?: KernelExports,
+    options?: { assumeBackingFile?: boolean },
+  ): boolean;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   flushDirtyResidentFileByInode(ino: number): boolean;
   truncateDirtyResidentFileByInode(ino: number, size: number): number;
@@ -231,6 +254,7 @@ interface KernelWorkerProcessControlDeps {
 
 export function createKernelWorkerProcessControl(deps: KernelWorkerProcessControlDeps) {
   const decoder = new TextDecoder();
+  const processMemfsEpochs = new Map<number, number>();
 
   function decodeKernelBytes(memory: WebAssembly.Memory, ptr: number, length: number): string {
     const bytes = new Uint8Array(length);
@@ -276,11 +300,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   ): void {
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
-    const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
     deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
       includeData: false,
     });
-    deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
     deps.restorePublishedRegularFileDataFromPageCache?.();
     deps.rebuildPageCacheFromCanonical();
     deps.fanoutCanonicalMemfs(false);
@@ -303,8 +325,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     processExports: KernelExports,
     vmPtr: number,
   ): PendingFsMutationContext {
+    const opcode = processExports.thread_pending_fs_opcode(vmPtr);
     const effects = processExports.thread_pending_fs_effects(vmPtr);
     return {
+      opcode,
       effects,
       pendingPath: (effects & (deps.fsEffectMemfsMutation | deps.fsEffectMemfsFileData)) !== 0
         ? readPendingFsPath(processExports, vmPtr)
@@ -316,6 +340,20 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         ? processExports.thread_pending_fs_target_ino(vmPtr)
         : 0,
     };
+  }
+
+  function readPendingRegularFileFsRequest(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): PendingRegularFileFsRequest | null {
+    const pendingFd = processExports.supervisor_fs_pending_regular_file_fd;
+    const pendingOfd = processExports.supervisor_fs_pending_regular_file_ofd;
+    if (typeof pendingFd !== "function" || typeof pendingOfd !== "function") {
+      return null;
+    }
+    const fd = pendingFd.call(processExports, vmPtr);
+    const ofdId = pendingOfd.call(processExports, vmPtr);
+    return fd >= 0 && ofdId > 0 ? { fd, ofdId } : null;
   }
 
   function supervisorU64ToSafeNumber(value: bigint | number | undefined): number | null {
@@ -486,7 +524,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     request: PendingBackingFillRequest,
     span: SupervisorBackingFillSpan,
   ): boolean {
-    if (!supervisorBackingFillShouldProbeDirect(processExports, request, span.length)) {
+    if (
+      request.opcode !== FS_OP_MMAP
+      || !supervisorBackingFillShouldProbeDirect(processExports, request, span.length)
+    ) {
       return false;
     }
     const probeLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, span.length);
@@ -507,22 +548,36 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   async function publishBackingRange(
     processExports: KernelExports,
     request: PendingBackingFillRequest,
+    debug?: ProcessFsDebug,
   ): Promise<boolean> {
+    debug?.("publish-backing-start", formatBackingFillDebug(request));
     const span = supervisorBackingFillSpan(processExports, request);
     if (!span) {
+      debug?.("publish-backing-no-span", formatBackingFillDebug(request));
       return false;
     }
-    if (hasDirectBackingForFill(processExports, request, span)) {
+    debug?.("publish-backing-span", `off=${span.offset}:end=${span.end}:len=${span.length}`);
+    debug?.("publish-backing-direct-check-start");
+    const direct = hasDirectBackingForFill(processExports, request, span);
+    debug?.("publish-backing-direct-check-done", `direct=${direct ? 1 : 0}`);
+    if (direct) {
+      debug?.("publish-backing-direct-tail-start");
+      const tailPublished = publishDirectMmapReuseTail(processExports, request, span);
+      debug?.("publish-backing-direct-tail-done", `published=${tailPublished ? 1 : 0}`);
       return true;
     }
+    debug?.("publish-backing-resident-read-start");
     let alignedRange = deps.readBackingFileRangeByInode(request.ino, span.offset, span.length);
+    debug?.("publish-backing-resident-read-done", `hit=${alignedRange === null ? 0 : 1}`);
     if (alignedRange === null) {
+      debug?.("publish-backing-ensure-source-start");
       const ensured = await deps.ensureBackingSourceRangeForInode?.(
         request.ino,
         span.offset,
         span.length,
         request.expectedSize,
       );
+      debug?.("publish-backing-ensure-source-done", `ensured=${ensured === false ? 0 : 1}`);
       if (ensured === false) {
         return false;
       }
@@ -531,6 +586,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     if (alignedRange === null) {
       return false;
     }
+    debug?.("publish-backing-resident-publish-start");
     const sab = deps.getSabPageCache();
     for (let pageStart = span.offset; pageStart < span.end; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
       const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
@@ -548,19 +604,120 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         return false;
       }
     }
-    if (readResidentFileData(sab, request.ino, request.offset, request.length) === null) {
+    const satisfiedLength = Math.min(request.length, Math.max(0, request.expectedSize - request.offset));
+    if (satisfiedLength <= 0 || readResidentFileData(sab, request.ino, request.offset, satisfiedLength) === null) {
       return false;
     }
+    debug?.("publish-backing-resident-publish-done");
     return true;
   }
 
-  async function ensurePendingReadBackingRange(
+  function publishResidentBackingRange(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    offset: number,
+    length: number,
+    alignedRange: Uint8Array,
+  ): boolean {
+    if (length <= 0 || alignedRange.length !== length) {
+      return false;
+    }
+    const sab = deps.getSabPageCache();
+    for (let pageStart = offset; pageStart < offset + length; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+      const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
+      if (pageLen <= 0 || readResidentFileData(sab, request.ino, pageStart, pageLen)) {
+        continue;
+      }
+      const backingOffset = pageStart - offset;
+      const page = alignedRange.subarray(backingOffset, backingOffset + pageLen);
+      if (page.length !== pageLen) {
+        return false;
+      }
+      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page, {
+        authority: supervisorResidentPageTableAuthority(processExports),
+      })) {
+        return false;
+      }
+    }
+    return readResidentFileData(sab, request.ino, offset, length) !== null;
+  }
+
+  function publishDirectMmapReuseTail(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    span: SupervisorBackingFillSpan,
+  ): boolean {
+    if (
+      request.opcode !== FS_OP_MMAP
+      || span.length <= DIRECT_MMAP_REUSE_RESIDENT_TAIL_BYTES
+      || span.length > DIRECT_MMAP_REUSE_TAIL_MAX_SPAN_BYTES
+      || span.end <= span.offset
+    ) {
+      return false;
+    }
+    const tailStart = Math.max(
+      span.offset,
+      Math.floor((span.end - DIRECT_MMAP_REUSE_RESIDENT_TAIL_BYTES) / DEFAULT_RESIDENT_PAGE_SIZE)
+        * DEFAULT_RESIDENT_PAGE_SIZE,
+    );
+    const tailEnd = Math.min(
+      request.expectedSize,
+      Math.ceil(span.end / DEFAULT_RESIDENT_PAGE_SIZE) * DEFAULT_RESIDENT_PAGE_SIZE,
+    );
+    const tailLength = tailEnd - tailStart;
+    if (tailLength <= 0) {
+      return false;
+    }
+    const tailRange = deps.readBackingFileRangeByInode(request.ino, tailStart, tailLength);
+    if (tailRange === null) {
+      return false;
+    }
+    return publishResidentBackingRange(processExports, request, tailStart, tailLength, tailRange);
+  }
+
+  function pendingFsRequestVmPtrs(
+    processExports: KernelExports,
+    fallbackVmPtr: number,
+  ): number[] {
+    const ringBase = processExports.thread_fs_ring_base?.(fallbackVmPtr) ?? 0;
+    if (
+      ringBase <= 0
+      || ringBase + FS_RING_TOTAL_BYTES > processExports.memory.buffer.byteLength
+    ) {
+      return [fallbackVmPtr];
+    }
+    const view = new DataView(processExports.memory.buffer);
+    const head = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
+    const tail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
+    const pendingCount = (head - tail) >>> 0;
+    if (pendingCount > FS_RING_SUBMIT_QUEUE_SIZE) {
+      throw new Error(`invalid pending FS ring depth: ${pendingCount}`);
+    }
+    const vmPtrs: number[] = [];
+    for (let index = 0; index < pendingCount; index += 1) {
+      const position = (tail + index) >>> 0;
+      const entry = fsRingRequestEntryOffset(ringBase, position);
+      const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true)
+        || fallbackVmPtr;
+      if (!vmPtrs.includes(requestVmPtr)) {
+        vmPtrs.push(requestVmPtr);
+      }
+    }
+    return vmPtrs.length > 0 ? vmPtrs : [fallbackVmPtr];
+  }
+
+  async function ensurePendingReadBackingRanges(
     processExports: KernelExports,
     vmPtr: number,
+    debug?: ProcessFsDebug,
   ): Promise<void> {
-    const request = readPendingBackingFillRequest(processExports, vmPtr);
-    if (request) {
-      const published = await publishBackingRange(processExports, request);
+    for (const requestVmPtr of pendingFsRequestVmPtrs(processExports, vmPtr)) {
+      const request = readPendingBackingFillRequest(processExports, requestVmPtr);
+      if (!request) {
+        continue;
+      }
+      debug?.("publish-queued-backing", `vm=0x${requestVmPtr.toString(16)}:${formatBackingFillDebug(request)}`);
+      const published = await publishBackingRange(processExports, request, debug);
       if (!published) {
         throw new Error(`failed to publish backing range: ${formatBackingFillDebug(request)}`);
       }
@@ -595,7 +752,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       maxAttempts = Math.max(maxAttempts, supervisorBackingRetryLimit(processExports, miss));
       debug?.("execve-backing-miss", formatBackingFillDebug(miss));
       debug?.("execve-backing-publish-start", formatBackingFillDebug(miss));
-      const published = await publishBackingRange(processExports, miss);
+      const published = await publishBackingRange(processExports, miss, debug);
       debug?.("execve-backing-publish-done", `published=${published ? 1 : 0}`);
       clearSupervisorPendingBackingFill(processExports, vmPtr);
       if (!published) {
@@ -664,7 +821,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     if (targetInodes !== null && deps.restorePublishedRegularFileDataForInode) {
       for (const ino of targetInodes) {
-        deps.restorePublishedRegularFileDataForInode(ino, processExports);
+        deps.restorePublishedRegularFileDataForInode(ino, processExports, {
+          assumeBackingFile: pendingBackingFill?.ino === ino,
+        });
       }
       return `targeted:${targetInodes.join(",")}`;
     }
@@ -709,6 +868,62 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }];
   }
 
+  function snapshotCompletedReadGuestMemoryWrite(
+    processExports: KernelExports,
+    vmPtr: number,
+  ): GuestMemoryWriteSnapshot[] | undefined {
+    const readGuestPtr = processExports.thread_completed_pipe_read_guest_ptr;
+    const takeLength = processExports.thread_take_completed_pipe_read_len;
+    if (typeof readGuestPtr !== "function" || typeof takeLength !== "function") {
+      return undefined;
+    }
+    const guestPtr = supervisorU64ToSafeNumber(readGuestPtr.call(processExports, vmPtr));
+    const length = takeLength.call(processExports, vmPtr);
+    const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
+    const start = guestPtr === null ? -1 : guestBase + guestPtr;
+    const end = start + length;
+    if (
+      guestPtr === null
+      || guestPtr <= 0
+      || !Number.isSafeInteger(length)
+      || length <= 0
+      || start < guestBase
+      || end > processExports.memory.buffer.byteLength
+    ) {
+      return undefined;
+    }
+    return [{
+      guestPtr,
+      bytes: new Uint8Array(processExports.memory.buffer.slice(start, end)),
+    }];
+  }
+
+  function snapshotCompletedExecGuestMemoryWrites(
+    processExports: KernelExports,
+    vmPtr: number,
+    opcode: number,
+    result: bigint,
+  ): GuestMemoryWriteSnapshot[] {
+    if (opcode !== FS_OP_EXECVE || result < 0n) {
+      return [];
+    }
+    const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
+    const memoryBytes = processExports.memory.buffer.byteLength;
+    if (guestBase <= 0 || guestBase >= memoryBytes) {
+      return [];
+    }
+    const chunkBytes = 4 * 1024 * 1024;
+    const writes: GuestMemoryWriteSnapshot[] = [];
+    for (let start = guestBase; start < memoryBytes; start += chunkBytes) {
+      const end = Math.min(memoryBytes, start + chunkBytes);
+      writes.push({
+        guestPtr: start - guestBase,
+        bytes: new Uint8Array(processExports.memory.buffer.slice(start, end)),
+      });
+    }
+    return writes;
+  }
+
   function applyPendingFsMutation(
     processExports: KernelExports,
     context: PendingFsMutationContext,
@@ -751,6 +966,29 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       handledMetadataMutation,
       handledFileDataMutation,
     };
+  }
+
+  function refreshProcessMemfsBeforeTreeMutation(
+    pid: number,
+    processExports: KernelExports,
+    vmPtr: number,
+    context: PendingFsMutationContext,
+  ): boolean {
+    if ((context.effects & deps.fsEffectMemfsMutation) === 0) {
+      return false;
+    }
+    const dirEpoch = readDirEpoch(deps.getSabPageCache());
+    if (processMemfsEpochs.get(pid) === dirEpoch) {
+      return false;
+    }
+    deps.copyCanonicalMemfsToProcess(
+      readKernelRuntimeState(deps.getCanonicalExports()),
+      processExports,
+      readKernelRuntimeState(processExports),
+      { includeData: false, targetVmPtr: vmPtr },
+    );
+    processMemfsEpochs.set(pid, dirEpoch);
+    return true;
   }
 
   function formatProcessFsDebug(
@@ -848,6 +1086,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     );
 
     deps.seedEntries.clear();
+    processMemfsEpochs.clear();
     deps.seedEntries.set("/", { kind: "dir", path: "/", mode: 0o755 });
     resetPageCache(pageCache);
     deps.publishRootInode();
@@ -937,6 +1176,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
           includeData: seedMemfsMode === "full",
           targetVmPtr: vmPtr,
         });
+        deps.copyMemfsState(
+          processExports,
+          readKernelRuntimeState(processExports),
+          canonicalExports,
+          readKernelRuntimeState(canonicalExports),
+          { includeData: false },
+        );
       }
       return readKernelRuntimeState(processExports) ?? socketState;
     }
@@ -993,6 +1239,7 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
 
   function unregisterProcess(pid: number): void {
     deps.processKernels.delete(pid);
+    processMemfsEpochs.delete(pid);
     deps.lastProcessPipeSlotModes.delete(pid);
     deps.canonicalProcesses.delete(pid);
     for (const processExports of deps.processKernels.values()) {
@@ -1039,7 +1286,26 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
   function snapshotProcessFdEntries(
     processExports: KernelExports,
     vmPtr: number,
+    pendingRegularFileRequest: PendingRegularFileFsRequest | null = null,
   ): KernelWorkerFdEntrySnapshot[] {
+    if (pendingRegularFileRequest !== null) {
+      const maxFds = processExports.abi_max_fds();
+      if (pendingRegularFileRequest.fd < 0 || pendingRegularFileRequest.fd >= maxFds) {
+        return [];
+      }
+      const ofdId = supervisorProcessOfdForFd(processExports, vmPtr, pendingRegularFileRequest.fd);
+      const expectedOfdId = pendingRegularFileRequest.ofdId;
+      if (ofdId !== expectedOfdId) {
+        return snapshotProcessFdEntries(processExports, vmPtr, null);
+      }
+      return [{
+        fd: pendingRegularFileRequest.fd,
+        ofdId,
+        fdFlags: supervisorProcessFdFlagsForFd(processExports, vmPtr, pendingRegularFileRequest.fd),
+        generation: processExports.process_fd_generation?.(vmPtr, pendingRegularFileRequest.fd),
+      }];
+    }
+
     const maxFds = processExports.abi_max_fds();
     const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
     for (let fd = 0; fd < maxFds; fd += 1) {
@@ -1079,10 +1345,75 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     return ofdSlots;
   }
 
+  function ofdSlotBytes(processExports: KernelExports): number {
+    const maxFds = processExports.abi_max_fds();
+    const tableBytes = processExports.kernel_ofd_table_bytes();
+    const slotBytes = tableBytes / maxFds;
+    return Number.isInteger(slotBytes) && slotBytes > 0 ? slotBytes : 0;
+  }
+
+  function ofdSlotOffset(
+    processExports: KernelExports,
+    kernelState: KernelRuntimeState,
+    ofdId: number,
+    slotBytes: number,
+  ): number | null {
+    const maxFds = processExports.abi_max_fds();
+    const offset = kernelState.ofdTablePtr + ofdId * slotBytes;
+    if (
+      ofdId <= 0
+      || ofdId >= maxFds
+      || slotBytes <= 0
+      || offset < 0
+      || offset + slotBytes > processExports.memory.buffer.byteLength
+    ) {
+      return null;
+    }
+    return offset;
+  }
+
+  function beginRegularFileRequestOfdScope(
+    processExports: KernelExports,
+    kernelState: KernelRuntimeState,
+    pendingRequest: PendingRegularFileFsRequest | null,
+    requestSnapshot: KernelWorkerRegularFileFsSnapshot | undefined,
+  ): () => void {
+    if (
+      pendingRequest === null
+      || requestSnapshot === undefined
+      || requestSnapshot.fd !== pendingRequest.fd
+      || requestSnapshot.ofdId !== pendingRequest.ofdId
+    ) {
+      return () => {};
+    }
+    const slotBytes = ofdSlotBytes(processExports);
+    if (requestSnapshot.ofdSlot.byteLength !== slotBytes) {
+      return () => {};
+    }
+    const offset = ofdSlotOffset(processExports, kernelState, requestSnapshot.ofdId, slotBytes);
+    if (offset === null) {
+      return () => {};
+    }
+    const memory = new Uint8Array(processExports.memory.buffer);
+    const liveSlot = memory.slice(offset, offset + slotBytes);
+    memory.set(requestSnapshot.ofdSlot, offset);
+    let restored = false;
+    return () => {
+      if (restored) {
+        return;
+      }
+      restored = true;
+      if (offset + liveSlot.byteLength <= processExports.memory.buffer.byteLength) {
+        new Uint8Array(processExports.memory.buffer).set(liveSlot, offset);
+      }
+    };
+  }
+
   async function processFs(
     pid: number,
     vmPtr: number,
     kernelState: KernelRuntimeState,
+    regularFileRequest?: KernelWorkerRegularFileFsSnapshot,
     postProgress?: (progress: ProcessFsProgress) => void,
   ): Promise<ProcessFsResult> {
     const startedMs = Date.now();
@@ -1102,65 +1433,115 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     debug?.("attached-kernel-state");
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
     const pendingMmapGuestWrite = readPendingMmapGuestWriteRequest(processExports, vmPtr);
-    const pendingBackingFill = readPendingBackingFillRequest(processExports, vmPtr);
-    debug?.(
-      "pending-read",
-      [
-        `effects=${pendingContext.effects}`,
-        formatMmapGuestWriteDebug(pendingMmapGuestWrite),
-        formatBackingFillDebug(pendingBackingFill),
-      ].join(":"),
-    );
-    debug?.("ensure-backing-start", formatBackingFillDebug(pendingBackingFill));
-    await ensurePendingReadBackingRange(processExports, vmPtr);
-    debug?.("ensure-backing-done");
-    const shouldRestorePageCacheForFs =
-      pendingMmapGuestWrite !== null
-      || (pendingContext.effects & deps.fsEffectMemfsFileData) !== 0;
-    if (shouldRestorePageCacheForFs) {
-      debug?.(
-        "restore-page-cache-start",
-        pendingMmapGuestWrite !== null
-          ? formatMmapGuestWriteDebug(pendingMmapGuestWrite)
-          : `file-data:ino=${pendingContext.fileDataTargetIno}`,
-      );
-      const restored = restorePublishedRegularFileDataForPendingFs(
-        processExports,
-        pendingContext,
-        pendingMmapGuestWrite,
-        pendingBackingFill,
-      );
-      debug?.("restore-page-cache-done", restored);
-    }
-    debug?.("process-fs-kernel-start");
-    const execveRetryStats = await processFsWithExecveBackingRetry(processExports, vmPtr, debug);
-    debug?.("process-fs-kernel-done", `attempts=${execveRetryStats.attempts}:misses=${execveRetryStats.misses}`);
-    debug?.("resume-fs-start");
-    const result = BigInt(processExports.thread_resume_fs(vmPtr));
-    debug?.("resume-fs-done", `result=${result.toString()}:status=${processExports.thread_status?.(vmPtr) ?? "n/a"}`);
-    const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
-    debug?.("snapshot-mmap-start", formatMmapGuestWriteDebug(pendingMmapGuestWrite));
-    const guestMemoryWrites = snapshotMmapGuestMemoryWrite(
+    const pendingRegularFileRequest = readPendingRegularFileFsRequest(processExports, vmPtr);
+    const restoreRegularFileOfdScope = beginRegularFileRequestOfdScope(
       processExports,
-      vmPtr,
-      pendingMmapGuestWrite,
-      result,
+      kernelState,
+      pendingRegularFileRequest,
+      regularFileRequest,
     );
-    debug?.("snapshot-mmap-done", `writes=${guestMemoryWrites?.length ?? 0}`);
-    debug?.("read-state-start");
-    const completedKernelState = readKernelRuntimeState(processExports);
-    debug?.("read-state-done");
-    debug?.("snapshot-fd-start");
-    const fdEntries = fsSucceeded
-      ? snapshotProcessFdEntries(processExports, vmPtr)
-      : undefined;
-    debug?.("snapshot-fd-done", `entries=${fdEntries?.length ?? 0}`);
-    debug?.("snapshot-ofd-start");
-    const ofdSlots = fdEntries
-      ? snapshotOfdSlotsForFdEntries(processExports, completedKernelState, fdEntries)
-      : undefined;
-    debug?.("snapshot-ofd-done", `slots=${ofdSlots?.length ?? 0}`);
+    let pendingBackingFill: PendingBackingFillRequest | null = null;
+    let execveRetryStats: ExecveBackingRetryStats | null = null;
+    let result: bigint | null = null;
+    let guestMemoryWrites: GuestMemoryWriteSnapshot[] | undefined;
+    let fdEntries: KernelWorkerFdEntrySnapshot[] | undefined;
+    let ofdSlots: KernelWorkerOfdSlotSnapshot[] | undefined;
+    try {
+      pendingBackingFill = readPendingBackingFillRequest(processExports, vmPtr);
+      debug?.(
+        "pending-read",
+        [
+          `effects=${pendingContext.effects}`,
+          formatMmapGuestWriteDebug(pendingMmapGuestWrite),
+          formatBackingFillDebug(pendingBackingFill),
+        ].join(":"),
+      );
+      debug?.("ensure-backing-start", formatBackingFillDebug(pendingBackingFill));
+      await ensurePendingReadBackingRanges(processExports, vmPtr, debug);
+      debug?.("ensure-backing-done");
+      const refreshedMemfs = refreshProcessMemfsBeforeTreeMutation(
+        pid,
+        processExports,
+        vmPtr,
+        pendingContext,
+      );
+      debug?.("refresh-memfs-before-tree-mutation", `applied=${refreshedMemfs ? 1 : 0}`);
+      const shouldRestorePageCacheForFs =
+        pendingMmapGuestWrite !== null
+        || (pendingContext.effects & deps.fsEffectMemfsFileData) !== 0;
+      if (shouldRestorePageCacheForFs) {
+        debug?.(
+          "restore-page-cache-start",
+          pendingMmapGuestWrite !== null
+            ? formatMmapGuestWriteDebug(pendingMmapGuestWrite)
+            : `file-data:ino=${pendingContext.fileDataTargetIno}`,
+        );
+        const restored = restorePublishedRegularFileDataForPendingFs(
+          processExports,
+          pendingContext,
+          pendingMmapGuestWrite,
+          pendingBackingFill,
+        );
+        debug?.("restore-page-cache-done", restored);
+      }
+      debug?.("process-fs-kernel-start");
+      execveRetryStats = await processFsWithExecveBackingRetry(processExports, vmPtr, debug);
+      debug?.("process-fs-kernel-done", `attempts=${execveRetryStats.attempts}:misses=${execveRetryStats.misses}`);
+      debug?.("resume-fs-start");
+      result = BigInt(processExports.thread_resume_fs(vmPtr));
+      debug?.("resume-fs-done", `result=${result.toString()}:status=${processExports.thread_status?.(vmPtr) ?? "n/a"}`);
+      const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
+      debug?.("snapshot-mmap-start", formatMmapGuestWriteDebug(pendingMmapGuestWrite));
+      const mmapGuestMemoryWrites = snapshotMmapGuestMemoryWrite(
+        processExports,
+        vmPtr,
+        pendingMmapGuestWrite,
+        result,
+      ) ?? [];
+      const completedReadGuestMemoryWrites = snapshotCompletedReadGuestMemoryWrite(
+        processExports,
+        vmPtr,
+      ) ?? [];
+      const completedExecGuestMemoryWrites = snapshotCompletedExecGuestMemoryWrites(
+        processExports,
+        vmPtr,
+        pendingContext.opcode,
+        result,
+      );
+      guestMemoryWrites = mmapGuestMemoryWrites.length
+        + completedReadGuestMemoryWrites.length
+        + completedExecGuestMemoryWrites.length > 0
+        ? [
+            ...completedExecGuestMemoryWrites,
+            ...mmapGuestMemoryWrites,
+            ...completedReadGuestMemoryWrites,
+          ]
+        : undefined;
+      debug?.("snapshot-mmap-done", `writes=${guestMemoryWrites?.length ?? 0}`);
+      debug?.("read-state-start");
+      const completedKernelState = readKernelRuntimeState(processExports);
+      debug?.("read-state-done");
+      debug?.("snapshot-fd-start");
+      fdEntries = fsSucceeded
+        ? snapshotProcessFdEntries(processExports, vmPtr, pendingRegularFileRequest)
+        : undefined;
+      debug?.("snapshot-fd-done", `entries=${fdEntries?.length ?? 0}`);
+      debug?.("snapshot-ofd-start");
+      ofdSlots = fdEntries
+        ? snapshotOfdSlotsForFdEntries(processExports, completedKernelState, fdEntries)
+        : undefined;
+      debug?.("snapshot-ofd-done", `slots=${ofdSlots?.length ?? 0}`);
+    } finally {
+      restoreRegularFileOfdScope();
+    }
+    if (result === null) {
+      throw new Error("kernel worker fs resume did not produce a result");
+    }
+    if (execveRetryStats === null) {
+      throw new Error("kernel worker fs processing did not produce retry stats");
+    }
     debug?.("apply-mutation-start");
+    const fsSucceeded = Number(BigInt.asIntN(64, result)) >= 0;
     const mutation = applyPendingFsMutation(processExports, pendingContext, fsSucceeded);
     debug?.("apply-mutation-done", `memfs=${mutation.memfsMutated ? 1 : 0}:ofd=${mutation.ofdStateChanged ? 1 : 0}:full=${mutation.needsFullSync ? 1 : 0}`);
     let fullSyncApplied = false;
@@ -1169,6 +1550,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       fallbackToMetadataMemfsSync(processExports, canonicalExports);
       fullSyncApplied = true;
       debug?.("full-sync-done");
+    }
+    if (mutation.treeMutated) {
+      processMemfsEpochs.set(pid, readDirEpoch(deps.getSabPageCache()));
     }
     debug?.("read-next-state-start");
     const nextKernelState = readKernelRuntimeState(processExports);

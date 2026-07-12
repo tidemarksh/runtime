@@ -34,6 +34,7 @@ function makeDeps(failProcess: ReturnType<typeof vi.fn>): WorkerMessageHandlerDe
     requestEpollStateSync: async () => {},
     requestPipeStateSync: async () => {},
     requestSocketStateSync: async () => {},
+    requestThreadWorkerBlockedResume: () => {},
     resumeConnectViaKernelWorker: async () => {},
     resumeFsViaKernelWorker: async () => {},
     resumeVforkParentAfterChildExit: () => false,

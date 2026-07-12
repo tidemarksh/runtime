@@ -32,18 +32,23 @@ import {
   FS_RING_REQUEST_BYTES,
   FS_RING_REQUEST_FD_OFFSET,
   FS_RING_REQUEST_FLAGS_OFFSET,
+  FS_RING_REQUEST_INO_OFFSET,
+  FS_RING_REQUEST_ID_OFFSET,
   FS_RING_REQUEST_LEN_OFFSET,
   FS_RING_REQUEST_MODE_OFFSET,
+  FS_RING_REQUEST_OFD_ID_OFFSET,
   FS_RING_REQUEST_OFFSET_OFFSET,
   FS_RING_REQUEST_OPCODE_OFFSET,
   FS_RING_REQUEST_PATH_PTR_OFFSET,
   FS_RING_REQUEST_VM_PTR_OFFSET,
   FS_RING_RESPONSE_BYTES,
   FS_RING_RESPONSE_RESULT_OFFSET,
+  FS_RING_RESPONSE_REQUEST_ID_OFFSET,
   FS_RING_RESPONSE_VM_PTR_OFFSET,
   FS_RING_SUBMIT_HEAD_OFFSET,
   FS_RING_SUBMIT_QUEUE_SIZE,
   FS_RING_SUBMIT_TAIL_OFFSET,
+  FS_RING_REQUEST_CLOCK_OFFSET,
   FS_RING_TOTAL_BYTES,
   fsRingCompletionEntryOffset,
   fsRingRequestEntryOffset,
@@ -98,10 +103,12 @@ function readKernelRequestFieldOffset(field: string): number {
   return Number.parseInt(offset, 10);
 }
 
-function readKernelResponseFieldOffset(field: "result" | "vm_ptr"): number {
+function readKernelResponseFieldOffset(field: "result" | "vm_ptr" | "request_id"): number {
   const pattern = field === "result"
     ? /\*\(\(cq_off as \*mut u8\) as \*mut i64\) = result;/
-    : /\*\(\(cq_off as \*mut u8\)\.add\((\d+)\) as \*mut u32\) = target_vm_ptr;/;
+    : field === "vm_ptr"
+      ? /\*\(\(cq_off as \*mut u8\)\.add\((\d+)\) as \*mut u32\) = target_vm_ptr;/
+      : /\*\(\(cq_off as \*mut u8\)\.add\((\d+)\) as \*mut u32\) = request_id;/;
   const match = pattern.exec(KERNEL_FS_RING_SOURCE_TEXT);
   if (!match) {
     throw new Error(`kernel FS response field write not found: ${field}`);
@@ -138,6 +145,7 @@ describe("FS ring layout", () => {
     expect(FS_RING_COMPLETE_HEAD_OFFSET).toBe(readKernelConst("OFF_COMPLETE_HEAD"));
     expect(FS_RING_COMPLETE_TAIL_OFFSET).toBe(readKernelConst("OFF_COMPLETE_TAIL"));
     expect(FS_RING_NOTIFY_OFFSET).toBe(readKernelConst("OFF_NOTIFY"));
+    expect(FS_RING_REQUEST_CLOCK_OFFSET).toBe(readKernelConst("OFF_REQUEST_CLOCK"));
     expect(FS_RING_HEADER_BYTES).toBe(readKernelConst("OFF_SQ_BASE"));
     expect(FS_RING_COMPLETE_QUEUE_OFFSET).toBe(readKernelConst("OFF_CQ_BASE"));
   });
@@ -158,8 +166,12 @@ describe("FS ring layout", () => {
     expect(FS_RING_REQUEST_FLAGS_OFFSET).toBe(readKernelRequestFieldOffset("flags"));
     expect(FS_RING_REQUEST_MODE_OFFSET).toBe(readKernelRequestFieldOffset("mode"));
     expect(FS_RING_REQUEST_VM_PTR_OFFSET).toBe(readKernelRequestFieldOffset("vm_ptr"));
+    expect(FS_RING_REQUEST_OFD_ID_OFFSET).toBe(readKernelRequestFieldOffset("ofd_id"));
+    expect(FS_RING_REQUEST_INO_OFFSET).toBe(readKernelRequestFieldOffset("ino"));
+    expect(FS_RING_REQUEST_ID_OFFSET).toBe(readKernelRequestFieldOffset("request_id"));
     expect(FS_RING_RESPONSE_RESULT_OFFSET).toBe(readKernelResponseFieldOffset("result"));
     expect(FS_RING_RESPONSE_VM_PTR_OFFSET).toBe(readKernelResponseFieldOffset("vm_ptr"));
+    expect(FS_RING_RESPONSE_REQUEST_ID_OFFSET).toBe(readKernelResponseFieldOffset("request_id"));
   });
 
   it("computes entry offsets from the shared queue layout", () => {

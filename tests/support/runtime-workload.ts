@@ -808,6 +808,10 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
   ]).catch(() => "");
 
   const internalSummary = runtimeView.debugSnapshot?.() ?? "";
+  const executionStats = safeDebugValue(() => JSON.stringify(
+    runtime.debugExecutionStats(),
+    (_key, value) => typeof value === "bigint" ? value.toString() : value,
+  ));
   const workerLogFocus = safeDebugValue(() => {
     const focus = runtimeView.debugWorkerLogFocus?.();
     return focus === undefined ? "" : JSON.stringify(focus);
@@ -816,6 +820,7 @@ export async function runtimeDebugSummary(runtime: RuntimeInstance): Promise<str
   return [
     localSummary ? `local:\n${localSummary}` : "",
     internalSummary ? `internal:\n${internalSummary}` : "",
+    executionStats ? `execution_stats=${executionStats}` : "",
     workerLogFocus ? `worker_log_focus:\n${workerLogFocus}` : "",
     kernelSummary,
   ].filter(Boolean).join("\n");

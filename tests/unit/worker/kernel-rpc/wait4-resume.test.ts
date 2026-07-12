@@ -768,13 +768,13 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
   expect(resumeWait4).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x30);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr);
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
       budget: 20_000,
       kernelState: expect.objectContaining({
-        heapPtr: makeKernelState().heapPtr + 0x30,
+        heapPtr: makeKernelState().heapPtr,
       }),
     },
   ]);

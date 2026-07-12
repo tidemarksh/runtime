@@ -1,7 +1,10 @@
 import type { ThreadWorkerState } from "./types.js";
+import type { SupervisorCloneSpawnHostOp } from "./supervisor-host-op.js";
 
 interface ThreadHostGateState {
   ownerAsyncStatus: number | null;
+  ownerAsyncDetail: string | null;
+  ownerAsyncStartedAtMs: number | null;
   waitingInWorkerStatus: number | null;
   resumeWorkersOnReady: Worker[];
   runningGeneration: number | null;
@@ -9,6 +12,7 @@ interface ThreadHostGateState {
   reinitCount: number;
   ownerPid: number;
   generation: number;
+  cloneSpawnHostOp: SupervisorCloneSpawnHostOp | null;
 }
 
 const threadHostGateStates = new WeakMap<ThreadWorkerState, ThreadHostGateState>();
@@ -18,6 +22,8 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
   if (!state) {
     state = {
       ownerAsyncStatus: null,
+      ownerAsyncDetail: null,
+      ownerAsyncStartedAtMs: null,
       waitingInWorkerStatus: null,
       resumeWorkersOnReady: [],
       runningGeneration: null,
@@ -25,6 +31,7 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
       reinitCount: 0,
       ownerPid: 0,
       generation: 0,
+      cloneSpawnHostOp: null,
     };
     threadHostGateStates.set(thread, state);
   }
@@ -34,6 +41,8 @@ function hostGateState(thread: ThreadWorkerState): ThreadHostGateState {
 function clearIfIdle(thread: ThreadWorkerState, state: ThreadHostGateState): void {
   if (
     state.ownerAsyncStatus === null
+    && state.ownerAsyncDetail === null
+    && state.ownerAsyncStartedAtMs === null
     && state.waitingInWorkerStatus === null
     && state.resumeWorkersOnReady.length === 0
     && state.runningGeneration === null
@@ -41,6 +50,7 @@ function clearIfIdle(thread: ThreadWorkerState, state: ThreadHostGateState): voi
     && state.reinitCount === 0
     && state.ownerPid === 0
     && state.generation === 0
+    && state.cloneSpawnHostOp === null
   ) {
     threadHostGateStates.delete(thread);
   }
@@ -57,8 +67,39 @@ export function getThreadOwnerAsyncStatus(
 export function setThreadOwnerAsyncStatus(
   thread: ThreadWorkerState,
   status: number,
+  detail = `status:${status}`,
 ): void {
-  hostGateState(thread).ownerAsyncStatus = status;
+  const state = hostGateState(thread);
+  state.ownerAsyncStatus = status;
+  state.ownerAsyncDetail = detail;
+  state.ownerAsyncStartedAtMs = Date.now();
+}
+
+export function setThreadOwnerAsyncDetail(
+  thread: ThreadWorkerState,
+  detail: string,
+): void {
+  const state = threadHostGateStates.get(thread);
+  if (state?.ownerAsyncStatus === null || state === undefined) {
+    return;
+  }
+  state.ownerAsyncDetail = detail;
+}
+
+export function getThreadOwnerAsyncDetail(
+  thread: ThreadWorkerState | null | undefined,
+): { detail: string | null; startedAtMs: number | null } | null {
+  if (thread === null || thread === undefined) {
+    return null;
+  }
+  const state = threadHostGateStates.get(thread);
+  if (state?.ownerAsyncStatus === null || state === undefined) {
+    return null;
+  }
+  return {
+    detail: state.ownerAsyncDetail,
+    startedAtMs: state.ownerAsyncStartedAtMs,
+  };
 }
 
 export function clearThreadOwnerAsyncStatus(thread: ThreadWorkerState): void {
@@ -67,6 +108,8 @@ export function clearThreadOwnerAsyncStatus(thread: ThreadWorkerState): void {
     return;
   }
   state.ownerAsyncStatus = null;
+  state.ownerAsyncDetail = null;
+  state.ownerAsyncStartedAtMs = null;
   clearIfIdle(thread, state);
 }
 
@@ -139,6 +182,29 @@ export function snapshotThreadResumeWorkersOnReady(
   return thread === null || thread === undefined
     ? []
     : threadHostGateStates.get(thread)?.resumeWorkersOnReady.slice() ?? [];
+}
+
+export function setThreadCloneSpawnHostOp(
+  thread: ThreadWorkerState,
+  hostOp: SupervisorCloneSpawnHostOp,
+): void {
+  hostGateState(thread).cloneSpawnHostOp = hostOp;
+}
+
+export function takeThreadCloneSpawnHostOp(
+  thread: ThreadWorkerState | null | undefined,
+): SupervisorCloneSpawnHostOp | null {
+  if (thread === null || thread === undefined) {
+    return null;
+  }
+  const state = threadHostGateStates.get(thread);
+  if (!state || state.cloneSpawnHostOp === null) {
+    return null;
+  }
+  const hostOp = state.cloneSpawnHostOp;
+  state.cloneSpawnHostOp = null;
+  clearIfIdle(thread, state);
+  return hostOp;
 }
 
 export function getThreadRunningGeneration(

@@ -191,7 +191,15 @@ export function createWorkerKernelRpcProcessLifecycleHelpers(
     handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
     attachKernelRuntimeState(handle.kernel, handle.kernelState);
     const pidAfterSync = handle.kernel.process_current_pid(vmPtr);
-    if (pidBeforeSync === handle.pid && pidAfterSync > 0 && pidAfterSync !== handle.pid) {
+    const activeVforkChildPid = handle.kernel.thread_vfork_child_pid?.() ?? 0;
+    const attachedPidIsActiveVforkChild = activeVforkChildPid > 0
+      && pidAfterSync === activeVforkChildPid;
+    if (
+      pidBeforeSync === handle.pid
+      && pidAfterSync > 0
+      && pidAfterSync !== handle.pid
+      && !attachedPidIsActiveVforkChild
+    ) {
       handle.kernel.process_rewrite_child_pid(vmPtr, pidAfterSync, handle.pid, handle.pid + 1);
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);

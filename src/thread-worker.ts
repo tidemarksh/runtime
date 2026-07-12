@@ -40,11 +40,14 @@ import {
   publishThreadWorkerStatusOutcome,
   type ThreadWorkerBoundaryOutcome,
 } from "./thread-worker/outcomes.js";
-import { postThreadWorkerStatus } from "./thread-worker/status.js";
+import {
+  postThreadWorkerStatus,
+} from "./thread-worker/status.js";
 import {
   applyThreadWorkerGuestMemoryWrites,
   applyThreadWorkerInboundState,
 } from "./thread-worker/inbound-state.js";
+import { DEFAULT_NODE_EXECUTION_STEP_BUDGET } from "./execution/budget.js";
 
 let exports: KernelExports | undefined;
 let statusCodes: StatusCodes;
@@ -54,7 +57,7 @@ let generation = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
-const DEFAULT_NODE_THREAD_STEP_BUDGET = 5_000_000;
+const DEFAULT_NODE_THREAD_STEP_BUDGET = DEFAULT_NODE_EXECUTION_STEP_BUDGET;
 const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
 const THREAD_STEP_BUDGET = readThreadStepBudget();
 const EINTR_ERRNO = 4;
@@ -128,7 +131,9 @@ async function prepare(
     { preserveRanges: preserveMemoryRanges },
   );
   const instance = await WebAssembly.instantiate(inputs.wasmModule, {
-    env: createKernelEnv(inputs.memory, { sabPageCache: inputs.sabPageCache }),
+    env: createKernelEnv(inputs.memory, {
+      sabPageCache: inputs.sabPageCache,
+    }),
   });
   const nextExports = instance.exports as unknown as KernelExports;
   exports = nextExports;
@@ -302,9 +307,11 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
         applyThreadWorkerInboundState({
           kernelExports: requireExports(),
           guestBase,
+          runtimeBridge,
         }, {
           kernelState: msg.kernelState,
           targetVmPtr: msg.vmPtr,
+          processIdentity: msg.processIdentity,
           ofdSlots: msg.ofdSlots,
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,
@@ -324,9 +331,11 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
         applyThreadWorkerInboundState({
           kernelExports,
           guestBase,
+          runtimeBridge,
         }, {
           kernelState: msg.kernelState,
           targetVmPtr: vmPtr,
+          processIdentity: msg.processIdentity,
           ofdSlots: msg.ofdSlots,
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,

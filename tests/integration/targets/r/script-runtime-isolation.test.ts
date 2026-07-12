@@ -6,9 +6,14 @@ import {
   runScriptRuntimeEntry,
   validateScriptRuntimeOutput,
 } from "../../../support/script-runtime-harness.js";
+import { scriptRuntimeGateTimeoutMs } from "../../../support/script-runtime-test-runner.js";
 import { rScriptRuntimeEntry } from "./script-runtime.js";
 
 const runtimeDir = process.env.TIDEMARK_TEST_R_RUNTIME_DIR ?? "";
+
+const rBaseSnapshotSources = rScriptRuntimeEntry.snapshotSources.filter((source) => {
+  return source.kind !== "inlineFile" || source.guestPath !== "/work/script.R";
+});
 
 const rIsolationEntries = [
   {
@@ -17,15 +22,17 @@ const rIsolationEntries = [
     hostExecutablePath: resolve(runtimeDir, "usr/lib/R/bin/exec/R"),
     guestExecutablePath: "/usr/lib/R/bin/exec/R",
     argv: ["/usr/lib/R/bin/exec/R", "--version"],
-    snapshotSources: rScriptRuntimeEntry.snapshotSources.filter((source) => source.kind !== "inlineFile"),
-    expectedSubstrings: ["R version 4.6.0 alpha"],
+    snapshotSources: rBaseSnapshotSources,
+    expectedSubstrings: ["R version 4.6.0"],
     forbiddenSubstrings: ["cannot find system Renviron"],
   },
   {
     ...rScriptRuntimeEntry,
     id: "rscript-eval-minimal",
+    hostExecutablePath: resolve(runtimeDir, "usr/bin/Rscript"),
+    guestExecutablePath: "/usr/bin/Rscript",
     argv: ["/usr/bin/Rscript", "-e", 'cat("r-ok\\n")'],
-    snapshotSources: rScriptRuntimeEntry.snapshotSources.filter((source) => source.kind !== "inlineFile"),
+    snapshotSources: rBaseSnapshotSources,
     expectedSubstrings: ["r-ok"],
     forbiddenSubstrings: ["cannot find system Renviron"],
   },
@@ -34,8 +41,16 @@ const rIsolationEntries = [
     id: "r-exec-minimal",
     hostExecutablePath: resolve(runtimeDir, "usr/lib/R/bin/exec/R"),
     guestExecutablePath: "/usr/lib/R/bin/exec/R",
-    argv: ["/usr/lib/R/bin/exec/R", "--slave", "-e", 'cat("r-core-ok\\n")'],
-    snapshotSources: rScriptRuntimeEntry.snapshotSources.filter((source) => source.kind !== "inlineFile"),
+    argv: [
+      "/usr/lib/R/bin/exec/R",
+      "--slave",
+      "--no-restore",
+      "--no-save",
+      "--no-echo",
+      "-e",
+      'cat("r-core-ok\\n")',
+    ],
+    snapshotSources: rBaseSnapshotSources,
     expectedSubstrings: ["r-core-ok"],
     forbiddenSubstrings: ["cannot find system Renviron"],
   },
@@ -46,7 +61,7 @@ const rIsolationEntries = [
     guestExecutablePath: "/usr/lib/R/bin/exec/R",
     argv: ["/usr/lib/R/bin/exec/R", "--slave", "-f", "/work/minimal.R"],
     snapshotSources: [
-      ...rScriptRuntimeEntry.snapshotSources.filter((source) => source.kind !== "inlineFile"),
+      ...rBaseSnapshotSources,
       {
         kind: "inlineFile",
         guestPath: "/work/minimal.R",
@@ -101,5 +116,5 @@ for (const entry of rIsolationEntries) {
     } finally {
       runtime.destroy();
     }
-  }, 20_000);
+  }, scriptRuntimeGateTimeoutMs(entry));
 }

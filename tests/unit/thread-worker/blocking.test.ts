@@ -42,6 +42,7 @@ test("resumeBlockedSyscallStep applies guest writes and returns a typed status o
         events.push("resume");
         return 2n;
       },
+      abi_status_futex_wait: () => 20,
       thread_status: () => 0,
     } as never,
     vmPtr: 0x1234,
@@ -59,6 +60,38 @@ test("resumeBlockedSyscallStep applies guest writes and returns a typed status o
   expect(recordResumeBlockedDebug).toHaveBeenCalledWith(
     'thread-resume-blocked:fd=3:buf=0x20:count=4:saved=63/3/0x20/4:ret=2:status=0:data="OK"',
   );
+});
+
+test("resumeBlockedSyscallStep completes supervisor futex wake without generic blocked syscall resume", () => {
+  let status = 20;
+  const applyGuestMemoryWrites = vi.fn();
+  const supervisorResumeBlockedSyscall = vi.fn();
+  const supervisorCompleteFutexWait = vi.fn((_vmPtr: number, completion: number) => {
+    expect(completion).toBe(1);
+    status = 0;
+    return status;
+  });
+
+  const outcome = resumeBlockedSyscallStep({
+    exports: {
+      memory: new WebAssembly.Memory({ initial: 1 }),
+      abi_status_futex_wait: () => 20,
+      thread_status: () => status,
+      supervisor_resume_blocked_syscall: supervisorResumeBlockedSyscall,
+      ...supervisorFutexExports({ complete: supervisorCompleteFutexWait }),
+    } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    resumeBlockedSyscall: true,
+    pipeResumeDebugEnabled: true,
+    applyGuestMemoryWrites,
+    recordResumeBlockedDebug: vi.fn(),
+  });
+
+  expect(applyGuestMemoryWrites).toHaveBeenCalledTimes(1);
+  expect(supervisorCompleteFutexWait).toHaveBeenCalledWith(0x1234, 1);
+  expect(supervisorResumeBlockedSyscall).not.toHaveBeenCalled();
+  expect(outcome).toEqual(createThreadWorkerStatusOutcome(0));
 });
 
 test("resumeBlockedSyscallStep skips work when the step is not a blocked-syscall resume", () => {
@@ -153,6 +186,44 @@ test("handleFutexWait re-waits on the requeued futex address", () => {
     "result=ok:blocked=0x0:status=20",
   ));
 
+  waitSpy.mockRestore();
+});
+
+test("handleFutexWait returns an already-woken futex through the owner status boundary", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  const waitSpy = vi.spyOn(Atomics, "wait");
+  const postStatus = vi.fn();
+  let status = 20;
+  const supervisorComplete = vi.fn(() => {
+    status = 0;
+    return status;
+  });
+
+  const handled = handleFutexWait({
+    exports: {
+      memory,
+      thread_futex_wait_addr: () => 0x100n,
+      thread_futex_wait_expected: () => 0,
+      thread_record_blocked_addr: () => 0n,
+      thread_status: () => status,
+      ...supervisorFutexExports({ complete: supervisorComplete }),
+    } as never,
+    statusCodes: { FUTEX_WAIT: 20 } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    runtimeBridge: null,
+    threadStepBudget: 1000,
+    eintrErrno: 4,
+    futexWaitSliceMs: 0,
+    postStatus,
+    reattachPublishedKernelRuntimeState: () => {},
+    step: vi.fn(),
+  }, 20);
+
+  expect(handled).toBe(false);
+  expect(waitSpy).not.toHaveBeenCalled();
+  expect(supervisorComplete).toHaveBeenCalledWith(0x1234, 1);
+  expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
   waitSpy.mockRestore();
 });
 

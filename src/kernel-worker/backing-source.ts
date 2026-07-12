@@ -1,10 +1,15 @@
 export interface KernelWorkerBackingSource {
   byteLength: number;
-  readRange(offset: number, length: number): Uint8Array | null;
+  eagerPrewarm?: boolean;
+  readRange(offset: number, length: number, options?: { readAhead?: boolean }): Uint8Array | null;
 }
 
 export class Uint8ArrayBackingSource implements KernelWorkerBackingSource {
-  constructor(private readonly data: Uint8Array) {}
+  private readonly data: Uint8Array;
+
+  constructor(data: Uint8Array) {
+    this.data = new Uint8Array(data);
+  }
 
   get byteLength(): number {
     return this.data.byteLength;
@@ -20,7 +25,7 @@ export class Uint8ArrayBackingSource implements KernelWorkerBackingSource {
     ) {
       return null;
     }
-    return this.data.subarray(offset, offset + length);
+    return this.data.slice(offset, offset + length);
   }
 }
 
@@ -41,7 +46,7 @@ export class ChunkedBackingSource implements KernelWorkerBackingSource {
     ) {
       throw new RangeError(`invalid backing source range: offset=${offset} length=${data.byteLength}`);
     }
-    this.chunks.set(offset, data);
+    this.chunks.set(offset, new Uint8Array(data));
   }
 
   readRange(offset: number, length: number): Uint8Array | null {
@@ -59,7 +64,7 @@ export class ChunkedBackingSource implements KernelWorkerBackingSource {
     }
     const direct = this.chunks.get(offset);
     if (direct && direct.byteLength >= length) {
-      return direct.subarray(0, length);
+      return direct.slice(0, length);
     }
 
     const out = new Uint8Array(length);

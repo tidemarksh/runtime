@@ -1,4 +1,5 @@
 import type { ProcessHandle, ThreadWorkerState, VforkSnapshot } from "./types.js";
+import type { KernelWorkerFdEntrySnapshot } from "../messages.js";
 import { getThreadActivityState } from "./thread-activity-state.js";
 import {
   activeKernelShareOfdIds,
@@ -14,8 +15,10 @@ import {
   getKernelShareOfdSlotSnapshot,
   kernelShareMemberList,
   kernelShareSharedOfdIdList,
+  snapshotLocalPipeSlots,
   setKernelShareOfdSlotSnapshot,
 } from "./kernel-share.js";
+import { snapshotProcessFdEntries } from "./ownership/fd-table.js";
 import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
@@ -192,6 +195,8 @@ export function captureVforkSnapshot(
 ): VforkSnapshot {
   const ofdIds = trackForkSharedOfds(handle, thread.vmPtr, true);
   const activity = getThreadActivityState(thread);
+  const parentFdEntries = snapshotVforkParentFdEntries(handle, thread.vmPtr);
+  const parentHeldOfdIds = parentSnapshotHeldOfdIds(handle, parentFdEntries);
   return {
     vmPtr: thread.vmPtr,
     childPid: null,
@@ -204,5 +209,44 @@ export function captureVforkSnapshot(
     parentSp: activity.lastStepSp ?? handle.kernel.thread_sp(thread.vmPtr),
     parentS11: activity.lastStepS11 ?? (handle.kernel.thread_s11?.(thread.vmPtr) ?? 0n),
     inheritedSharedOfdIds: ofdIds,
+    parentFdEntries,
+    parentHeldOfdIds,
+    parentOfdSlots: snapshotKernelShareOfdSlots(handle, parentHeldOfdIds),
+    parentPipeSlots: snapshotLocalPipeSlots(handle, parentHeldOfdIds),
   };
+}
+
+export function snapshotVforkParentFdEntries(
+  handle: ProcessHandle,
+  vmPtr: number,
+): KernelWorkerFdEntrySnapshot[] {
+  const readOfdId = handle.kernel.thread_vfork_parent_fd_ofd_id;
+  const readFlags = handle.kernel.thread_vfork_parent_fd_flags;
+  const readGeneration = handle.kernel.thread_vfork_parent_fd_generation;
+  if (!readOfdId || !readFlags || !readGeneration) {
+    return snapshotProcessFdEntries(handle, vmPtr);
+  }
+  const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
+  for (let fd = 0; fd < handle.kernel.abi_max_fds(); fd += 1) {
+    fdEntries.push({
+      fd,
+      ofdId: readOfdId.call(handle.kernel, fd),
+      fdFlags: readFlags.call(handle.kernel, fd),
+      generation: readGeneration.call(handle.kernel, fd),
+    });
+  }
+  return fdEntries;
+}
+
+function parentSnapshotHeldOfdIds(
+  handle: ProcessHandle,
+  parentFdEntries: readonly KernelWorkerFdEntrySnapshot[],
+): number[] {
+  const maxFds = handle.kernel.abi_max_fds();
+  return [...new Set([
+    ...collectProcessHeldOfds(handle),
+    ...parentFdEntries
+      .map((entry) => entry.ofdId)
+      .filter((ofdId) => ofdId > 0 && ofdId < maxFds),
+  ])];
 }

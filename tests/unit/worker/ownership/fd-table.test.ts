@@ -1,11 +1,13 @@
 import { expect, test } from "vite-plus/test";
 import {
   applyThreadFdEntries,
+  snapshotAuthoritativeProcessFdEntriesForThread,
   snapshotProcessFdEntriesForThread,
 } from "../../../../src/worker/ownership/fd-table.js";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
+import { createRuntimeStateBridge } from "../../../../src/bridge/runtime-state.js";
 
 function makeHandle(options: {
   ownerPid: number;
@@ -16,6 +18,7 @@ function makeHandle(options: {
   return {
     pid: options.ownerPid,
     vmPtr: 0x1234,
+    runtimeBridge: createRuntimeStateBridge(),
     kernel: {
       abi_max_fds: () => 16,
       process_current_pid: (vmPtr: number) => {
@@ -34,6 +37,7 @@ function makeHandle(options: {
         return vmPtr === 0x1234 ? options.ownerFd9Ofd : options.threadFd9Ofd;
       },
       process_fd_flags: (_vmPtr: number, fd: number) => (fd === 9 ? 1 : 0),
+      process_fd_generation: () => 9,
       supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
         const ofdId = this.process_fd_ofd_id(vmPtr, fd);
         return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
@@ -57,6 +61,8 @@ test("snapshotProcessFdEntriesForThread uses the owner fd table for same-process
     fd: 9,
     ofdId: 10,
     fdFlags: 1,
+    authorityEpoch: 0,
+    generation: 9,
   });
 });
 
@@ -72,6 +78,24 @@ test("snapshotProcessFdEntriesForThread keeps the target fd table for a differen
     fd: 9,
     ofdId: 0,
     fdFlags: 1,
+    authorityEpoch: 0,
+    generation: 9,
+  });
+});
+
+test("snapshotAuthoritativeProcessFdEntriesForThread strips generations for init hydration", () => {
+  const snapshot = snapshotAuthoritativeProcessFdEntriesForThread(makeHandle({
+    ownerPid: 7,
+    threadPid: 7,
+    ownerFd9Ofd: 10,
+    threadFd9Ofd: 0,
+  }), 0x5678);
+
+  expect(snapshot?.find((entry) => entry.fd === 9)).toEqual({
+    fd: 9,
+    ofdId: 10,
+    fdFlags: 1,
+    authorityEpoch: 0,
   });
 });
 
@@ -172,4 +196,54 @@ test("applyThreadFdEntries preserves epoll watched pipe and eventfd fds on non-c
 
   expect(fdMap.get(11)).toBe(12);
   expect(fdMap.get(13)).toBe(14);
+});
+
+test("applyThreadFdEntries rejects older fd snapshots by slot generation", () => {
+  const memory = new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
+  const kernelState = makeKernelState();
+  const fdMap = new Map<number, number>([[5, 6]]);
+  const fdGenerations = new Map<number, number>([[5, 3]]);
+  const setCalls: Array<{ fd: number; ofdId: number; fdFlags: number }> = [];
+  let kernel: Partial<KernelExports>;
+  kernel = {
+    ...makeSupervisorAbiStubs({
+      memory,
+      currentExports: () => kernel,
+    }),
+    abi_max_fds: () => 32,
+    abi_max_threads: () => 4,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdMap.get(fd) ?? 0,
+    process_fd_flags: () => 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdGenerations.get(fd) ?? 0,
+    process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      setCalls.push({ fd, ofdId, fdFlags });
+      fdMap.set(fd, ofdId);
+      fdGenerations.set(fd, (fdGenerations.get(fd) ?? 0) + 1);
+    },
+    supervisor_process_ofd_for_fd(this: KernelExports, vmPtr: number, fd: number) {
+      const ofdId = this.process_fd_ofd_id(vmPtr, fd);
+      return ofdId > 0 && ofdId < this.abi_max_fds() ? ofdId : 0;
+    },
+    supervisor_process_fd_flags_for_fd: () => 0,
+  };
+  const handle = {
+    pid: 1,
+    vmPtr: 0x1234,
+    memory,
+    kernelState,
+    hostBlockedWorkers: new Map(),
+    kernel,
+  } as unknown as ProcessHandle;
+
+  applyThreadFdEntries(handle, 0x1234, [{ fd: 5, ofdId: 6, fdFlags: 0, generation: 3 }]);
+  expect(setCalls).toEqual([]);
+  expect(fdGenerations.get(5)).toBe(3);
+
+  applyThreadFdEntries(handle, 0x1234, [{ fd: 5, ofdId: 0, fdFlags: 0, generation: 2 }]);
+  expect(fdMap.get(5)).toBe(6);
+  expect(setCalls).toEqual([]);
+
+  applyThreadFdEntries(handle, 0x1234, [{ fd: 5, ofdId: 0, fdFlags: 0, generation: 4 }]);
+  expect(fdMap.get(5)).toBe(0);
+  expect(setCalls).toEqual([{ fd: 5, ofdId: 0, fdFlags: 0 }]);
 });

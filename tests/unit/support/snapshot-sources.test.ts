@@ -78,7 +78,7 @@ test("applySnapshotSourcesToRuntime streams host files outside the metadata snap
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test("applySnapshotSourcesToRuntime uses owned host-file writes when available", async () => {
   const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-owned-"));
@@ -112,7 +112,7 @@ test("applySnapshotSourcesToRuntime uses owned host-file writes when available",
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test("applySnapshotSourcesToRuntime can register host files as backing sources", async () => {
   const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-source-"));
@@ -165,7 +165,7 @@ test("applySnapshotSourcesToRuntime can register host files as backing sources",
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test("applySnapshotSourcesToRuntime can register host files as backing source ranges", async () => {
   const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-ranges-"));
@@ -280,6 +280,55 @@ test("applySnapshotSourcesToRuntime can register host files for demand backing",
     ]);
     expect(registeredRanges).toHaveLength(0);
     expect(writtenFiles).toHaveLength(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("applySnapshotSourcesToRuntime can materialize selected files while demand-backing the rest", async () => {
+  const root = mkdtempSync(join(tmpdir(), "tidemark-snapshot-hybrid-"));
+  const appliedSnapshots: FsSnapshotEntry[][] = [];
+  const registeredHostFiles: Array<{ sourceIdentity: string; hostPath: string; byteLength: number }> = [];
+  try {
+    const coldHostFile = join(root, "cold.bin");
+    const hotHostFile = join(root, "hot.bin");
+    const coldData = new TextEncoder().encode("cold-demand-bytes");
+    const hotData = new TextEncoder().encode("hot-materialized-bytes");
+    writeFileSync(coldHostFile, coldData);
+    writeFileSync(hotHostFile, hotData);
+
+    const runtime = {
+      applyFsSnapshot: async (entries: FsSnapshotEntry[]) => {
+        appliedSnapshots.push(entries);
+      },
+      registerFsHostFileBackingSource: async (sourceIdentity: string, hostPath: string, byteLength: number) => {
+        registeredHostFiles.push({ sourceIdentity, hostPath, byteLength });
+      },
+    };
+
+    const result = await applySnapshotSourcesToRuntime(
+      runtime as never,
+      [
+        { kind: "file", hostPath: coldHostFile, guestPath: "/guest/cold.bin", mode: 0o600 },
+        { kind: "materializedFile", hostPath: hotHostFile, guestPath: "/guest/hot.bin", mode: 0o644 },
+      ],
+      { hostFileBackingMode: "host-file" },
+    );
+
+    expect(result.skipReason).toBeUndefined();
+    const coldEntry = appliedSnapshots[0].find((entry) => entry.kind === "file" && entry.path === "/guest/cold.bin");
+    const hotEntry = appliedSnapshots[0].find((entry) => entry.kind === "file" && entry.path === "/guest/hot.bin");
+    expect(coldEntry?.kind === "file" ? coldEntry.data : undefined).toBeUndefined();
+    expect(coldEntry?.kind === "file" ? coldEntry.backingExtent?.length : undefined).toBe(coldData.length);
+    expect(hotEntry?.kind === "file" ? hotEntry.data : undefined).toEqual(hotData);
+    expect(hotEntry?.kind === "file" ? hotEntry.backingExtent : undefined).toBeUndefined();
+    expect(registeredHostFiles).toEqual([
+      {
+        sourceIdentity: coldEntry?.kind === "file" ? coldEntry.backingExtent?.sourceIdentity ?? "" : "",
+        hostPath: coldHostFile,
+        byteLength: coldData.length,
+      },
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

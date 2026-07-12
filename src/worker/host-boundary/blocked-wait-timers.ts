@@ -1,5 +1,7 @@
 import { hostExecutionState } from "../host-execution-state.js";
+import { processHasWorker } from "../process-worker-state.js";
 import {
+  supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedWaitRetryFlags,
   supervisorBlockedWaitTimerRequired,
   type SupervisorBlockedWaitRetryFlags,
@@ -17,10 +19,17 @@ import {
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
+  ThreadWorkerState,
 } from "../types.js";
-import { getBlockedRpcGeneration } from "../host-blocked-state.js";
+import {
+  getBlockedRpcGeneration,
+  isEpollWakeRetryPending,
+  setEpollPassiveUntilWake,
+  setWaitTimerAlreadyChecked,
+} from "../host-blocked-state.js";
 
 export interface BlockedWaitTimersDeps {
+  threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   failProcess(handle: ProcessHandle, error: Error): void;
@@ -54,6 +63,55 @@ function supervisorThreadEventKindTimerFired(handle: ProcessHandle): number {
 export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWaitTimers {
   const supervisorArmedBlockedTimers = new WeakSet<HostBlockedWorkerState>();
   const hostBlockedRetryTimers = new WeakMap<HostBlockedWorkerState, ReturnType<typeof setTimeout>>();
+
+  function shouldDeferPendingEpollRetryForRunningWorker(
+    handle: ProcessHandle,
+    blocked: HostBlockedWorkerState,
+  ): boolean {
+    if (
+      blocked.status !== handle.kernel.abi_status_epoll_wait()
+      || !isEpollWakeRetryPending(blocked)
+      || hostExecutionState(handle).runningWorker === null
+      || supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr) >= 0
+    ) {
+      return false;
+    }
+    setEpollPassiveUntilWake(blocked, false);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `blocked-retry-timer-defer-running:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
+    );
+    return true;
+  }
+
+  function restoreMissingEpollRetryTarget(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: HostBlockedWorkerState,
+  ): boolean {
+    if (
+      blocked.status !== handle.kernel.abi_status_epoll_wait()
+      || hostExecutionState(handle).hostBlockedWorkers.has(worker)
+      || !processHasWorker(handle, worker)
+    ) {
+      return false;
+    }
+    const thread = deps.threadWorkerStates.get(worker);
+    if (thread === undefined || thread.vmPtr !== blocked.vmPtr) {
+      return false;
+    }
+    const currentStatus = handle.kernel.thread_status(blocked.vmPtr);
+    if (currentStatus !== blocked.status) {
+      return false;
+    }
+    hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
+    deps.appendWorkerDebugLog(
+      handle,
+      `supervisor-blocked-retry-target-restored:vm=0x${blocked.vmPtr.toString(16)}`
+        + `:status=${blocked.status}`,
+    );
+    return true;
+  }
 
   function clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void {
     const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
@@ -120,10 +178,19 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       appendWorkerDebugLog: deps.appendWorkerDebugLog,
       failProcess: deps.failProcess,
       onTimerFired: (delayMs, reason, hostOpSeq) => {
+        supervisorArmedBlockedTimers.delete(blocked);
         if (hostBlockedRetryTimers.get(blocked) === timer) {
           hostBlockedRetryTimers.delete(blocked);
         }
         submitBlockedRetryTimerFiredEvent(handle, blocked, delayMs, reason, hostOpSeq);
+        if (shouldDeferPendingEpollRetryForRunningWorker(handle, blocked)) {
+          return;
+        }
+        restoreMissingEpollRetryTarget(handle, worker, blocked);
+        setWaitTimerAlreadyChecked(
+          hostExecutionState(handle).hostBlockedWorkers.get(worker) ?? blocked,
+          true,
+        );
         deps.retryHostBlockedWorker(handle, worker);
       },
     });
@@ -187,7 +254,8 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     scheduleHostBlockedRetry(handle, worker, retryHostOp);
   }
 
-  function armBlockedSupervisorTimer(handle: ProcessHandle, vmPtr: number): boolean {
+  function armBlockedSupervisorTimer(handle: ProcessHandle, blocked: HostBlockedWorkerState): boolean {
+    const vmPtr = blocked.vmPtr;
     let hostTimer = drainSupervisorArmHostTimerHostOp(handle, vmPtr);
     if (hostTimer === undefined) {
       throw new Error("kernel supervisor ABI missing arm host timer HostOp exports");
@@ -231,7 +299,10 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
       appendWorkerDebugLog: deps.appendWorkerDebugLog,
       failProcess: deps.failProcess,
-      pumpProcess: deps.pumpProcess,
+      pumpProcess: (processHandle) => {
+        supervisorArmedBlockedTimers.delete(blocked);
+        deps.pumpProcess(processHandle);
+      },
     });
     return true;
   }
@@ -251,7 +322,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     if (isSupervisorTimerArmed(blocked)) {
       return true;
     }
-    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, blocked.vmPtr);
+    const supervisorTimerArmed = armBlockedSupervisorTimer(handle, blocked);
     if (supervisorTimerArmed) {
       markSupervisorTimerArmed(blocked);
     }

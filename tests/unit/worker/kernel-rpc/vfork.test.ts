@@ -6,6 +6,7 @@ import {
   readPublishedKernelRuntimeState,
 } from "../../../../src/bridge/runtime-state.js";
 import { createWorkerKernelRpcVforkHelpers } from "../../../../src/worker/kernel-rpc/vfork.js";
+import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
 import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
@@ -61,6 +62,7 @@ function makeKernel(state: KernelRuntimeState, order: string[]): KernelExports {
       timeStatePtr: number,
       signalfdStatePtr = 0,
     ) {
+      order.push("attach");
       attachedState = {
         ...attachedState,
         heapBase,
@@ -178,6 +180,7 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
   expect(outcome).toEqual({
     kind: "completed",
     status: 0,
+    workerQueued: true,
   });
   expect(processKernelWorkerRequest(handle)).toHaveBeenCalledWith(expect.objectContaining({
     type: "resume-vfork-parent",
@@ -187,9 +190,70 @@ test("resumeVforkParentViaKernelWorker publishes state before waking and enqueue
   }));
   expect(order).toEqual([
     "resume:4660:7",
+    "attach",
     "record:1:7:768",
+    "attach",
     "clear-vfork",
     `progress:${resumedState.heapPtr}`,
     `enqueue:${resumedState.heapPtr}`,
   ]);
+});
+
+test("canonicalizeActiveVforkChildViaKernelWorker reports its worker enqueue", async () => {
+  const baseState = makeKernelState();
+  const worker = {} as Worker;
+  const kernel = makeKernel(baseState, []);
+  const runtimeBridge = createRuntimeStateBridge();
+  const handle = {
+    pid: 1,
+    vmPtr: 0x1234,
+    kernel,
+    kernelState: baseState,
+    runtimeBridge,
+    workers: new Set([worker]),
+  } as unknown as ProcessHandle;
+  seedProcessHandleStateFixture(handle);
+  hostExecutionState(handle).vforkSnapshot = {
+    vmPtr: 0x1234,
+    childPid: null,
+    kernelState: baseState,
+  };
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, { vmPtr: 0x1234 } as ThreadWorkerState);
+  const enqueueWorker = vi.fn();
+  const helpers = createWorkerKernelRpcVforkHelpers({
+    appendWorkerDebugLog: () => {},
+    canonicalizeChildLifecycleViaKernelWorker: async () => ({
+      childPid: 4,
+      ppid: 1,
+      nextPid: 5,
+      pgid: 1,
+      sid: 1,
+    }),
+    clearVforkSnapshot: () => {},
+    drainProcessOutput: () => false,
+    enqueueWorker,
+    failProcess(_errorHandle, error) {
+      throw error;
+    },
+    notifyHostEffectProgress: () => {},
+    processHandles: new Map([[1, handle]]),
+    requestPipeStateSync: async () => {},
+    syncSocketStateViaKernelWorker: async () => ({ socketUsed: 0, netBufUsed: 0n }),
+    syncProcessMemfsViaKernelWorker: async () => {},
+    snapshotProcessFdOfdStateForKernelWorker: () => ({ fdEntries: [], ofdSlots: [] }),
+    applySocketStateFromKernelWorker: () => {},
+    threadWorkerStates,
+  });
+
+  const outcome = await helpers.canonicalizeActiveVforkChildViaKernelWorker(
+    handle,
+    worker,
+    0x1234,
+    4,
+  );
+
+  expect(outcome).toEqual({ kind: "completed", status: 0, workerQueued: true });
+  expect(enqueueWorker).toHaveBeenCalledOnce();
+  expect(hostExecutionState(handle).vforkSnapshot?.childPid).toBe(4);
 });

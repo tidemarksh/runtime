@@ -6,6 +6,7 @@ import type { WorkerMessageHandlerDeps } from "../../../src/worker/message-handl
 import {
   getThreadOwnerPid,
   getThreadOwnerAsyncStatus,
+  setThreadCloneSpawnHostOp,
   setThreadHostIdentity,
   setThreadInitialized,
   setThreadOwnerAsyncStatus,
@@ -111,6 +112,8 @@ function makeKernelState() {
 
 function makeSupervisorKernel<T extends Partial<KernelExports>>(kernel: T): T {
   kernel.abi_status_ok ??= () => 0;
+  kernel.abi_max_fds ??= () => 0;
+  kernel.kernel_ofd_table_bytes ??= () => 0;
   kernel.thread_pc ??= () => 0n;
   kernel.thread_sp ??= () => 0n;
   kernel.supervisor_fork_shared_effect_sync_action_none ??= () => 0;
@@ -166,6 +169,7 @@ function makeDeps(
     requestEpollStateSync: async () => {},
     requestPipeStateSync: async () => {},
     requestSocketStateSync: async () => {},
+    requestThreadWorkerBlockedResume: () => {},
     resolveNetworkConnect: async () => 0n,
     resumeConnectViaKernelWorker: async () => {},
     resumeFsViaKernelWorker: async () => {},
@@ -261,6 +265,57 @@ test("status from a removed process state is dropped as stale", () => {
   expect(supervisorProcessOwnerAbsent).toHaveBeenCalledWith(0x1234);
 });
 
+test("status from an unregistered foreign process owner is dropped without failing the parent", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState({ ownerPid: 1 }));
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const notifyWorkerStatusProgress = vi.fn();
+  const pumpProcess = vi.fn();
+  deps.notifyWorkerStatusProgress = notifyWorkerStatusProgress;
+  deps.pumpProcess = pumpProcess;
+  const handle = {
+    pid: 1,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([worker]),
+    vforkSnapshot: null,
+    kernel: makeSupervisorKernel({
+      abi_status_fault: () => 31,
+      abi_status_vfork_wait: () => 11,
+      abi_status_execve_spawn: () => 13,
+      process_current_pid: () => 5,
+      thread_process_thread_count: () => 1,
+      thread_process_ptr: () => 0x2c42000,
+      process_current_ppid: () => 1,
+    }),
+  } as unknown as ProcessHandle;
+  deps.processHandles.set(1, handle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(handle, worker, {
+    type: "status",
+    generation: 2,
+    status: 0,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0x1000n,
+    vmPtr: 0x1234,
+    kernelState: {} as ThreadWorkerOutbound extends { kernelState: infer State } ? State : never,
+  } as ThreadWorkerOutbound);
+
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "foreign-process-status:0x1234:0:pid=1:owner=5:threads=1",
+  );
+  expect(notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(pumpProcess).toHaveBeenCalledWith(handle);
+});
+
 test("ready from a rehydrating process state is accepted when worker debug still identifies the owner", () => {
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -269,7 +324,9 @@ test("ready from a rehydrating process state is accepted when worker debug still
   const failProcess = vi.fn();
   const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
   const enqueueWorker = vi.fn();
+  const attachThreadWorker = vi.fn();
   deps.enqueueWorker = enqueueWorker;
+  deps.attachThreadWorker = attachThreadWorker;
   const supervisorProcessOwnerAbsent = vi.fn(() => 1);
   const handle = {
     pid: 4,
@@ -280,7 +337,7 @@ test("ready from a rehydrating process state is accepted when worker debug still
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
     vforkReadyWorkers: [],
-    hostBlockedWorkers: new Set<Worker>(),
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -353,6 +410,22 @@ test("ready from a rehydrating process state is accepted when worker debug still
   );
   expect(supervisorProcessOwnerAbsent).toHaveBeenCalledWith(0x1234);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
+
+  handleWorkerMessage(handle, worker, {
+    type: "ready",
+    generation: 2,
+    vmPtr: 0x1234,
+    kernelState: handle.kernelState,
+    wasmFeatures: { bulkMemory: true },
+    debug: "process_ptr=0x0 process_pid_field=1 process_ppid_field=0",
+  } as ThreadWorkerOutbound);
+
+  expect(failProcess).not.toHaveBeenCalled();
+  expect(attachThreadWorker).toHaveBeenCalledWith(handle, {
+    worker,
+    vmPtr: 0x1234,
+    forcePrepare: true,
+  });
 });
 
 test("ready adopts transferred worker ownership when kernel process identity matches the target handle", () => {
@@ -375,7 +448,7 @@ test("ready adopts transferred worker ownership when kernel process identity mat
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
     vforkReadyWorkers: [],
-    hostBlockedWorkers: new Set<Worker>(),
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -456,7 +529,7 @@ test("messages delivered through a stale handle are rerouted to the transferred 
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
     vforkReadyWorkers: [],
-    hostBlockedWorkers: new Set<Worker>(),
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -541,7 +614,7 @@ test("status with live child process pid is rerouted even when thread owner stil
     workerMessageDebugStats: createWorkerMessageDebugStats(),
     workers: new Set<Worker>([worker]),
     vforkReadyWorkers: [],
-    hostBlockedWorkers: new Set<Worker>(),
+    hostBlockedWorkers: new Map(),
     vforkSnapshot: null,
     stdinPipe: 0,
     ttyPtySlot: 0,
@@ -613,6 +686,160 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
   const parentThread = makeThreadState({
     ownerPid: 4,
     ownerAsyncStatus: 25,
+  });
+  const childThread = makeThreadState({
+    vmPtr: 0x2000,
+    ownerPid: 4,
+    initialized: false,
+  });
+  setThreadResumeWorkersOnReady(childThread, [parentWorker]);
+  threadWorkerStates.set(parentWorker, parentThread);
+  threadWorkerStates.set(childWorker, childThread);
+  const appendWorkerDebugLog = vi.fn();
+  const failProcess = vi.fn();
+  const deps = makeDeps(threadWorkerStates, appendWorkerDebugLog, failProcess);
+  const enqueueWorker = vi.fn();
+  deps.enqueueWorker = enqueueWorker;
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const submittedThreadEvents: Array<{
+    kind: number;
+    vmPtr: number;
+    tid: number;
+    status: number;
+  }> = [];
+  let cloneCompletion: DataView | null = null;
+  const handle = {
+    pid: 4,
+    parentPid: 1,
+    exitInProgress: false,
+    workerDebugLog: [],
+    workerMessageDebugStats: createWorkerMessageDebugStats(),
+    workers: new Set<Worker>([parentWorker, childWorker]),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    vforkSnapshot: null,
+    vforkWorker: null,
+    stdinPipe: 0,
+    ttyPtySlot: 0,
+    stdinQueue: [],
+    outputBacklog: [],
+    stdioOwner: null,
+    hostStdio: {
+      stdinPipe: 0,
+      stdoutPipe: 0,
+      stderrPipe: 0,
+    },
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(512),
+    },
+    memory,
+    kernelState: makeKernelState(),
+    kernel: makeSupervisorKernel({
+      abi_status_clone_spawn: () => 25,
+      abi_status_fault: () => 3,
+      abi_status_jit_ready: () => 27,
+      memory,
+      supervisor_abi_version: () => 1,
+      supervisor_host_completion_record_bytes: () => 64,
+      supervisor_host_completion_record_magic: () => 0x4348_5354,
+      supervisor_host_completion_outcome_success: () => 1,
+      supervisor_host_completion_outcome_failure: () => 2,
+      supervisor_complete_host_op: (completionPtr: number, completionLen: number) => {
+        cloneCompletion = new DataView(memory.buffer, completionPtr, completionLen);
+        return 0;
+      },
+      supervisor_thread_event_record_magic: () => 0x5645_5354,
+      supervisor_thread_event_record_bytes: () => 80,
+      supervisor_thread_event_kind_ready: () => 2,
+      supervisor_submit_thread_event: (eventPtr: number, eventLen: number) => {
+        const view = new DataView(memory.buffer, eventPtr, eventLen);
+        submittedThreadEvents.push({
+          kind: view.getUint32(12, true),
+          vmPtr: Number(view.getBigUint64(24, true)),
+          tid: view.getUint32(36, true),
+          status: view.getUint32(40, true),
+        });
+        return 0;
+      },
+      kernel_attach_runtime_state: () => {},
+      kernel_heap_base: () => 0,
+      kernel_heap_ptr: () => 0,
+      kernel_ofd_table_ptr: () => 0,
+      kernel_memfs_ptr: () => 0,
+      kernel_memfs_header_bytes: () => 0,
+      kernel_memfs_inodes_bytes: () => 0,
+      kernel_memfs_first_child_bytes: () => 0,
+      kernel_memfs_dir_entries_bytes: () => 0,
+      kernel_memfs_data_bytes: () => 0,
+      kernel_mem_state_ptr: () => 0,
+      kernel_epoll_table_ptr: () => 0,
+      kernel_socket_table_ptr: () => 0,
+      kernel_socket_used: () => 0,
+      kernel_pipe_base: () => 0,
+      kernel_pipe_used: () => 0n,
+      kernel_net_buf_base: () => 0,
+      kernel_net_buf_used: () => 0n,
+      kernel_sig_slots_ptr: () => 0,
+      kernel_process_pending_ptr: () => 0,
+      kernel_process_runtime_state_ptr: () => 0,
+      kernel_time_state_ptr: () => 0,
+      process_current_pid: () => 4,
+      thread_process_thread_count: () => 2,
+      thread_process_ptr: () => 0x48000,
+      thread_tid: (vmPtr: number) => vmPtr === 0x2000 ? 2 : 1,
+      thread_status: () => 0,
+      process_current_ppid: () => 1,
+      process_fd_ofd_id: () => 0,
+    }),
+  } as unknown as ProcessHandle;
+  setThreadCloneSpawnHostOp(childThread, {
+    kind: 1,
+    seq: 9n,
+    parentVmPtr: 0x1234,
+    childVmPtr: 0x2000,
+    tid: 2,
+    processPtr: 0x48000,
+    status: 0,
+    flags: 0n,
+    childTidPtr: 0n,
+  });
+  deps.processHandles.set(4, handle);
+  const handleWorkerMessage = createWorkerMessageHandler(deps);
+
+  handleWorkerMessage(handle, childWorker, {
+    type: "ready",
+    generation: 2,
+    vmPtr: 0x2000,
+    kernelState: makeKernelState(),
+    wasmFeatures: { bulkMemory: true },
+  } as ThreadWorkerOutbound);
+
+  expect(getThreadOwnerAsyncStatus(parentThread as never)).toBeNull();
+  expect(snapshotThreadResumeWorkersOnReady(childThread)).toEqual([]);
+  expect(cloneCompletion?.getUint32(0, true)).toBe(0x4348_5354);
+  expect(cloneCompletion?.getUint32(12, true)).toBe(1);
+  expect(cloneCompletion?.getBigUint64(16, true)).toBe(9n);
+  expect(cloneCompletion?.getUint32(24, true)).toBe(0x1234);
+  expect(cloneCompletion?.getUint32(28, true)).toBe(0x2000);
+  expect(cloneCompletion?.getUint32(32, true)).toBe(2);
+  expect(cloneCompletion?.getUint32(36, true)).toBe(1);
+  expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
+  expect(enqueueWorker).toHaveBeenNthCalledWith(2, handle, parentWorker);
+  expect(submittedThreadEvents).toContainEqual({
+    kind: 2,
+    vmPtr: 0x1234,
+    tid: 1,
+    status: 0,
+  });
+});
+
+test("clone child ready refreshes parent ready shadow event after clone hold is already clear", () => {
+  const parentWorker = {} as Worker;
+  const childWorker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  const parentThread = makeThreadState({
+    ownerPid: 4,
   });
   const childThread = makeThreadState({
     vmPtr: 0x2000,
@@ -706,6 +933,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
       thread_process_thread_count: () => 2,
       thread_process_ptr: () => 0x48000,
       thread_tid: (vmPtr: number) => vmPtr === 0x2000 ? 2 : 1,
+      thread_status: () => 0,
       process_current_ppid: () => 1,
       process_fd_ofd_id: () => 0,
     }),
@@ -721,6 +949,7 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     wasmFeatures: { bulkMemory: true },
   } as ThreadWorkerOutbound);
 
+  expect(failProcess).not.toHaveBeenCalled();
   expect(getThreadOwnerAsyncStatus(parentThread as never)).toBeNull();
   expect(snapshotThreadResumeWorkersOnReady(childThread)).toEqual([]);
   expect(enqueueWorker).toHaveBeenNthCalledWith(1, handle, childWorker);
@@ -731,6 +960,10 @@ test("clone child ready clears parent clone-spawn hold before resuming parent", 
     tid: 1,
     status: 0,
   });
+  expect(appendWorkerDebugLog).toHaveBeenCalledWith(
+    handle,
+    "supervisor-clone-parent-ready-event:refresh-ok:0x1234",
+  );
 });
 
 test("active vfork child fault remains routed through the parent handle", () => {

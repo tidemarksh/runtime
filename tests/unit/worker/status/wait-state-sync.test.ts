@@ -864,6 +864,7 @@ function completeTestSupervisorBlockedWaitTimer(
 }
 
 beforeEach(async () => {
+  vi.useRealTimers();
   vi.resetModules();
   process.env.TIDEMARK_SCHEDULER_STEP_BUDGET = "20000";
   workerModule = await import("../../../../src/worker.js");
@@ -895,6 +896,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   workerModule?.destroyWorkerPool();
   clearModuleCache();
   workerModule = null;
@@ -1029,7 +1031,7 @@ test("STATUS_PIPE_WAIT syncs fork-shared state to kernel-worker even without pee
   vi.useFakeTimers();
 
   const requests: KernelWorkerRequest[] = [];
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
+  const handle = await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 1,
     kernelWorkerRequest: async (msg): Promise<KernelWorkerOutbound> => {
       requests.push(msg);
@@ -1541,6 +1543,7 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
 
   enableSupervisorRunnableResume(kernel);
   emitReady(worker);
+  await flushMicrotasks();
   worker.clearPostedMessages();
   enableSupervisorRunnableResume(kernel);
   worker.emit({

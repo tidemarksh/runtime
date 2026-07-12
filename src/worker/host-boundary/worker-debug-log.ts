@@ -8,6 +8,7 @@ const WORKER_DEBUG_LOG_ENABLED = ((globalThis as {
 const ALWAYS_ON_SUPERVISOR_TRACE_PREFIXES = [
   "supervisor-blocked-retry-timer-arm",
   "supervisor-blocked-retry-timer-fired",
+  "supervisor-blocked-retry-target-restored",
   "supervisor-timer-fired-event",
   "supervisor-host-timer-fired",
   "supervisor-thread-event",

@@ -59,6 +59,10 @@ export function isProcessMemfsPublishPending(handle: ProcessHandle): boolean {
   return maybeMemfsState(handle)?.publishPending ?? false;
 }
 
+export function processMemfsNeedsPublication(handle: ProcessHandle): boolean {
+  return isProcessMemfsDirty(handle) || isProcessMemfsPublishPending(handle);
+}
+
 export function setProcessMemfsPublishPending(
   handle: ProcessHandle,
   publishPending: boolean,

@@ -3,6 +3,7 @@ import {
   bucketScriptRuntimeFailure,
   type ScriptRuntimeEntry,
   prepareScriptRuntime,
+  resolveScriptRuntimeTestTimeoutMs,
   runScriptRuntimeEntry,
   validateScriptRuntimeOutput,
 } from "./script-runtime-harness.js";
@@ -10,7 +11,7 @@ import {
 const SCRIPT_RUNTIME_PREPARE_HEADROOM_MS = 60_000;
 
 export function scriptRuntimeGateTimeoutMs(entry: ScriptRuntimeEntry): number {
-  return SCRIPT_RUNTIME_PREPARE_HEADROOM_MS + entry.timeoutMs;
+  return resolveScriptRuntimeTestTimeoutMs(entry, SCRIPT_RUNTIME_PREPARE_HEADROOM_MS);
 }
 
 export function formatScriptRuntimeGateResultContext(

@@ -83,9 +83,9 @@ export function createWorkerKernelRpcVforkHelpers(
         return { kind: "process-gone" };
       }
 
+      handle.kernel.thread_resume_vfork_parent(vmPtr, response.childPid);
       handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
-      handle.kernel.thread_resume_vfork_parent(vmPtr, response.childPid);
       if (handle.kernel.process_record_child_exit_for_parent) {
         handle.kernel.process_record_child_exit_for_parent(handle.pid, response.childPid, waitStatus);
       } else {
@@ -97,7 +97,7 @@ export function createWorkerKernelRpcVforkHelpers(
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       deps.notifyHostEffectProgress(handle);
       deps.enqueueWorker(handle, worker);
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), { workerQueued: true });
     } catch (error) {
       if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
@@ -133,7 +133,7 @@ export function createWorkerKernelRpcVforkHelpers(
       snapshot.sid = lifecycle.sid;
       publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
       deps.enqueueWorker(handle, worker);
-      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
+      return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr), { workerQueued: true });
     } catch (error) {
       if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));

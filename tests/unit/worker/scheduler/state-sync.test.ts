@@ -10,15 +10,21 @@ import {
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/host-boundary/state-sync.js";
+import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import {
+  isEpollPassiveUntilWake,
+  isEpollWakeRetryPending,
   setBlockedRpcGeneration,
   setBlockedRpcPending,
+  setEpollPassiveUntilWake,
+  setEpollWakeRetryPending,
 } from "../../../../src/worker/host-blocked-state.js";
 import {
   networkConnections,
   networkRecvPayloadWatermarks,
 } from "../../../../src/worker/network-socket-state.js";
 import { createTransferDebugStats } from "../../../../src/worker/types.js";
+import type { ThreadWorkerState } from "../../../../src/worker/types.js";
 import { makeSupervisorAbiStubs } from "../support/supervisor-abi.js";
 import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 
@@ -296,8 +302,236 @@ test("waking sync drains supervisor resume before runtime host retry", async () 
   expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
 });
 
-test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync", async () => {
+test("waking pipe sync applies the current fd snapshot while process workers are parked", async () => {
+  const kernelWorkerRequest = vi.fn(async (msg) => {
+    expect(msg.type).toBe("sync-pipe-state");
+    expect(msg.applyFdEntries).toBe(true);
+    return {
+      type: "pipe-state-synced",
+      requestId: 0,
+      kernelState: msg.kernelState,
+    };
+  });
+  const handle = makeHandle({
+    pid: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  addKernelShareMember(handle);
+  const idleWorker = {} as Worker;
+  const blockedWorker = {} as Worker;
+  addProcessWorker(handle, idleWorker);
+  addProcessWorker(handle, blockedWorker);
+  hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, {
+    vmPtr: 0x1234,
+    status: handle.kernel.abi_status_pipe_wait(),
+  } as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
+});
+
+test("pipe sync reconciles endpoint ownership before publishing the canonical snapshot", async () => {
+  const sequence: string[] = [];
+  const kernelWorkerRequest = vi.fn(async (msg) => {
+    sequence.push("sync");
+    return {
+      type: "pipe-state-synced" as const,
+      requestId: 0,
+      kernelState: msg.kernelState,
+    };
+  });
+  const handle = makeHandle({
+    pid: 1,
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  handle.kernel.supervisor_process_pipe_used_mask = () => 2n;
+  handle.kernel.supervisor_process_pipe_read_open_count = (_vmPtr, slot) => slot === 1 ? 1 : 0;
+  handle.kernel.supervisor_process_pipe_write_open_count = () => 0;
+  handle.kernel.supervisor_pipe_reconcile_control = (slot, readOpen, writeOpen) => {
+    if (slot === 1) {
+      expect([readOpen, writeOpen]).toEqual([1, 0]);
+      sequence.push("reconcile");
+    }
+    return 1;
+  };
+  addKernelShareMember(handle);
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  await helpers.requestPipeStateSync(handle, false);
+
+  expect(sequence).toEqual(["reconcile", "sync", "reconcile"]);
+});
+
+test("requestPipeStateSync defers passive indefinite epoll wake while another worker is running", async () => {
   const retryHostBlockedWorker = vi.fn();
+  const pumpProcess = vi.fn();
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const handle = makeHandle({ runtimeId: 1 });
+  addKernelShareMember(handle);
+  const runningWorker = {} as Worker;
+  const epollWorker = {} as Worker;
+  const blockedEpoll = {
+    vmPtr: 0x2345,
+    status: handle.kernel.abi_status_epoll_wait(),
+  };
+  setEpollPassiveUntilWake(blockedEpoll as never, true);
+  hostExecutionState(handle).runningWorker = runningWorker;
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    pumpProcess,
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(processKernelWorkerRequest(handle)).toHaveBeenCalledWith(expect.objectContaining({
+    type: "sync-pipe-state",
+    applyFdEntries: false,
+  }));
+  expect(pumpProcess).not.toHaveBeenCalled();
+  expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
+  expect(isEpollPassiveUntilWake(blockedEpoll as never)).toBe(false);
+  expect(isEpollWakeRetryPending(blockedEpoll as never)).toBe(true);
+  expect(appendRuntimeLifecycleEvent.mock.calls.some(([, event]) =>
+    event === "epoll-wake-defer-running:1:vm=0x2345:status=22"
+  )).toBe(true);
+});
+
+test("requestPipeStateSync clears answered running worker before retrying indefinite epoll wake", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const pumpProcess = vi.fn();
+  const handle = makeHandle({ runtimeId: 1 });
+  addKernelShareMember(handle);
+  const runningWorker = {} as Worker;
+  const epollWorker = {} as Worker;
+  const runningThread = { vmPtr: 0x4567 } as ThreadWorkerState;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(runningWorker, runningThread);
+  addProcessWorker(handle, runningWorker);
+  const activity = getThreadActivityState(runningThread);
+  activity.stepCount = 1;
+  activity.statusCount = 1;
+  const blockedEpoll = {
+    vmPtr: 0x2345,
+    status: handle.kernel.abi_status_epoll_wait(),
+  };
+  setEpollPassiveUntilWake(blockedEpoll as never, true);
+  hostExecutionState(handle).runningWorker = runningWorker;
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates,
+    pumpProcess,
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(pumpProcess).toHaveBeenCalledWith(handle);
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
+  expect(isEpollPassiveUntilWake(blockedEpoll as never)).toBe(false);
+  expect(isEpollWakeRetryPending(blockedEpoll as never)).toBe(true);
+});
+
+test("requestPipeStateSync does not duplicate a pending indefinite epoll wake while running", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const pumpProcess = vi.fn();
+  const appendRuntimeLifecycleEvent = vi.fn();
+  const handle = makeHandle({ runtimeId: 1 });
+  addKernelShareMember(handle);
+  const runningWorker = {} as Worker;
+  const epollWorker = {} as Worker;
+  const blockedEpoll = {
+    vmPtr: 0x2345,
+    status: handle.kernel.abi_status_epoll_wait(),
+  };
+  setEpollWakeRetryPending(blockedEpoll as never, true);
+  hostExecutionState(handle).runningWorker = runningWorker;
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    pumpProcess,
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(pumpProcess).not.toHaveBeenCalled();
+  expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
+  expect(isEpollPassiveUntilWake(blockedEpoll as never)).toBe(false);
+  expect(isEpollWakeRetryPending(blockedEpoll as never)).toBe(true);
+  expect(appendRuntimeLifecycleEvent).not.toHaveBeenCalledWith(
+    1,
+    "epoll-wake-defer-running:1:vm=0x2345:status=22",
+  );
+});
+
+test("requestPipeStateSync keeps pending epoll wake when supervisor pump starts a running worker", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const handle = makeHandle();
+  addKernelShareMember(handle);
+  const runningWorker = {} as Worker;
+  const epollWorker = {} as Worker;
+  const blockedEpoll = {
+    vmPtr: 0x3456,
+    status: handle.kernel.abi_status_epoll_wait(),
+  };
+  setEpollPassiveUntilWake(blockedEpoll as never, true);
+  hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
+  const pumpProcess = vi.fn((member) => {
+    hostExecutionState(member).runningWorker = runningWorker;
+  });
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    pumpProcess,
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(pumpProcess).toHaveBeenCalledWith(handle);
+  expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
+  expect(isEpollPassiveUntilWake(blockedEpoll as never)).toBe(false);
+  expect(isEpollWakeRetryPending(blockedEpoll as never)).toBe(true);
+});
+
+test("requestSocketStateSync defers rpc-pending epoll wake until the active retry completes", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const appendRuntimeLifecycleEvent = vi.fn();
   const handle = makeHandle({
     pid: 1,
     kernelWorkerRequest: vi.fn(async (msg) => {
@@ -316,14 +550,16 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
   addKernelShareMember(handle);
   const epollWorker = {} as Worker;
   const blockedEpoll = {
+    vmPtr: 0x2345,
     status: handle.kernel.abi_status_epoll_wait(),
   };
+  setEpollPassiveUntilWake(blockedEpoll as never, true);
   setBlockedRpcPending(blockedEpoll as never, true);
   setBlockedRpcGeneration(blockedEpoll as never, 7);
   hostExecutionState(handle).hostBlockedWorkers.set(epollWorker, blockedEpoll as never);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
-    appendRuntimeLifecycleEvent: () => {},
+    appendRuntimeLifecycleEvent,
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
     threadWorkerStates: new WeakMap(),
@@ -335,6 +571,12 @@ test("requestSocketStateSync skips rpc-pending epoll waiters during waking sync"
   expect(handle.kernelState.socketUsed).toBe(3);
   expect(handle.kernelState.netBufUsed).toBe(5n);
   expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, epollWorker);
+  expect(isEpollWakeRetryPending(blockedEpoll as never)).toBe(true);
+  expect(isEpollPassiveUntilWake(blockedEpoll as never)).toBe(false);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    undefined,
+    "epoll-wake-defer-rpc:1:vm=0x2345:status=22",
+  );
 });
 
 test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", async () => {
@@ -1411,4 +1653,72 @@ test("requestPipeStateSync clears an in-flight request when worker owner changes
   );
   expect(clearStateSync).toHaveBeenCalledTimes(1);
   expect(drainProcessOutput).not.toHaveBeenCalled();
+});
+
+test("requestEpollStateSync clears an in-flight request when identity drift appears after owner check", async () => {
+  const anchorWorker = {} as Worker;
+  const driftWorker = {} as Worker;
+  const anchorVmPtr = 0x1000;
+  const driftVmPtr = 0x2000;
+  const liveVmPtrs = [anchorVmPtr, driftVmPtr];
+  const currentPidByVm = new Map([
+    [anchorVmPtr, 1],
+    [driftVmPtr, 1],
+  ]);
+  const processPtrByVm = new Map([
+    [anchorVmPtr, 0x3000],
+    [driftVmPtr, 0x4000],
+  ]);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>([
+    [anchorWorker, { vmPtr: anchorVmPtr } as ThreadWorkerState],
+    [driftWorker, { vmPtr: driftVmPtr } as ThreadWorkerState],
+  ]);
+  let handle: ReturnType<typeof makeHandle>;
+  const kernelWorkerRequest = vi.fn(async (msg) => {
+    expect(msg.type).toBe("sync-epoll-state");
+    currentPidByVm.set(driftVmPtr, 4);
+    return {
+      type: "epoll-state-synced",
+      requestId: 0,
+      kernelState: handle.kernelState,
+    };
+  });
+  const appendRuntimeLifecycleEvent = vi.fn();
+  handle = makeHandle({
+    pid: 1,
+    vmPtr: anchorVmPtr,
+    kernelWorkerRequest,
+  });
+  handle.kernel.abi_max_threads = () => liveVmPtrs.length;
+  handle.kernel.process_thread_vm_ptr = (_vmPtr: number, slot: number) => liveVmPtrs[slot] ?? 0;
+  handle.kernel.process_current_pid = (vmPtr: number) => currentPidByVm.get(vmPtr) ?? 0;
+  handle.kernel.thread_process_ptr = (vmPtr: number) => processPtrByVm.get(vmPtr) ?? 0;
+  handle.kernel.supervisor_process_owner_matches = (vmPtr: number, runtimePid: number) =>
+    currentPidByVm.get(vmPtr) === runtimePid ? 1 : 0;
+  handle.kernel.supervisor_process_owner_mismatch = vi.fn(() => 0);
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 5 : 0);
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (
+    ofdId === 5 ? handle.kernel.abi_fd_type_epoll() : 0
+  );
+  const clearStateSync = vi.fn(() => 0);
+  handle.kernel.supervisor_state_sync_clear = clearStateSync;
+  addProcessWorker(handle, anchorWorker);
+  addProcessWorker(handle, driftWorker);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent,
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates,
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  await helpers.requestEpollStateSync(handle, false);
+
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
+  expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
+    handle.runtimeId,
+    "epoll-sync-owner-mismatch-defer:1:after-run",
+  );
+  expect(clearStateSync).toHaveBeenCalledTimes(1);
 });

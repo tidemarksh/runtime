@@ -8,14 +8,17 @@ import type { FsSnapshotBackingExtent, FsSnapshotEntry, RuntimeStat } from "../f
 import {
   collectDirtyResidentFileWritebackRanges,
   bumpDirEpoch,
+  DEFAULT_RESIDENT_PAGE_SIZE,
   hasDirtyResidentPagesForInode,
   markDirtyResidentFileDataClean,
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
+  publishResidentPage,
   readDirtyResidentFileData,
   readDirtyResidentFileRangeData,
   readInodeRecord,
+  readResidentFileData,
   truncateDirtyResidentFileData,
   writeDirtyResidentFileData,
 } from "../fs/sab-page-cache.js";
@@ -50,6 +53,14 @@ type AsyncBackingSource =
 
 type BackingObjectOperation = "source" | "materialize" | "replace" | "flush-write" | "flush-truncate";
 
+const SOURCE_BACKING_PREWARM_MAX_FILE_BYTES = 128 * 1024;
+const SOURCE_BACKING_SMALL_FILE_PREWARM_TOTAL_BYTES = 16 * 1024 * 1024;
+const MATERIALIZED_BACKING_PREWARM_HEADER_BYTES = 8 * 1024;
+const MATERIALIZED_BACKING_HEADER_PREWARM_TOTAL_BYTES = 8 * 1024 * 1024;
+const FS_METADATA_SYNC_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_METADATA_SYNC_DEBUG ?? "") === "1";
+
 interface KernelWorkerFsStateDeps {
   getCanonicalExports(): KernelExports;
   getSabPageCache(): SharedArrayBuffer;
@@ -77,7 +88,40 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const backingSourcesByIdentity = new Map<string, KernelWorkerBackingSource>();
   const asyncBackingSourcesByIdentity = new Map<string, AsyncBackingSource>();
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
+  const backingExtentInodesBySourceIdentity = new Map<string, Set<number>>();
   const dirtyResidentInodes = new Set<number>();
+  let sourceBackingSmallFilePrewarmRemainingBytes = SOURCE_BACKING_SMALL_FILE_PREWARM_TOTAL_BYTES;
+  let materializedBackingHeaderPrewarmRemainingBytes = MATERIALIZED_BACKING_HEADER_PREWARM_TOTAL_BYTES;
+
+  function forgetSnapshotBackingExtent(ino: number): void {
+    const previous = backingExtentsByIno.get(ino);
+    if (!previous) {
+      return;
+    }
+    backingExtentsByIno.delete(ino);
+    const inodes = backingExtentInodesBySourceIdentity.get(previous.sourceIdentity);
+    if (!inodes) {
+      return;
+    }
+    inodes.delete(ino);
+    if (inodes.size === 0) {
+      backingExtentInodesBySourceIdentity.delete(previous.sourceIdentity);
+    }
+  }
+
+  function rememberSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
+    forgetSnapshotBackingExtent(ino);
+    if (!backingExtent) {
+      return;
+    }
+    backingExtentsByIno.set(ino, { ...backingExtent });
+    let inodes = backingExtentInodesBySourceIdentity.get(backingExtent.sourceIdentity);
+    if (!inodes) {
+      inodes = new Set<number>();
+      backingExtentInodesBySourceIdentity.set(backingExtent.sourceIdentity, inodes);
+    }
+    inodes.add(ino);
+  }
 
   function replaceBackingFile(
     ino: number,
@@ -85,7 +129,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     op: Extract<BackingObjectOperation, "materialize" | "replace"> = "replace",
     sourceExports: KernelExports = deps.getCanonicalExports(),
   ): FileBackingStat {
-    backingExtentsByIno.delete(ino);
+    forgetSnapshotBackingExtent(ino);
     const decision = supervisorBackingObject(sourceExports, op, ino);
     fileObjectIdsByIno.set(ino, decision.fileObjectId);
     if (backingStore.stat(decision.fileObjectId)) {
@@ -97,7 +141,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function writeBackingFileRange(ino: number, offset: number, data: Uint8Array): FileBackingStat {
-    backingExtentsByIno.delete(ino);
+    forgetSnapshotBackingExtent(ino);
     const decision = supervisorBackingObject(deps.getCanonicalExports(), "flush-write", ino);
     fileObjectIdsByIno.set(ino, decision.fileObjectId);
     if (!backingStore.stat(decision.fileObjectId)) {
@@ -109,7 +153,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function truncateBackingFile(ino: number, size: number): FileBackingStat {
-    backingExtentsByIno.delete(ino);
+    forgetSnapshotBackingExtent(ino);
     const decision = supervisorBackingObject(deps.getCanonicalExports(), "flush-truncate", ino);
     fileObjectIdsByIno.set(ino, decision.fileObjectId);
     if (!backingStore.stat(decision.fileObjectId)) {
@@ -145,6 +189,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new Error("backing source identity must not be empty");
     }
     backingSourcesByIdentity.set(sourceIdentity, new Uint8ArrayBackingSource(data));
+    prewarmSourceBackedResidentPages(sourceIdentity);
   }
 
   function registerBackingSourceRange(
@@ -162,6 +207,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       : new ChunkedBackingSource(byteLength);
     source.putRange(offset, data);
     backingSourcesByIdentity.set(sourceIdentity, source);
+    prewarmSourceBackedResidentPages(sourceIdentity);
   }
 
   function registerRemoteBackingSource(sourceIdentity: string, byteLength: number, url: string): void {
@@ -196,6 +242,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       throw new RangeError(`invalid backing source byte length: ${source.byteLength}`);
     }
     backingSourcesByIdentity.set(sourceIdentity, source);
+    prewarmSourceBackedResidentPages(sourceIdentity);
   }
 
   function sourceRangeForInode(
@@ -221,11 +268,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function registerSnapshotBackingExtent(ino: number, backingExtent: FsSnapshotBackingExtent | undefined): void {
-    if (!backingExtent) {
-      backingExtentsByIno.delete(ino);
-      return;
+    rememberSnapshotBackingExtent(ino, backingExtent);
+    if (backingExtent && backingSourcesByIdentity.has(backingExtent.sourceIdentity)) {
+      prewarmSourceBackedResidentPages(backingExtent.sourceIdentity);
     }
-    backingExtentsByIno.set(ino, { ...backingExtent });
   }
 
   function supervisorNumber(value: bigint | number | undefined): number {
@@ -762,6 +808,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     fileOffset: number,
     length: number,
     expectedSize: number,
+    options?: { readAhead?: boolean },
   ): Uint8Array | null {
     const extent = backingExtentsByIno.get(ino);
     if (!extent) {
@@ -784,7 +831,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (!range) {
       return null;
     }
-    return source.readRange(range.offset, range.length);
+    return source.readRange(range.offset, range.length, options);
   }
 
   async function ensureBackingSourceRangeForInode(
@@ -851,6 +898,89 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }, decision);
     fileObjectIdsByIno.set(ino, stat.fileObjectId);
     return stat.fileObjectId;
+  }
+
+  function prewarmSourceBackedResidentPages(sourceIdentity: string): void {
+    const source = backingSourcesByIdentity.get(sourceIdentity);
+    if (
+      sourceBackingSmallFilePrewarmRemainingBytes <= 0
+      || !source
+      || source.eagerPrewarm === false
+    ) {
+      return;
+    }
+    const inodes = backingExtentInodesBySourceIdentity.get(sourceIdentity);
+    if (!inodes || inodes.size === 0) {
+      return;
+    }
+    const sab = deps.getSabPageCache();
+    const canonicalExports = deps.getCanonicalExports();
+    const authority = supervisorResidentPageTableAuthority(canonicalExports);
+
+    const candidates: Array<{ ino: number; expectedSize: number }> = [];
+    for (const ino of [...inodes].sort((left, right) => left - right)) {
+      const extent = backingExtentsByIno.get(ino);
+      if (!extent || extent.sourceIdentity !== sourceIdentity) {
+        continue;
+      }
+      const expectedSize = Number(canonicalExports.memfs_file_size(ino));
+      if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0) {
+        continue;
+      }
+      const published = readInodeRecord(sab, ino);
+      if (!published || published.fileObjectId === 0) {
+        continue;
+      }
+      candidates.push({ ino, expectedSize });
+    }
+
+    function missingResidentBytes(ino: number, expectedSize: number): number {
+      let missing = 0;
+      for (let offset = 0; offset < expectedSize; offset += DEFAULT_RESIDENT_PAGE_SIZE) {
+        const pageLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, expectedSize - offset);
+        if (readResidentFileData(sab, ino, offset, pageLength) === null) {
+          missing += pageLength;
+        }
+      }
+      return missing;
+    }
+
+    function prewarmWholeFile(
+      ino: number,
+      expectedSize: number,
+    ): void {
+      const missingBytes = missingResidentBytes(ino, expectedSize);
+      if (missingBytes <= 0) {
+        return;
+      }
+      if (sourceBackingSmallFilePrewarmRemainingBytes < missingBytes) {
+        return;
+      }
+      for (let offset = 0; offset < expectedSize; offset += DEFAULT_RESIDENT_PAGE_SIZE) {
+        const pageLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, expectedSize - offset);
+        if (pageLength <= 0) {
+          break;
+        }
+        if (readResidentFileData(sab, ino, offset, pageLength) !== null) {
+          continue;
+        }
+        const page = readBackingSourceRangeForInode(ino, offset, pageLength, expectedSize, { readAhead: false });
+        if (!page || page.length !== pageLength) {
+          return;
+        }
+        if (!publishResidentPage(sab, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, page, { authority })) {
+          return;
+        }
+        sourceBackingSmallFilePrewarmRemainingBytes -= pageLength;
+      }
+    }
+
+    const smallFileCandidates = candidates
+      .filter(({ expectedSize }) => expectedSize <= SOURCE_BACKING_PREWARM_MAX_FILE_BYTES)
+      .sort((left, right) => left.expectedSize - right.expectedSize || left.ino - right.ino);
+    for (const { ino, expectedSize } of smallFileCandidates) {
+      prewarmWholeFile(ino, expectedSize);
+    }
   }
 
   function residentPageMapIsNewerThanBackingWithState(
@@ -939,6 +1069,43 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       );
     }
     return readCleanBackingFileRangeByInode(ino, offset, length);
+  }
+
+  function prewarmMaterializedBackingHeader(ino: number, expectedSize: number): void {
+    if (
+      materializedBackingHeaderPrewarmRemainingBytes <= 0
+      || !Number.isSafeInteger(expectedSize)
+      || expectedSize <= 0
+    ) {
+      return;
+    }
+    const sab = deps.getSabPageCache();
+    const published = readInodeRecord(sab, ino);
+    if (!published || published.fileObjectId === 0) {
+      return;
+    }
+    const authority = supervisorResidentPageTableAuthority(deps.getCanonicalExports());
+    const endOffset = Math.min(expectedSize, MATERIALIZED_BACKING_PREWARM_HEADER_BYTES);
+    for (let offset = 0; offset < endOffset; offset += DEFAULT_RESIDENT_PAGE_SIZE) {
+      const pageLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, expectedSize - offset);
+      if (pageLength <= 0) {
+        return;
+      }
+      if (readResidentFileData(sab, ino, offset, pageLength) !== null) {
+        continue;
+      }
+      if (materializedBackingHeaderPrewarmRemainingBytes < pageLength) {
+        return;
+      }
+      const page = readCleanBackingFileRangeByInode(ino, offset, pageLength);
+      if (!page || page.length !== pageLength) {
+        return;
+      }
+      if (!publishResidentPage(sab, ino, offset / DEFAULT_RESIDENT_PAGE_SIZE, page, { authority })) {
+        return;
+      }
+      materializedBackingHeaderPrewarmRemainingBytes -= pageLength;
+    }
   }
 
   function writeDirtyResidentFileByInode(
@@ -1061,7 +1228,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     );
     if (cleaned) {
       dirtyResidentInodes.delete(ino);
-      backingExtentsByIno.delete(ino);
+      forgetSnapshotBackingExtent(ino);
       clearSeedBackingExtentForInode(ino);
     }
     return cleaned;
@@ -1124,6 +1291,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   }
 
   function hasBackingFile(ino: number): boolean {
+    const fileObjectId = fileObjectIdsByIno.get(ino);
+    if (fileObjectId !== undefined) {
+      return backingStore.stat(fileObjectId) !== null;
+    }
     return readBackingFileByInode(ino) !== null;
   }
 
@@ -1154,6 +1325,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (externalized < 0) {
       throw new Error(`failed to externalize inode: ${ino}`);
     }
+    prewarmMaterializedBackingHeader(ino, data.length);
   }
 
   function ensureDirectory(path: string, mode = 0o755): number {
@@ -1346,6 +1518,27 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
   }
 
+  function targetPublishedInodeMatches(
+    targetExports: KernelExports,
+    ino: number,
+    published: NonNullable<ReturnType<typeof readInodeRecord>>,
+  ): boolean {
+    if (published.name.length === 0) {
+      return ino === 1;
+    }
+    const parentIno = published.parentIno > 0 ? published.parentIno : 1;
+    if (parentIno === ino) {
+      return false;
+    }
+    const namePtr = writeScratchFor(targetExports, published.name);
+    const linkedIno = targetExports.memfs_lookup(parentIno, namePtr, published.name.length);
+    if (linkedIno !== ino) {
+      return false;
+    }
+    const targetMode = targetExports.memfs_inode_mode(ino);
+    return (targetMode & MEMFS_S_IFMT) === (published.mode & MEMFS_S_IFMT);
+  }
+
   function ensurePublishedInodeInTarget(
     targetExports: KernelExports,
     ino: number,
@@ -1360,7 +1553,10 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return;
     }
     if ((targetExports.memfs_inode_mode(ino) & MEMFS_S_IFMT) !== 0) {
-      return;
+      if (published && targetPublishedInodeMatches(targetExports, ino, published)) {
+        return;
+      }
+      throw new Error(`target inode ${ino} already exists with different metadata`);
     }
     if (!published || published.name.length === 0) {
       return;
@@ -1451,7 +1647,23 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     try {
       ensurePublishedInodeInTarget(targetExports, ino, published);
       return true;
-    } catch {
+    } catch (error) {
+      if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+        const targetKind = targetExports === deps.getCanonicalExports()
+          ? "canonical"
+          : [...deps.processKernels.entries()].find(([, exports]) => exports === targetExports)?.[0] ?? "unknown";
+        const procSelfExeIno = deps.resolvePathIn(targetExports, "/proc/self/exe");
+        console.error(
+          `[tidemark-fs-metadata] target=${targetKind}:ino=${ino}`
+            + `:inodeCount=${targetExports.memfs_inode_count()}`
+            + `:procSelfExeIno=${procSelfExeIno}`
+            + `:targetMode=${targetExports.memfs_inode_mode(ino).toString(8)}`
+            + `:publishedMode=${published?.mode.toString(8) ?? "none"}`
+            + `:parent=${published?.parentIno ?? 0}`
+            + `:name=${JSON.stringify(published ? deps.decoder.decode(published.name) : "")}`
+            + `:error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
+        );
+      }
       return false;
     }
   }
@@ -1496,10 +1708,16 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       });
       if (action === "externalize") {
         clearSeedBackingExtentForInode(ino);
-        ensurePublishedInodeInTarget(canonicalExports, ino, published);
-        syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, published);
+        const needsBackingFlush = trackedHasDirtyResidentPages(ino)
+          || (residentPageMapIsNewerThanBacking(ino) && size === 0);
+        if (needsBackingFlush && !flushDirtyResidentFileByInode(ino)) {
+          return false;
+        }
+        const refreshedPublished = readInodeRecord(deps.getSabPageCache(), ino) ?? published;
+        ensurePublishedInodeInTarget(canonicalExports, ino, refreshedPublished);
+        syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, refreshedPublished);
         for (const memberExports of deps.processKernels.values()) {
-          trySyncExternalFileDataIntoTarget(memberExports, ino, mode, size, published);
+          trySyncExternalFileDataIntoTarget(memberExports, ino, mode, size, refreshedPublished);
         }
         return true;
       }
@@ -1527,10 +1745,11 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   function restorePublishedRegularFileDataForInode(
     ino: number,
     targetExports = deps.getCanonicalExports(),
+    options?: { assumeBackingFile?: boolean },
   ): boolean {
     const sab = deps.getSabPageCache();
     const published = readInodeRecord(sab, ino);
-    const hasBacking = hasBackingFile(ino);
+    const hasBacking = options?.assumeBackingFile ?? hasBackingFile(ino);
     const hasPublishedFileObject = (published?.fileObjectId ?? 0) !== 0;
     const hasDirtyResidentPages = published && !hasBacking && !hasPublishedFileObject
       ? trackedHasDirtyResidentPages(ino)
@@ -1553,8 +1772,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
 
-    syncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
-    return true;
+    return trySyncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
   }
 
   function syncMetadataMutation(sourceExports: KernelExports, path: string): boolean {
@@ -1778,7 +1996,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     }
   }
   const {
-    loadFsSnapshot,
+    loadFsSnapshot: loadFsSnapshotInner,
     rebuildPageCacheFromExports,
     rebuildPageCacheFromCanonical,
     snapshotCanonicalFs,
@@ -1800,6 +2018,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     upsertSymlinkSeed: deps.upsertSymlinkSeed,
     fanoutCanonicalMemfs: deps.fanoutCanonicalMemfs,
   });
+
+  function loadFsSnapshot(entries: FsSnapshotEntry[]): void {
+    sourceBackingSmallFilePrewarmRemainingBytes = SOURCE_BACKING_SMALL_FILE_PREWARM_TOTAL_BYTES;
+    materializedBackingHeaderPrewarmRemainingBytes = MATERIALIZED_BACKING_HEADER_PREWARM_TOTAL_BYTES;
+    loadFsSnapshotInner(entries);
+  }
 
   function statPath(path: string): RuntimeStat {
     const targetExports = deps.getCanonicalExports();

@@ -3,7 +3,13 @@ import type { HostBlockedWorkerState } from "./types.js";
 interface HostBlockedEffectState {
   rpcPending: boolean;
   rpcGeneration: number;
+  epollPassiveUntilWake: boolean;
+  epollWakeRetryPending: boolean;
+  epollWakeRetryGeneration: number;
+  epollDeferredRetrySignature: string | null;
+  epollDeferredRetryWakeGeneration: number;
   pipeCanonicalEofReady: boolean;
+  waitTimerAlreadyChecked: boolean;
   lastPipeRetryLifecycleEvent: string | null;
   lastWait4RetryLifecycleEvent: string | null;
 }
@@ -16,7 +22,13 @@ function effectState(blocked: HostBlockedWorkerState): HostBlockedEffectState {
     state = {
       rpcPending: false,
       rpcGeneration: 0,
+      epollPassiveUntilWake: false,
+      epollWakeRetryPending: false,
+      epollWakeRetryGeneration: 0,
+      epollDeferredRetrySignature: null,
+      epollDeferredRetryWakeGeneration: 0,
       pipeCanonicalEofReady: false,
+      waitTimerAlreadyChecked: false,
       lastPipeRetryLifecycleEvent: null,
       lastWait4RetryLifecycleEvent: null,
     };
@@ -85,6 +97,65 @@ export function invalidateBlockedRpc(blocked: HostBlockedWorkerState): number {
   return state.rpcGeneration;
 }
 
+export function isEpollPassiveUntilWake(
+  blocked: HostBlockedWorkerState | null | undefined,
+): boolean {
+  return maybeEffectState(blocked)?.epollPassiveUntilWake ?? false;
+}
+
+export function setEpollPassiveUntilWake(
+  blocked: HostBlockedWorkerState,
+  passive: boolean,
+): void {
+  effectState(blocked).epollPassiveUntilWake = passive;
+}
+
+export function isEpollWakeRetryPending(
+  blocked: HostBlockedWorkerState | null | undefined,
+): boolean {
+  return maybeEffectState(blocked)?.epollWakeRetryPending ?? false;
+}
+
+export function setEpollWakeRetryPending(
+  blocked: HostBlockedWorkerState,
+  pending: boolean,
+): void {
+  const state = effectState(blocked);
+  state.epollWakeRetryPending = pending;
+  if (pending) {
+    state.epollWakeRetryGeneration += 1;
+  }
+}
+
+export function getEpollWakeRetryGeneration(
+  blocked: HostBlockedWorkerState | null | undefined,
+): number {
+  return maybeEffectState(blocked)?.epollWakeRetryGeneration ?? 0;
+}
+
+export function getEpollDeferredRetryWakeGeneration(
+  blocked: HostBlockedWorkerState | null | undefined,
+): number {
+  return maybeEffectState(blocked)?.epollDeferredRetryWakeGeneration ?? 0;
+}
+
+export function getEpollDeferredRetrySignature(
+  blocked: HostBlockedWorkerState | null | undefined,
+): string | null {
+  return maybeEffectState(blocked)?.epollDeferredRetrySignature ?? null;
+}
+
+export function setEpollDeferredRetrySignature(
+  blocked: HostBlockedWorkerState,
+  signature: string | null,
+): void {
+  const state = effectState(blocked);
+  state.epollDeferredRetrySignature = signature;
+  state.epollDeferredRetryWakeGeneration = signature === null
+    ? 0
+    : state.epollWakeRetryGeneration;
+}
+
 export function isPipeCanonicalEofReady(
   blocked: HostBlockedWorkerState | null | undefined,
 ): boolean {
@@ -96,6 +167,24 @@ export function setPipeCanonicalEofReady(
   ready: boolean,
 ): void {
   effectState(blocked).pipeCanonicalEofReady = ready;
+}
+
+export function setWaitTimerAlreadyChecked(
+  blocked: HostBlockedWorkerState,
+  checked: boolean,
+): void {
+  effectState(blocked).waitTimerAlreadyChecked = checked;
+}
+
+export function consumeWaitTimerAlreadyChecked(
+  blocked: HostBlockedWorkerState | null | undefined,
+): boolean {
+  const state = maybeEffectState(blocked);
+  if (state === undefined || !state.waitTimerAlreadyChecked) {
+    return false;
+  }
+  state.waitTimerAlreadyChecked = false;
+  return true;
 }
 
 export function getLastPipeRetryLifecycleEvent(

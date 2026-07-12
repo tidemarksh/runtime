@@ -149,6 +149,14 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
         ? readProcessPidField(msg.debug)
         : null;
       if (
+        msg.type === "ready"
+        && ownerPid === handle.pid
+        && messageProcessPidField !== null
+        && messageProcessPidField !== handle.pid
+      ) {
+        return true;
+      }
+      if (
         msg.type === "status"
         && msg.status === handle.kernel.abi_status_fault()
         && (
@@ -196,6 +204,28 @@ export function createWorkerMessageHandler(deps: WorkerMessageHandlerDeps) {
       }
       if (!supervisorProcessOwnerMatches(handle.kernel, thread.vmPtr, handle.pid)) {
         const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+        if (
+          msg.type === "status"
+          && currentPid > 0
+          && currentPid !== handle.pid
+          && deps.processHandles.get(currentPid) === undefined
+        ) {
+          const processThreadCount = handle.kernel.thread_process_thread_count(thread.vmPtr);
+          recordWorkerMessageDebugEvent(
+            workerMessageDebugStats(handle),
+            "foreignProcessStatusDrops",
+            `foreign-process-status:${handle.pid}:0x${thread.vmPtr.toString(16)}:${msg.status}`
+              + `:owner=${currentPid}:threads=${processThreadCount}`,
+          );
+          deps.appendWorkerDebugLog(
+            handle,
+            `foreign-process-status:0x${thread.vmPtr.toString(16)}:${msg.status}`
+              + `:pid=${handle.pid}:owner=${currentPid}:threads=${processThreadCount}`,
+          );
+          deps.notifyWorkerStatusProgress(handle);
+          deps.pumpProcess(handle);
+          return false;
+        }
         failOwnershipInvariant(handle, worker, msg, `kernel_pid=${currentPid} expected_pid=${handle.pid}`);
         return false;
       }

@@ -21,6 +21,10 @@ export interface WorkerForkDeps {
     sid: number,
     flushSharedMappings: boolean,
   ): Promise<void>;
+  markCanonicalFdEntriesForNextStep?(
+    handle: ProcessHandle,
+    entries: readonly { fd: number }[],
+  ): void;
   notifyForkProgress(handle: ProcessHandle): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   rehydrateForkSharedStateViaKernelWorker(

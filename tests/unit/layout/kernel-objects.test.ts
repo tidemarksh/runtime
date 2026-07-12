@@ -31,6 +31,7 @@ import {
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
   OFD_REFCOUNT_OFFSET,
+  OFD_STATUS_FLAGS_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../../../src/layout/ofd.js";
 import {
@@ -190,6 +191,7 @@ describe("runtime/kernel object layout", () => {
     const ofd = readStructLayout(KERNEL_TYPES_SOURCE, "OpenFileDesc");
     expect(OFD_TYPE_OFFSET).toBe(ofd.fields.fd_type);
     expect(OFD_HOST_FD_OFFSET).toBe(ofd.fields.host_fd);
+    expect(OFD_STATUS_FLAGS_OFFSET).toBe(ofd.fields.status_flags);
     expect(OFD_REFCOUNT_OFFSET).toBe(ofd.fields.refcount);
     expect(OFD_OFFSET_OFFSET).toBe(ofd.fields.offset);
     expect(OFD_INO_OFFSET).toBe(ofd.fields.ino);

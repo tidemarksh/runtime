@@ -8,7 +8,11 @@ import type {
 import {
   clearThreadRunningGeneration,
   clearThreadWaitingInWorkerStatus,
+  getThreadOwnerAsyncDetail,
+  getThreadOwnerAsyncStatus,
 } from "../thread-host-state.js";
+import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
+import { supervisorBlockedStatusIsHostWait } from "../../supervisor-blocked-resume.js";
 
 const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
 const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
@@ -34,6 +38,11 @@ interface SupervisorThreadStateRecord {
   pendingSigset: bigint;
 }
 
+interface SelectedSupervisorResumeWorker {
+  worker: Worker;
+  resumeBlockedSyscall: boolean;
+}
+
 export interface SupervisorResumeHostBoundaryDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
@@ -42,8 +51,13 @@ export interface SupervisorResumeHostBoundaryDeps {
 }
 
 export interface SupervisorResumeHostBoundary {
-  selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined;
-  drainSupervisorResumeQueue(handle: ProcessHandle): Worker | null;
+  selectSupervisorRunnableWorker(handle: ProcessHandle): SupervisorResumeSelection | null | undefined;
+  drainSupervisorResumeQueue(handle: ProcessHandle): SupervisorResumeSelection | null;
+}
+
+export interface SupervisorResumeSelection {
+  worker: Worker;
+  resumeBlockedSyscall: boolean;
 }
 
 function supervisorResumeRecordBytes(handle: ProcessHandle): number {
@@ -76,6 +90,25 @@ function supervisorResumeKindRunnableThread(handle: ProcessHandle): number {
     throw new Error("kernel supervisor ABI missing supervisor_resume_kind_runnable_thread");
   }
   return exportFn.call(handle.kernel);
+}
+
+function notifySupervisorFutexWaiter(handle: ProcessHandle, record: SupervisorResumeRecord): void {
+  const guestBase = handle.kernel.thread_guest_base?.(record.vmPtr) ?? 0;
+  const guestAddress = Number(record.detail0);
+  const absoluteAddress = guestBase + guestAddress;
+  const i32 = new Int32Array((handle.kernel.memory ?? handle.memory).buffer);
+  if (
+    !Number.isSafeInteger(guestAddress)
+    || !Number.isSafeInteger(absoluteAddress)
+    || (absoluteAddress & (Int32Array.BYTES_PER_ELEMENT - 1)) !== 0
+  ) {
+    return;
+  }
+  const index = absoluteAddress / Int32Array.BYTES_PER_ELEMENT;
+  if (index < 0 || index >= i32.length) {
+    return;
+  }
+  Atomics.notify(i32, index, 1);
 }
 
 function supervisorAbiVersion(handle: ProcessHandle): number {
@@ -216,9 +249,65 @@ function formatSupervisorThreadStateSnapshot(
   }
 }
 
+export function supervisorThreadStateSnapshotStatus(
+  handle: ProcessHandle,
+  vmPtr: number,
+): number | null {
+  const snapshotExport = handle.kernel.supervisor_thread_state_snapshot;
+  const snapshotBytes = supervisorThreadStateSnapshotBytes(handle);
+  if (snapshotExport === undefined || snapshotBytes === 0) {
+    return null;
+  }
+  if (!Number.isFinite(snapshotBytes) || snapshotBytes < SUPERVISOR_THREAD_STATE_HEADER_BYTES) {
+    return null;
+  }
+  const memory = handle.kernel.memory ?? handle.memory;
+  const scratch = supervisorResumeScratchBase(handle);
+  ensureMemoryCapacity(memory, scratch + snapshotBytes);
+  try {
+    const result = snapshotExport.call(handle.kernel, vmPtr, scratch, snapshotBytes);
+    if (result <= 0 || result > snapshotBytes || result < SUPERVISOR_THREAD_STATE_HEADER_BYTES) {
+      return null;
+    }
+    const view = new DataView(memory.buffer, scratch, result);
+    if (
+      view.getUint32(0, true) !== supervisorThreadStateSnapshotMagic(handle)
+      || view.getUint32(4, true) !== supervisorAbiVersion(handle)
+    ) {
+      return null;
+    }
+    const totalBytes = view.getUint32(8, true);
+    const maxThreads = view.getUint32(12, true);
+    const recordBytes = view.getUint32(24, true);
+    if (
+      totalBytes < SUPERVISOR_THREAD_STATE_HEADER_BYTES
+      || totalBytes > result
+      || recordBytes < SUPERVISOR_THREAD_STATE_RECORD_BYTES
+    ) {
+      return null;
+    }
+    const availableRecords = Math.min(
+      maxThreads,
+      Math.floor((totalBytes - SUPERVISOR_THREAD_STATE_HEADER_BYTES) / recordBytes),
+    );
+    for (let slot = 0; slot < availableRecords; slot += 1) {
+      const offset = SUPERVISOR_THREAD_STATE_HEADER_BYTES + slot * recordBytes;
+      const record = decodeSupervisorThreadStateRecord(view, offset);
+      if (record.vmPtr === vmPtr) {
+        return record.status;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function createSupervisorResumeHostBoundary(
   deps: SupervisorResumeHostBoundaryDeps,
 ): SupervisorResumeHostBoundary {
+  const deferredResumeRecords = new WeakMap<ProcessHandle, SupervisorResumeRecord[]>();
+
   function findWorkerByVmPtr(handle: ProcessHandle, vmPtr: number): Worker | undefined {
     for (const worker of processWorkers(handle)) {
       const thread = deps.threadWorkerStates.get(worker);
@@ -239,11 +328,47 @@ export function createSupervisorResumeHostBoundary(
     return `kind-${kind}`;
   }
 
+  function ownerAsyncStatusForResumeRecord(
+    handle: ProcessHandle,
+    record: SupervisorResumeRecord,
+  ): number | null {
+    const worker = findWorkerByVmPtr(handle, record.vmPtr);
+    const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
+    if (thread === undefined) {
+      return null;
+    }
+    return getThreadOwnerAsyncStatus(thread);
+  }
+
+  function deferResumeRecord(
+    handle: ProcessHandle,
+    record: SupervisorResumeRecord,
+    ownerAsyncStatus: number,
+  ): void {
+    const records = deferredResumeRecords.get(handle) ?? [];
+    records.push(record);
+    deferredResumeRecords.set(handle, records);
+    const worker = findWorkerByVmPtr(handle, record.vmPtr);
+    const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
+    const ownerAsync = getThreadOwnerAsyncDetail(thread);
+    const ownerAsyncAgeMs = ownerAsync?.startedAtMs === null || ownerAsync?.startedAtMs === undefined
+      ? "null"
+      : Math.max(0, Date.now() - ownerAsync.startedAtMs);
+    deps.appendWorkerDebugLog(
+      handle,
+      `supervisor-resume:${supervisorResumeKindLabel(handle, record.kind)}:defer-owner-async`
+        + `:0x${record.vmPtr.toString(16)}:tid=${record.tid}:seq=${record.seq.toString()}`
+        + `:status=${record.status}:owner=${ownerAsyncStatus}`
+        + `:ownerDetail=${ownerAsync?.detail ?? "unknown"}:ownerAgeMs=${ownerAsyncAgeMs}`,
+    );
+  }
+
   function selectSupervisorResumeWorker(
     handle: ProcessHandle,
     record: SupervisorResumeRecord,
     source: string,
-  ): Worker | null {
+    options: { resumeBlockedSyscall?: boolean } = {},
+  ): SelectedSupervisorResumeWorker | null {
     const selectedWorker = findWorkerByVmPtr(handle, record.vmPtr);
     const selectedThread = selectedWorker === undefined
       ? undefined
@@ -256,8 +381,48 @@ export function createSupervisorResumeHostBoundary(
       );
       return null;
     }
+    const blocked = hostExecutionState(handle).hostBlockedWorkers.get(selectedWorker);
+    let resumeBlockedSyscall = options.resumeBlockedSyscall === true;
+    if (blocked !== undefined && blocked.vmPtr === record.vmPtr) {
+      const currentStatus = supervisorThreadStateSnapshotStatus(handle, record.vmPtr)
+        ?? handle.kernel.thread_status(record.vmPtr);
+      if (currentStatus === blocked.status) {
+        if (
+          record.kind === supervisorResumeKindRunnableThread(handle)
+          && record.status === handle.kernel.abi_status_ok()
+          && supervisorBlockedStatusIsHostWait(handle.kernel, blocked.status)
+        ) {
+          resumeBlockedSyscall = true;
+        } else {
+          deps.appendWorkerDebugLog(
+            handle,
+            `${source}:defer-blocked:0x${record.vmPtr.toString(16)}`
+              + `:tid=${record.tid}:seq=${record.seq.toString()}`
+              + `:status=${record.status}:current=${currentStatus}:blocked=${blocked.status}`
+              + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
+          );
+          return null;
+        }
+      }
+    }
+    const ownerAsyncStatus = getThreadOwnerAsyncStatus(selectedThread);
+    if (ownerAsyncStatus !== null) {
+      const ownerAsync = getThreadOwnerAsyncDetail(selectedThread);
+      const ownerAsyncAgeMs = ownerAsync?.startedAtMs === null || ownerAsync?.startedAtMs === undefined
+        ? "null"
+        : Math.max(0, Date.now() - ownerAsync.startedAtMs);
+      deps.appendWorkerDebugLog(
+        handle,
+        `${source}:defer-owner-async:0x${record.vmPtr.toString(16)}`
+          + `:tid=${record.tid}:seq=${record.seq.toString()}`
+          + `:status=${record.status}:owner=${ownerAsyncStatus}`
+          + `:ownerDetail=${ownerAsync?.detail ?? "unknown"}:ownerAgeMs=${ownerAsyncAgeMs}`,
+      );
+      return null;
+    }
     deps.clearBlockedWorker(handle, selectedWorker);
     deps.removeVforkReadyWorker(handle, selectedWorker);
+    clearSupervisorHostTimer(handle, record.vmPtr);
     clearThreadWaitingInWorkerStatus(selectedThread);
     clearThreadRunningGeneration(selectedThread);
     deps.appendWorkerDebugLog(
@@ -268,10 +433,10 @@ export function createSupervisorResumeHostBoundary(
         + `:status=${record.status}:detail=0x${record.detail0.toString(16)}`
         + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
     );
-    return selectedWorker;
+    return { worker: selectedWorker, resumeBlockedSyscall };
   }
 
-  function selectSupervisorProcessResumeWorker(handle: ProcessHandle): Worker | null | undefined {
+  function selectSupervisorProcessResumeWorker(handle: ProcessHandle): SelectedSupervisorResumeWorker | null | undefined {
     const processResume = handle.kernel.supervisor_process_resume;
     if (processResume === undefined) {
       return undefined;
@@ -284,7 +449,8 @@ export function createSupervisorResumeHostBoundary(
     if (result === 0) {
       deps.appendWorkerDebugLog(
         handle,
-        `supervisor-resume:runnable:none:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+        `supervisor-resume:runnable:none:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`
+          + formatSupervisorThreadStateSnapshot(handle, handle.vmPtr),
       );
       return null;
     }
@@ -308,7 +474,7 @@ export function createSupervisorResumeHostBoundary(
     return selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
   }
 
-  function selectSupervisorRunnableWorker(handle: ProcessHandle): Worker | null | undefined {
+  function selectSupervisorRunnableWorker(handle: ProcessHandle): SelectedSupervisorResumeWorker | null | undefined {
     return selectSupervisorProcessResumeWorker(handle);
   }
 
@@ -319,6 +485,9 @@ export function createSupervisorResumeHostBoundary(
     record: SupervisorResumeRecord,
   ): void {
     const label = supervisorResumeKindLabel(handle, record.kind);
+    if (record.kind === supervisorResumeKindFutexWake(handle)) {
+      notifySupervisorFutexWaiter(handle, record);
+    }
     clearThreadWaitingInWorkerStatus(thread);
     clearThreadRunningGeneration(thread);
     deps.appendWorkerDebugLog(
@@ -332,9 +501,12 @@ export function createSupervisorResumeHostBoundary(
     );
   }
 
-  function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): Worker | null {
+  function handleSupervisorResumeRecord(handle: ProcessHandle, record: SupervisorResumeRecord): SupervisorResumeSelection | null {
     if (record.kind === supervisorResumeKindRunnableThread(handle)) {
-      return selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
+      const selection = selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
+      return selection === null
+        ? null
+        : selection;
     }
     if (record.kind !== supervisorResumeKindFutexWake(handle)) {
       deps.appendWorkerDebugLog(
@@ -353,10 +525,18 @@ export function createSupervisorResumeHostBoundary(
       return null;
     }
     recordSupervisorResumeSelection(handle, worker, thread, record);
-    return null;
+    const selectedWorker = selectSupervisorResumeWorker(
+      handle,
+      record,
+      "supervisor-resume:futex-wake",
+      { resumeBlockedSyscall: true },
+    );
+    return selectedWorker === null
+      ? null
+      : selectedWorker;
   }
 
-  function drainSupervisorResumeQueue(handle: ProcessHandle): Worker | null {
+  function drainSupervisorResumeQueue(handle: ProcessHandle): SupervisorResumeSelection | null {
     const nextResume = handle.kernel.supervisor_next_resume;
     if (nextResume === undefined) {
       return null;
@@ -365,8 +545,26 @@ export function createSupervisorResumeHostBoundary(
     const memory = handle.kernel.memory ?? handle.memory;
     const scratch = supervisorResumeScratchBase(handle);
     ensureMemoryCapacity(memory, scratch + recordBytes);
-    let selectedWorker: Worker | null = null;
+    let selected: SupervisorResumeSelection | null = null;
     for (let drained = 0; drained < SUPERVISOR_RESUME_DRAIN_LIMIT; drained += 1) {
+      const deferred = deferredResumeRecords.get(handle);
+      if (deferred !== undefined && deferred.length > 0) {
+        const record = deferred[0];
+        const ownerAsyncStatus = ownerAsyncStatusForResumeRecord(handle, record);
+        if (ownerAsyncStatus !== null) {
+          break;
+        }
+        deferred.shift();
+        if (deferred.length === 0) {
+          deferredResumeRecords.delete(handle);
+        }
+        const recordSelection = handleSupervisorResumeRecord(handle, record);
+        if (recordSelection !== null) {
+          selected = recordSelection;
+          break;
+        }
+        continue;
+      }
       const result = nextResume.call(handle.kernel, scratch, recordBytes);
       if (result === 0) {
         break;
@@ -380,12 +578,18 @@ export function createSupervisorResumeHostBoundary(
         deps.appendWorkerDebugLog(handle, `supervisor-resume:decode-error:${result}`);
         continue;
       }
-      const recordWorker = handleSupervisorResumeRecord(handle, record);
-      if (selectedWorker === null && recordWorker !== null) {
-        selectedWorker = recordWorker;
+      const ownerAsyncStatus = ownerAsyncStatusForResumeRecord(handle, record);
+      if (ownerAsyncStatus !== null) {
+        deferResumeRecord(handle, record, ownerAsyncStatus);
+        break;
+      }
+      const recordSelection = handleSupervisorResumeRecord(handle, record);
+      if (selected === null && recordSelection !== null) {
+        selected = recordSelection;
+        break;
       }
     }
-    return selectedWorker;
+    return selected;
   }
 
   return {

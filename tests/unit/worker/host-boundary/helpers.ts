@@ -58,6 +58,7 @@ export function makeHostBoundaryKernel() {
     thread_process_thread_count: () => 1,
     thread_exit_code: () => 0,
     thread_term_signal: () => 0,
+    thread_vfork_child_pid: () => 0,
     process_current_pid: () => 1,
     process_thread_vm_ptr: (_processVmPtr: number, slot: number) => slot === 0 ? 0x1234 : 0,
     process_fd_ofd_id: () => 0,

@@ -20,6 +20,7 @@ import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-ke
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
 import {
+  invalidateBlockedRpc,
   isBlockedRpcPending,
   isPipeCanonicalEofReady,
   setBlockedRpcGeneration,
@@ -443,6 +444,171 @@ test("resumeWait4ViaKernelWorker does not re-run local wait4 after kernel-worker
   expect(outcome.status).toBe(0);
   expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
   expect(readPublishedKernelRuntimeState(runtimeBridge).heapPtr).toBe(resumedState.heapPtr);
+});
+
+test("resumeWait4ViaKernelWorker ignores a response invalidated by child exit", async () => {
+  const worker = {} as Worker;
+  const runtimeBridge = createRuntimeStateBridge();
+  const baseState = makeKernelState();
+  const resumedState = {
+    ...baseState,
+    heapPtr: baseState.heapPtr + 0x80,
+  };
+  const attachRuntimeState = vi.fn();
+  let resolveRequest!: (value: {
+    type: "wait4-resumed";
+    requestId: number;
+    kernelState: KernelRuntimeState;
+  }) => void;
+  const request = new Promise<{
+    type: "wait4-resumed";
+    requestId: number;
+    kernelState: KernelRuntimeState;
+  }>((resolve) => {
+    resolveRequest = resolve;
+  });
+  const kernel = {
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel_attach_runtime_state: attachRuntimeState,
+    abi_status_wait4: () => 31,
+    thread_status: () => 31,
+  } as unknown as KernelExports;
+  const handle = makeHandle(kernel, runtimeBridge, worker, {
+    kernelState: baseState,
+    kernelWorkerRequest: vi.fn(async () => request),
+  });
+  const blocked = blockedState(0x1234, 31, { pending: true, generation: 4 });
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  } as ThreadWorkerState);
+  const requestPipeStateSync = vi.fn(async () => {});
+  const helpers = createWorkerKernelRpcResumeLifecycleHelpers({
+    appendWorkerDebugLog: () => {},
+    canonicalizeChildLifecycleViaKernelWorker: async () => ({
+      childPid: 2,
+      ppid: 1,
+      nextPid: 3,
+      pgid: 1,
+      sid: 1,
+    }),
+    clearVforkSnapshot: () => {},
+    drainProcessOutput: () => false,
+    enqueueWorker: () => {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleHostBlockedRetryResult: () => {},
+    notifyHostEffectProgress: () => {},
+    processHandles: new Map([[1, handle]]),
+    requestPipeStateSync,
+    threadWorkerStates,
+  });
+
+  const outcomePromise = helpers.resumeWait4ViaKernelWorker(handle, worker, 0x1234);
+  invalidateBlockedRpc(blocked);
+  resolveRequest({ type: "wait4-resumed", requestId: 1, kernelState: resumedState });
+
+  await expect(outcomePromise).resolves.toEqual({ kind: "stale" });
+  expect(attachRuntimeState).not.toHaveBeenCalled();
+  expect(requestPipeStateSync).not.toHaveBeenCalled();
+  expect(handle.kernelState).toEqual(baseState);
+  expect(isBlockedRpcPending(blocked)).toBe(false);
+});
+
+test("resumeWait4ViaKernelWorker preserves an invalidated response that completed wait4", async () => {
+  const worker = {} as Worker;
+  const runtimeBridge = createRuntimeStateBridge();
+  const baseState = makeKernelState();
+  const resumedState = {
+    ...baseState,
+    heapPtr: baseState.heapPtr + 0x80,
+  };
+  let status = 31;
+  let resolveRequest!: (value: {
+    type: "wait4-resumed";
+    requestId: number;
+    kernelState: KernelRuntimeState;
+  }) => void;
+  const request = new Promise<{
+    type: "wait4-resumed";
+    requestId: number;
+    kernelState: KernelRuntimeState;
+  }>((resolve) => {
+    resolveRequest = resolve;
+  });
+  const kernel = {
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel_attach_runtime_state: vi.fn(),
+    kernel_heap_base: () => resumedState.heapBase,
+    kernel_heap_ptr: () => resumedState.heapPtr,
+    kernel_ofd_table_ptr: () => resumedState.ofdTablePtr,
+    kernel_memfs_ptr: () => resumedState.memfsPtr,
+    kernel_memfs_header_bytes: () => resumedState.memfsHeaderBytes,
+    kernel_memfs_inodes_bytes: () => resumedState.memfsInodesBytes,
+    kernel_memfs_first_child_bytes: () => resumedState.memfsFirstChildBytes,
+    kernel_memfs_dir_entries_bytes: () => resumedState.memfsDirEntriesBytes,
+    kernel_memfs_data_bytes: () => resumedState.memfsDataBytes,
+    kernel_mem_state_ptr: () => resumedState.memStatePtr,
+    kernel_epoll_table_ptr: () => resumedState.epollTablePtr,
+    kernel_socket_table_ptr: () => resumedState.socketTablePtr,
+    kernel_socket_used: () => resumedState.socketUsed,
+    kernel_pipe_base: () => resumedState.pipeBase,
+    kernel_pipe_used: () => resumedState.pipeUsed,
+    kernel_net_buf_base: () => resumedState.netBufBase,
+    kernel_net_buf_used: () => resumedState.netBufUsed,
+    kernel_sig_slots_ptr: () => resumedState.sigSlotsPtr,
+    kernel_process_pending_ptr: () => resumedState.processPendingPtr,
+    kernel_process_runtime_state_ptr: () => resumedState.processRuntimeStatePtr,
+    kernel_time_state_ptr: () => resumedState.timeStatePtr,
+    abi_status_wait4: () => 31,
+    thread_status: () => status,
+  } as unknown as KernelExports;
+  const handle = makeHandle(kernel, runtimeBridge, worker, {
+    kernelState: baseState,
+    kernelWorkerRequest: vi.fn(async () => request),
+  });
+  const blocked = blockedState(0x1234, 31, { pending: true, generation: 4 });
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, {
+    vmPtr: 0x1234,
+    initialized: true,
+    waitingInWorkerStatus: null,
+  } as ThreadWorkerState);
+  const helpers = createWorkerKernelRpcResumeLifecycleHelpers({
+    appendWorkerDebugLog: () => {},
+    canonicalizeChildLifecycleViaKernelWorker: async () => ({
+      childPid: 2,
+      ppid: 1,
+      nextPid: 3,
+      pgid: 1,
+      sid: 1,
+    }),
+    clearVforkSnapshot: () => {},
+    drainProcessOutput: () => false,
+    enqueueWorker: () => {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    handleHostBlockedRetryResult: () => {},
+    notifyHostEffectProgress: () => {},
+    processHandles: new Map([[1, handle]]),
+    requestPipeStateSync: async () => {},
+    threadWorkerStates,
+  });
+
+  const outcomePromise = helpers.resumeWait4ViaKernelWorker(handle, worker, 0x1234);
+  invalidateBlockedRpc(blocked);
+  status = 0;
+  resolveRequest({ type: "wait4-resumed", requestId: 1, kernelState: resumedState });
+
+  await expect(outcomePromise).resolves.toEqual({ kind: "completed", status: 0 });
+  expect(handle.kernelState.heapPtr).toBe(resumedState.heapPtr);
+  expect(isBlockedRpcPending(blocked)).toBe(false);
 });
 
 test("resumeWait4ViaKernelWorker skips RPC when local wait4 already resolved", async () => {
@@ -1256,7 +1422,7 @@ test("executeHostBlockedSyscallResume queues the full socket read buffer after o
   expect(handleHostBlockedRetryResult).toHaveBeenCalledWith(handle, worker, 0x1234, 0);
 });
 
-test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownership mismatch after fs resume", async () => {
+test("resumeFsViaKernelWorker skips parent fd integrity during active vfork child fs processing", async () => {
   const worker = {} as Worker;
   const runtimeBridge = createRuntimeStateBridge();
   const processFsRequests: unknown[] = [];
@@ -1268,7 +1434,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
       throw new Error("parent fd integrity should not inspect a transient child-owned process");
     }
   });
-  let currentPid = 1;
+  let currentPid = 5;
 
   const kernel = {
     ...supervisorFsResponseDispositionTestStubs(() => currentPid),
@@ -1326,6 +1492,21 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
       };
     }),
   });
+  const executionState = hostExecutionState(handle);
+  executionState.vforkSnapshot = {
+    vmPtr: 0x1234,
+    childPid: 5,
+    nextPid: 6,
+    pgid: 1,
+    sid: 1,
+    parentPid: 1,
+    parentProcessPtr: 0,
+    parentPc: 0n,
+    parentSp: 0n,
+    parentS11: 0n,
+    inheritedSharedOfdIds: [],
+  };
+  executionState.vforkWorker = worker;
 
   const threadWorkerStates = new WeakMap<Worker, {
     vmPtr: number;
@@ -1363,8 +1544,7 @@ test("resumeFsViaKernelWorker skips memfs sync during active vfork child ownersh
   const outcome = await helpers.resumeFsViaKernelWorker(handle, worker, 0x1234);
 
   expect(processFsRequests).toHaveLength(1);
-  expect(assertProcessStandardFdIntegrity).toHaveBeenCalledTimes(1);
-  expect(assertProcessStandardFdIntegrity).toHaveBeenCalledWith(handle, "resume-fs-before");
+  expect(assertProcessStandardFdIntegrity).not.toHaveBeenCalled();
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
@@ -1711,6 +1891,7 @@ test("resumeFsViaKernelWorker applies fd entries returned by kernel-worker fs pr
     kernel_heap_base: () => 0,
     kernel_heap_ptr: () => 0,
     kernel_ofd_table_ptr: () => 0,
+    kernel_ofd_table_bytes: () => 0,
     kernel_memfs_ptr: () => 0,
     kernel_memfs_header_bytes: () => 0,
     kernel_memfs_inodes_bytes: () => 0,

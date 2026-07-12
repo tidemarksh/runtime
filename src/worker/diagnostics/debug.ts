@@ -56,6 +56,7 @@ import {
 import { kernelShareSharedOfdIdList } from "../kernel-share.js";
 import {
   getThreadGeneration,
+  getThreadOwnerAsyncDetail,
   getThreadOwnerAsyncStatus,
   getThreadOwnerPid,
   getThreadRunningGeneration,
@@ -70,6 +71,7 @@ import {
 } from "../thread-step-payload.js";
 import { pendingChildSpawnRecordCount } from "../pending-child-spawn-state.js";
 import { networkClosedFds } from "../network-socket-state.js";
+import { formatBlockedEpollEntries } from "../host-boundary/blocked-wait-diagnostics.js";
 
 export interface WorkerLogFocus {
   vmPtr: number;
@@ -270,7 +272,8 @@ function readWorkerOwnerState(
   }
   const ownerAsyncStatus = getThreadOwnerAsyncStatus(state);
   if (ownerAsyncStatus !== null) {
-    return `async:${ownerAsyncStatus}`;
+    const ownerAsync = getThreadOwnerAsyncDetail(state);
+    return `async:${ownerAsyncStatus}:${ownerAsync?.detail ?? "unknown"}`;
   }
   if (!isThreadInitialized(state)) {
     return "init";
@@ -328,6 +331,10 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     .join(",");
   const waitingInWorkerStatus = getThreadWaitingInWorkerStatus(state);
   const ownerAsyncStatus = getThreadOwnerAsyncStatus(state);
+  const ownerAsync = getThreadOwnerAsyncDetail(state);
+  const ownerAsyncAgeMs = ownerAsync?.startedAtMs === null || ownerAsync?.startedAtMs === undefined
+    ? "null"
+    : Math.max(0, nowMs - ownerAsync.startedAtMs);
   return [
     `0x${state.vmPtr.toString(16)}`,
     `owner=${ownerState}`,
@@ -337,6 +344,8 @@ function formatWorkerSchedulerDetails(handle: ProcessHandle, worker: Worker, sta
     `init=${isThreadInitialized(state) ? 1 : 0}`,
     `wait=${waitingInWorkerStatus ?? "null"}`,
     `async=${ownerAsyncStatus ?? "null"}`,
+    `asyncDetail=${ownerAsync?.detail ?? "null"}`,
+    `asyncAgeMs=${ownerAsyncAgeMs}`,
     `kernelStatus=${threadStatus ?? "n/a"}`,
     `currentPid=${currentPid ?? "n/a"}`,
     `tid=${tid ?? "n/a"}`,
@@ -1740,7 +1749,13 @@ export function debugRuntimeProcessHandles(
           if (threadVmPtr === 0 && tid === 0 && state === 0) {
             return null;
           }
-          return `${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`;
+          const a0 = threadVmPtr === 0 ? undefined : handle.kernel.thread_a0?.(threadVmPtr);
+          const a7 = threadVmPtr === 0 ? undefined : handle.kernel.thread_a7?.(threadVmPtr);
+          return `${slot}:${tid}/${state}/0x${threadVmPtr.toString(16)}`
+            + `/status=${threadVmPtr === 0 ? "n/a" : handle.kernel.thread_status(threadVmPtr)}`
+            + `/pc=${threadVmPtr === 0 ? "n/a" : `0x${handle.kernel.thread_pc(threadVmPtr).toString(16)}`}`
+            + `/a0=${a0 === undefined ? "n/a" : `0x${a0.toString(16)}`}`
+            + `/a7=${a7 === undefined ? "n/a" : `0x${a7.toString(16)}`}`;
         }).filter(Boolean).join(",");
         const fdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
           const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
@@ -1750,12 +1765,23 @@ export function debugRuntimeProcessHandles(
           return [
             `${fd}->${ofdId}`,
             `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
+            `gen=${handle.kernel.process_fd_generation?.(handle.vmPtr, fd) ?? "n/a"}`,
             `type=${supervisorOfdFdType(handle, ofdId)}`,
             `ino=${supervisorOfdIno(handle, ofdId)}`,
             `host=${supervisorOfdHostFd(handle, ofdId)}`,
             `status=${supervisorOfdStatusFlags(handle, ofdId)}`,
             `offset=${supervisorOfdOffset(handle, ofdId).toString()}`,
           ].join("/");
+        }).filter(Boolean).join(" ");
+        const epollSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
+          const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
+          if (
+            ofdId === 0
+            || supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_epoll()
+          ) {
+            return null;
+          }
+          return formatBlockedEpollEntries(handle, handle.vmPtr, 8, fd);
         }).filter(Boolean).join(" ");
         const networkLogSummary = [
           `inject=${workerDebugLog(handle).filter((entry) => entry.startsWith("net-inject:")).length}`,
@@ -1864,6 +1890,7 @@ export function debugRuntimeProcessHandles(
             .join(" ")}]`,
           `shared_ofds=[${kernelShareSharedOfdIdList(handle).sort((left, right) => left - right).join(",")}]`,
           `fds=[${fdSummary}]`,
+          `epolls=[${epollSummary}]`,
           `worker_net=[${networkLogSummary}]`,
           `network_fds=[${networkFdSummary}]`,
           `network_closed_fds=[${[...networkClosedFds(handle)].sort((left, right) => left - right).join(",")}]`,

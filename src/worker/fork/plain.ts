@@ -41,7 +41,7 @@ import {
   finishPendingChildSpawnRecord,
 } from "../pending-child-spawn-state.js";
 import {
-  isProcessMemfsDirty,
+  processMemfsNeedsPublication,
   setProcessMemfsDirty,
 } from "../process-memfs-state.js";
 import { adoptKernelStateForHandle } from "../sync.js";
@@ -159,7 +159,7 @@ export async function handlePlainFork(
     }
     await deps.requestPipeStateSync(handle, false);
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `plain-fork:parent-pipe-synced:${handle.pid}`);
-    if (isProcessMemfsDirty(handle)) {
+    if (processMemfsNeedsPublication(handle)) {
       await deps.syncForkSharedStateViaKernelWorker(handle, [], {
         cause: { kind: "syscall", nr: -1n, name: "plain-fork-parent-memfs-publication" },
         includeMemfs: true,

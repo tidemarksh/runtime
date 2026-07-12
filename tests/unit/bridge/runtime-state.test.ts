@@ -3,11 +3,22 @@ import {
   createRuntimeStateBridge,
   observeCurrentRuntimeBridgeEpoch,
   publishRuntimeBridgeEpoch,
+  publishRuntimeFdAuthorityEpoch,
+  readRuntimeFdAuthorityEpoch,
   readPublishedRuntimeBridgeEpoch,
   observeRuntimeBridgeEpoch,
   publishKernelRuntimeState,
   readPublishedKernelRuntimeState,
 } from "../../../src/bridge/runtime-state.js";
+test("runtime bridge publishes per-fd authority epochs independently", () => {
+  const bridge = createRuntimeStateBridge();
+
+  expect(readRuntimeFdAuthorityEpoch(bridge, 8)).toBe(0);
+  expect(publishRuntimeFdAuthorityEpoch(bridge, 8)).toBe(1);
+  expect(publishRuntimeFdAuthorityEpoch(bridge, 8)).toBe(2);
+  expect(readRuntimeFdAuthorityEpoch(bridge, 8)).toBe(2);
+  expect(readRuntimeFdAuthorityEpoch(bridge, 7)).toBe(0);
+});
 
 test("runtime bridge epoch publishes monotonically", () => {
   const bridge = createRuntimeStateBridge();

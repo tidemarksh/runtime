@@ -205,10 +205,17 @@ function formatPipeSlotSummary(handle: ProcessHandle, pipeSlot: number): string 
   return `pipe-state=h${head}:t${tail}:ro${readOpen}:wo${writeOpen}:u${unread}:gen${generation}`;
 }
 
-export function formatBlockedEpollEntries(handle: ProcessHandle, vmPtr: number, limit = 8): string {
+export function formatBlockedEpollEntries(
+  handle: ProcessHandle,
+  vmPtr: number,
+  limit = 8,
+  epollFdOverride?: number,
+): string {
   const maxFds = handle.kernel.abi_max_fds();
-  const epollFd = handle.kernel.thread_blocked_fd?.(vmPtr)
-    ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n);
+  const epollFd = epollFdOverride ?? (
+    handle.kernel.thread_blocked_fd?.(vmPtr)
+      ?? Number(handle.kernel.thread_a0?.(vmPtr) ?? -1n)
+  );
   const epollOfdId = (handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0) > 0
     ? handle.kernel.thread_blocked_ofd_id(vmPtr)
     : supervisorProcessOfdForFd(handle, vmPtr, epollFd);

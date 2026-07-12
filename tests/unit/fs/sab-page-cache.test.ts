@@ -22,6 +22,7 @@ const RESIDENT_PAGE_RECORD_VERSION = 0;
 const RESIDENT_PAGE_RECORD_FILE_OBJECT_ID = 4;
 const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
 const RESIDENT_PAGE_RECORD_GENERATION = 20;
+const RESIDENT_PAGE_RECORD_FLAGS = 24;
 
 const fakeSupervisorDirtyPageAuthority: ResidentDirtyPageAuthority = {
   selectPublishSlot(input) {
@@ -128,6 +129,29 @@ test("page-cache imports accept safe Memory64 BigInt pointers", () => {
   expect(Array.from(new Uint8Array(memory.buffer, 32, bytes.length))).toEqual(Array.from(bytes));
   expect(env.tidemark_page_cache_stat(2, 64n)).toBe(1);
   expect(new DataView(memory.buffer).getBigUint64(72, true)).toBe(BigInt(bytes.length));
+});
+
+test("page-cache publish does not claim a resident page slot reserved by another publisher", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES);
+  const u32 = new Uint32Array(sab);
+  const recordBase32 = (DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE) >>> 2;
+  const bytes = new TextEncoder().encode("abcdef");
+
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), 1);
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: bytes.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: 1,
+  });
+
+  expect(publishResidentPage(sab, 2, 0, bytes, { authority: fakeSupervisorDirtyPageAuthority })).toBe(false);
+  expect(Atomics.load(u32, recordBase32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2))).toBe(1);
+  expect(Atomics.load(u32, recordBase32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2))).toBe(0);
+  expect(readResidentFileData(sab, 2, 0, bytes.length)).toBeNull();
 });
 
 test("page-cache flush import delegates dirty resident writeback", () => {
@@ -325,6 +349,59 @@ test("page-cache read rejects resident record identity changes inside the seqloc
     expect(readResidentFileData(sab, 2, 0, initial.length)).toBeNull();
   } finally {
     atomics.load = originalLoad;
+  }
+  expect(mutated).toBe(true);
+});
+
+test("page-cache read rejects resident frame copies when the record changes during copy", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES);
+  const initial = new TextEncoder().encode("safe");
+  const raced = new TextEncoder().encode("bad!");
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: initial.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 44,
+    generation: 7,
+  });
+  expect(publishResidentPage(sab, 2, 0, initial, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
+
+  const u32 = new Uint32Array(sab);
+  const u8 = new Uint8Array(sab);
+  const recordBase32 = (DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE) >>> 2;
+  const versionIndex = recordBase32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2);
+  let mutated = false;
+  const originalSlice = Uint8Array.prototype.slice;
+
+  Uint8Array.prototype.slice = function sliceWithRecordRace(
+    this: Uint8Array,
+    start?: number,
+    end?: number,
+  ): Uint8Array {
+    if (
+      this.buffer === sab
+      && start === DATA_REGION_OFFSET
+      && end === DATA_REGION_OFFSET + initial.length
+      && !mutated
+    ) {
+      mutated = true;
+      const oddVersion = Atomics.load(u32, versionIndex) | 1;
+      Atomics.store(u32, versionIndex, oddVersion);
+      Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2), 45);
+      Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2), 3);
+      Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2), 9);
+      u8.set(raced, DATA_REGION_OFFSET);
+      Atomics.store(u32, versionIndex, oddVersion + 1);
+    }
+    return originalSlice.call(this, start, end);
+  };
+  try {
+    expect(readResidentFileData(sab, 2, 0, initial.length)).toBeNull();
+  } finally {
+    Uint8Array.prototype.slice = originalSlice;
   }
   expect(mutated).toBe(true);
 });

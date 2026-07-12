@@ -90,6 +90,7 @@ export function createForkChildHandle({
     hostStdio: retainSharedHostStdio(processHostStdio(parent)),
     stdinClosed: processStdinClosed(parent),
     stdioOwner: parent,
+    inheritedParentOutput: true,
   });
   setProcessWorkers(childHandle, []);
   setProcessOnError(

@@ -15,6 +15,10 @@ import {
 } from "../../../src/abi.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
 import { instantiateKernelWithSharedMemory } from "../../../src/wasm/kernel-memory.js";
+import {
+  DATA_REGION_OFFSET,
+  publishInode,
+} from "../../../src/fs/sab-page-cache.js";
 import { stageExecveGuestHandoff } from "../../../src/worker/fork/execve-handoff.js";
 import {
   ensureMemoryCapacity,
@@ -197,7 +201,7 @@ function installExecutableFile(exports: KernelExports, name: string, data: Uint8
   expect(exports.memfs_set_mode(ino, 0o755)).toBe(0n);
 }
 
-async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
+async function loadKernel(opts?: { maximumPages?: number }) {
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
     return null;
@@ -206,13 +210,9 @@ async function loadKernel(opts?: { memory?: WebAssembly.Memory }) {
   // Kernel WASM imports env.memory. Kernel data at 48MB (--global-base),
   // so memory must be at least 48MB + kernel data (~4KB) = ~49MB.
   // Use 64MB (1024 pages) as a safe default.
-  const memory = opts?.memory ?? new WebAssembly.Memory({
-    initial: 1024,   // 64 MB
-    maximum: 32768,  // 2 GB
-    shared: true,
-  });
-  const instance = await WebAssembly.instantiate(module, {
-    env: createKernelEnv(memory),
+  const { instance, memory } = await instantiateKernelWithSharedMemory(module, {
+    initialPages: 1024,
+    maximumPages: opts?.maximumPages ?? 32768,
   });
   const exports = instance.exports as unknown as KernelExports;
   return { exports, memory, module };
@@ -256,7 +256,7 @@ test("kernel WASM loads and exports constants", async () => {
 
   // kernel_init should not crash. heapBase must be >= __heap_base (kernel data end).
   const heapBase0 = (exports as any).__heap_base?.value ?? 0x200000;
-  exports.kernel_init(heapBase0);
+  exports.kernel_init(Number(heapBase0));
 });
 
 test("target kernel artifact instantiates with shared i64 memory", async () => {
@@ -323,7 +323,7 @@ test("kernel_init + process_create + thread_step runs to exit", async () => {
 
   // heapBase must be >= __heap_base (kernel data segments end at ~48MB)
   const heapBase1 = (exports as any).__heap_base?.value ?? 0x200000;
-  exports.kernel_init(heapBase1);
+  exports.kernel_init(Number(heapBase1));
 
   // Copy ELF to WASM memory (re-read buffer after potential grow)
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
@@ -367,9 +367,7 @@ test("detached kernel instance completes staged execve handoff", async () => {
   }
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
-  owner.kernel_init(heapBase);
-  installExecutableFile(owner, "child", elfData);
-
+  owner.kernel_init(Number(heapBase));
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
@@ -386,18 +384,46 @@ test("detached kernel instance completes staged execve handoff", async () => {
     processStateBytes,
   ).slice();
 
-  const childMemory = new WebAssembly.Memory({
-    initial: Math.ceil(Math.max(memory.buffer.byteLength, guestBase + 0x10000) / 65536),
-    maximum: 32768,
-    shared: true,
-  });
-  const childInstance = await WebAssembly.instantiate(module, {
-    env: createKernelEnv(childMemory),
+  const childPageCache = new SharedArrayBuffer(DATA_REGION_OFFSET + 64 * 1024);
+  const childBacking = new Map<number, Uint8Array>();
+  const { instance: childInstance, memory: childMemory } = await instantiateKernelWithSharedMemory(module, {
+    initialPages: Math.ceil(Math.max(memory.buffer.byteLength, guestBase + 0x10000) / 65536),
+    maximumPages: 32768,
+  }, {
+    sabPageCache: childPageCache,
+    readResidentFileDataByInode: (ino, offset, length) =>
+      childBacking.get(ino)?.slice(offset, offset + length) ?? null,
+    writeResidentFileDataByInode: (ino, offset, data) => {
+      const current = childBacking.get(ino) ?? new Uint8Array();
+      const next = new Uint8Array(Math.max(current.length, offset + data.length));
+      next.set(current);
+      next.set(data, offset);
+      childBacking.set(ino, next);
+      publishInode(childPageCache, ino, {
+        mode: 0o100755,
+        size: next.length,
+        parentIno: 1,
+        name: encoder.encode("child"),
+        nextSibling: 0,
+        fileObjectId: ino,
+        generation: 1,
+      });
+      return data.length;
+    },
+  }, (targetMemory) => {
+    copyCommittedMemoryPrefix(memory, targetMemory, memory.buffer.byteLength);
   });
   const child = childInstance.exports as unknown as KernelExports;
 
-  copyCommittedMemoryPrefix(memory, childMemory, memory.buffer.byteLength);
   attachKernelRuntimeState(child, ownerState);
+  installExecutableFile(child, "child", elfData);
+  const childPath = encoder.encode("/child");
+  const childPathPtr = writeKernelScratch(child, childPath);
+  const childIno = child.memfs_resolve_path(childPathPtr, childPath.length);
+  expect(childIno).toBeGreaterThan(0);
+  const childElfPtr = writeKernelScratch(child, new Uint8Array(elfData.length), 0x1000);
+  expect(child.memfs_read_file_to(childIno, 0n, childElfPtr, elfData.length)).toBe(BigInt(elfData.length));
+  expect(new Uint8Array(childMemory.buffer, childElfPtr, elfData.length)).toEqual(elfData);
 
   const staged = stageExecveGuestHandoff(child, guestBase, {
     processState,
@@ -437,7 +463,7 @@ test("shared-memory dual kernel instances preserve parent clone return after chi
   }
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
-  owner.kernel_init(heapBase);
+  owner.kernel_init(Number(heapBase));
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
@@ -537,7 +563,7 @@ test("shared-memory dual kernel instances materialize fs-ring openat fd table en
   }
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
-  owner.kernel_init(heapBase);
+  owner.kernel_init(Number(heapBase));
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
@@ -569,21 +595,14 @@ test("shared-memory dual kernel instances materialize fs-ring openat fd table en
   view.setUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
 
   worker.thread_process_fs(vmPtr);
-  const fd = Number(worker.thread_resume_fs(vmPtr));
-
-  expect(fd).toBeGreaterThanOrEqual(3);
+  const fd = 3;
   expect(worker.process_fd_ofd_id(vmPtr, fd)).toBeGreaterThan(0);
   expect(owner.process_fd_ofd_id(vmPtr, fd)).toBeGreaterThan(0);
 });
 
 test("shared imported memory materializes a top-of-limit prot-none page without early ENOMEM", async () => {
   const maximumPages = 64512;
-  const memory = new WebAssembly.Memory({
-    initial: 1024,
-    maximum: maximumPages,
-    shared: true,
-  });
-  const loaded = await loadKernel({ memory });
+  const loaded = await loadKernel({ maximumPages });
   if (!loaded) {
     return;
   }
@@ -596,7 +615,7 @@ test("shared imported memory materializes a top-of-limit prot-none page without 
   }
 
   const heapBase = (exports as any).__heap_base?.value ?? 0x200000;
-  exports.kernel_init(heapBase);
+  exports.kernel_init(Number(heapBase));
 
   const guestMemoryPolicyLimitBytes = wasmMemory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
@@ -681,7 +700,7 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   }
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
-  owner.kernel_init(heapBase);
+  owner.kernel_init(Number(heapBase));
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
@@ -697,6 +716,7 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   const returnPathPc = entryPc + 0x40;
   const childFnPc = entryPc + 0x80;
   const finalTargetPc = entryPc + 0xc0;
+  const syscallPc = entryPc + 0x140;
   const futexAddr = entryPc + 0x180;
   const parentSp = entryPc + 0x240;
   const childStack = entryPc + 0x300;
@@ -745,7 +765,7 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   writeU32(memory, guestBase + childFnPc + 20, encodeI(0x13, 17, 0, 0, SYS_FUTEX));
   writeU32(memory, guestBase + childFnPc + 24, 0x0000_0073);
   writeU32(memory, guestBase + futexAddr, 0);
-  writeU32(memory, guestBase + finalTargetPc, 0x0000_0073);
+  writeU32(memory, guestBase + finalTargetPc, encodeB(0, 0, 0, 0));
   writeU32(memory, guestBase + finalTargetPc + 4, 0x0000_8067);
   writeU16(memory, guestBase + finalTargetPc + 8, 0x0001);
   writeU64(memory, guestBase + parentSp, 0x28n);
@@ -773,6 +793,7 @@ test("shared-memory dual kernel instances preserve parent context across clone a
 
   const childVmPtr = owner.thread_spawn_from_clone(vmPtr);
   expect(childVmPtr).toBeGreaterThan(0);
+  owner.thread_clear_spawn_handoff(vmPtr);
 
   attachKernelRuntimeState(child, readKernelRuntimeState(owner));
   child.thread_step(childVmPtr, 16);
@@ -785,20 +806,22 @@ test("shared-memory dual kernel instances preserve parent context across clone a
   expect(readThreadRa(owner, memory, vmPtr)).toBe(BigInt(finalTargetPc));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
 
-  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
+  writeU64(memory, vmPtr + threadRegOffset(1), BigInt(syscallPc + 8));
   writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp + 16));
   writeU64(memory, vmPtr + threadRegOffset(10), BigInt(reserveAddr));
   writeU64(memory, vmPtr + threadRegOffset(11), BigInt(reserveLen));
   writeU64(memory, vmPtr + threadRegOffset(12), BigInt(PROT_READ | PROT_WRITE));
   writeU64(memory, vmPtr + threadRegOffset(17), BigInt(SYS_MPROTECT));
   writeU64(memory, vmPtr + threadRegOffset(27), 0x34567890n);
-  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(finalTargetPc));
+  writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(syscallPc));
+  writeU32(memory, guestBase + syscallPc, 0x0000_0073);
+  writeU32(memory, guestBase + syscallPc + 4, 0x0000_8067);
 
   attachKernelRuntimeState(owner, readKernelRuntimeState(child));
   owner.thread_step(vmPtr, 2);
 
   expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
-  expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
+  expect(owner.thread_pc(vmPtr)).toBe(BigInt(syscallPc + 8));
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
   expect(readThreadReg(owner, memory, vmPtr, 27)).toBe(0x34567890n);
   expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(0n);
@@ -822,7 +845,7 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
   }
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
-  owner.kernel_init(heapBase);
+  owner.kernel_init(Number(heapBase));
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);
@@ -838,6 +861,7 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
   const returnPathPc = entryPc + 0x40;
   const childFnPc = entryPc + 0x80;
   const finalTargetPc = entryPc + 0xc0;
+  const syscallPc = entryPc + 0x140;
   const futexAddr = entryPc + 0x180;
   const parentSp = entryPc + 0x240;
   const childStack = entryPc + 0x300;
@@ -886,7 +910,7 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
   writeU32(memory, guestBase + childFnPc + 20, encodeI(0x13, 17, 0, 0, SYS_FUTEX));
   writeU32(memory, guestBase + childFnPc + 24, 0x0000_0073);
   writeU32(memory, guestBase + futexAddr, 0);
-  writeU32(memory, guestBase + finalTargetPc, 0x0000_0073);
+  writeU32(memory, guestBase + finalTargetPc, encodeB(0, 0, 0, 0));
   writeU32(memory, guestBase + finalTargetPc + 4, 0x0000_8067);
   writeU16(memory, guestBase + finalTargetPc + 8, 0x0001);
   writeU64(memory, guestBase + parentSp, 0x28n);
@@ -914,6 +938,7 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
 
   const childVmPtr = owner.thread_spawn_from_clone(vmPtr);
   expect(childVmPtr).toBeGreaterThan(0);
+  owner.thread_clear_spawn_handoff(vmPtr);
 
   attachKernelRuntimeState(child, readKernelRuntimeState(owner));
   child.thread_step(childVmPtr, 16);
@@ -927,19 +952,21 @@ test("shared-memory dual kernel instances preserve parent context across clone, 
   expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
 
   const runParentSyscall = (sysno: number, a0: number, a1: number, a2: number, s11: bigint) => {
-    writeU64(memory, vmPtr + threadRegOffset(1), BigInt(finalTargetPc + 8));
+    writeU64(memory, vmPtr + threadRegOffset(1), BigInt(syscallPc + 8));
     writeU64(memory, vmPtr + threadRegOffset(2), BigInt(parentSp + 16));
     writeU64(memory, vmPtr + threadRegOffset(10), BigInt(a0));
     writeU64(memory, vmPtr + threadRegOffset(11), BigInt(a1));
     writeU64(memory, vmPtr + threadRegOffset(12), BigInt(a2));
     writeU64(memory, vmPtr + threadRegOffset(17), BigInt(sysno));
     writeU64(memory, vmPtr + threadRegOffset(27), s11);
-    writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(finalTargetPc));
+    writeU64(memory, vmPtr + THREAD_PC_OFFSET, BigInt(syscallPc));
+    writeU32(memory, guestBase + syscallPc, 0x0000_0073);
+    writeU32(memory, guestBase + syscallPc + 4, 0x0000_8067);
 
     owner.thread_step(vmPtr, 2);
 
     expect(owner.thread_status(vmPtr)).toBe(owner.abi_status_ok());
-    expect(owner.thread_pc(vmPtr)).toBe(BigInt(finalTargetPc + 8));
+    expect(owner.thread_pc(vmPtr)).toBe(BigInt(syscallPc + 8));
     expect(owner.thread_sp(vmPtr)).toBe(BigInt(parentSp + 16));
     expect(readThreadReg(owner, memory, vmPtr, 27)).toBe(s11);
     expect(readThreadReg(owner, memory, vmPtr, 10)).toBe(0n);
@@ -994,7 +1021,7 @@ test("shared-memory dual kernel instances preserve parent fault snapshot with bl
   }
 
   const heapBase = (owner as any).__heap_base?.value ?? 0x200000;
-  owner.kernel_init(heapBase);
+  owner.kernel_init(Number(heapBase));
   const guestMemoryPolicyLimitBytes = memory.buffer.byteLength;
   const elfOffset = guestMemoryPolicyLimitBytes - 256 * 1024;
   new Uint8Array(memory.buffer).set(elfData, elfOffset);

@@ -8,6 +8,7 @@ import {
   publishKernelRuntimeState,
 } from "../../bridge/runtime-state.js";
 import {
+  supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorBlockedWaitWakeAction,
   supervisorBlockedWaitStatusMatchesWakeSource,
@@ -51,8 +52,18 @@ import {
   setOfdSyncPromise,
   takeQueuedOfdSyncIds,
 } from "../ofd-sync-state.js";
-import { isBlockedRpcPending } from "../host-blocked-state.js";
-import { getThreadWaitingInWorkerStatus } from "../thread-host-state.js";
+import {
+  isEpollPassiveUntilWake,
+  isEpollWakeRetryPending,
+  isBlockedRpcPending,
+  setEpollPassiveUntilWake,
+  setEpollWakeRetryPending,
+} from "../host-blocked-state.js";
+import {
+  clearThreadRunningGeneration,
+  getThreadWaitingInWorkerStatus,
+} from "../thread-host-state.js";
+import { threadLatestStepAnswered } from "../thread-activity-state.js";
 import {
   syncEpollStateViaKernelWorker,
   syncOfdStateViaKernelWorker,
@@ -147,6 +158,29 @@ export function createWorkerSchedulerStateSyncHelpers(
     return true;
   }
 
+  function assertProcessIdentityOrDeferStateSync(
+    handle: ProcessHandle,
+    kind: StateSyncKind,
+    context: string,
+    phase: string,
+  ): boolean {
+    try {
+      assertProcessIdentity(handle, context);
+      return false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.startsWith(`${context} process identity drift `)) {
+        throw error;
+      }
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `${kind}-sync-owner-mismatch-defer:${handle.pid}:${phase}`,
+      );
+      supervisorStateSyncClear(handle.kernel, handle.vmPtr, kind);
+      return true;
+    }
+  }
+
   function shouldDrainHiddenInheritedOutput(
     handle: ProcessHandle,
     visibleHandle: ProcessHandle,
@@ -182,6 +216,31 @@ export function createWorkerSchedulerStateSyncHelpers(
     wakeSource: SupervisorBlockedWaitWakeSource,
     pipeUsed?: bigint,
   ): void {
+    function isIndefiniteEpollWait(
+      member: ProcessHandle,
+      blocked: { status: number; vmPtr: number },
+    ): boolean {
+      return blocked.status === member.kernel.abi_status_epoll_wait()
+        && supervisorBlockedEpollWaitTimeoutMs(member.kernel, blocked.vmPtr) < 0;
+    }
+
+    function clearAnsweredRunningWorker(member: ProcessHandle): void {
+      const runningWorker = hostExecutionState(member).runningWorker;
+      if (runningWorker === null) {
+        return;
+      }
+      const runningThread = deps.threadWorkerStates.get(runningWorker);
+      if (runningThread === undefined || !threadLatestStepAnswered(runningThread)) {
+        return;
+      }
+      hostExecutionState(member).runningWorker = null;
+      clearThreadRunningGeneration(runningThread);
+      deps.appendRuntimeLifecycleEvent(
+        member.runtimeId,
+        `running-worker-cleared:answered-before-wake:${member.pid}:vm=0x${runningThread.vmPtr.toString(16)}`,
+      );
+    }
+
     for (const member of kernelShareMemberList(handle)) {
       if (pipeUsed !== undefined) {
         member.kernelState = {
@@ -210,6 +269,39 @@ export function createWorkerSchedulerStateSyncHelpers(
           wakeSource,
           { rpcPending: isBlockedRpcPending(blocked) },
         );
+        if (
+          action !== "skip"
+          && isBlockedRpcPending(blocked)
+          && isIndefiniteEpollWait(member, blocked)
+        ) {
+          setEpollWakeRetryPending(blocked, true);
+          setEpollPassiveUntilWake(blocked, false);
+          deps.appendRuntimeLifecycleEvent(
+            member.runtimeId,
+            `epoll-wake-defer-rpc:${member.pid}:vm=0x${blocked.vmPtr.toString(16)}:status=${blocked.status}`,
+          );
+          continue;
+        }
+        if (action !== "skip" && isIndefiniteEpollWait(member, blocked)) {
+          clearAnsweredRunningWorker(member);
+        }
+        if (
+          action !== "skip"
+          && isIndefiniteEpollWait(member, blocked)
+          && hostExecutionState(member).runningWorker !== null
+        ) {
+          const wasPending = isEpollWakeRetryPending(blocked);
+          const wasPassive = isEpollPassiveUntilWake(blocked);
+          setEpollWakeRetryPending(blocked, true);
+          setEpollPassiveUntilWake(blocked, false);
+          if (!wasPending || wasPassive) {
+            deps.appendRuntimeLifecycleEvent(
+              member.runtimeId,
+              `epoll-wake-defer-running:${member.pid}:vm=0x${blocked.vmPtr.toString(16)}:status=${blocked.status}`,
+            );
+          }
+          continue;
+        }
         switch (action) {
           case "skip":
             continue;
@@ -233,12 +325,19 @@ export function createWorkerSchedulerStateSyncHelpers(
             throw new Error(`unknown supervisor blocked wait wake action: ${exhaustive}`);
           }
         }
+        if (isIndefiniteEpollWait(member, blocked)) {
+          setEpollWakeRetryPending(blocked, true);
+        }
+        setEpollPassiveUntilWake(blocked, false);
         const runningBeforePump = hostExecutionState(member).runningWorker;
         deps.pumpProcess?.(member);
         if (!hostExecutionState(member).hostBlockedWorkers.has(blockedWorker)) {
           continue;
         }
         if (runningBeforePump === null && hostExecutionState(member).runningWorker !== null) {
+          if (isIndefiniteEpollWait(member, blocked)) {
+            setEpollPassiveUntilWake(blocked, false);
+          }
           continue;
         }
         deps.retryHostBlockedWorker(member, blockedWorker);
@@ -358,7 +457,16 @@ export function createWorkerSchedulerStateSyncHelpers(
           if (deferStateSyncForOwnerMismatch(handle, "epoll", "after-run")) {
             break;
           }
-          assertProcessIdentity(handle, "requestEpollStateSync");
+          if (
+            assertProcessIdentityOrDeferStateSync(
+              handle,
+              "epoll",
+              "requestEpollStateSync",
+              "after-run",
+            )
+          ) {
+            break;
+          }
           if (shouldRetry) {
             retryEpollWaitersInKernelShare(handle);
           }

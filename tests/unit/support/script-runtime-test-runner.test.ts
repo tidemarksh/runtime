@@ -31,6 +31,25 @@ test("script runtime gate timeout includes snapshot preparation headroom", () =>
   expect(scriptRuntimeGateTimeoutMs(entry)).toBe(70_000);
 });
 
+test("script runtime gate timeout honors explicit test timeout override", () => {
+  const previous = process.env.TIDEMARK_TEST_SCRIPT_RUNTIME_TEST_TIMEOUT_MS;
+  process.env.TIDEMARK_TEST_SCRIPT_RUNTIME_TEST_TIMEOUT_MS = "90000";
+  try {
+    expect(scriptRuntimeGateTimeoutMs(scriptRuntimeEntry())).toBe(90_000);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.TIDEMARK_TEST_SCRIPT_RUNTIME_TEST_TIMEOUT_MS;
+    } else {
+      process.env.TIDEMARK_TEST_SCRIPT_RUNTIME_TEST_TIMEOUT_MS = previous;
+    }
+  }
+});
+
+test("script runtime entries expose an optional page cache resource profile", () => {
+  expect(scriptRuntimeEntry({ pageCacheDataCapacityBytes: 64 * 1024 * 1024 }).pageCacheDataCapacityBytes)
+    .toBe(64 * 1024 * 1024);
+});
+
 test("script runtime gate result context preserves exit output and debug evidence", () => {
   const context = formatScriptRuntimeGateResultContext(
     scriptRuntimeEntry({ id: "exit-evidence" }),

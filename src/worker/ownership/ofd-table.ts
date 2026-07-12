@@ -21,7 +21,11 @@ import {
   kernelShareMemberList,
   kernelShareSharedOfdIdList,
 } from "../kernel-share.js";
-import { regularFileOfdOffsetSnapshotEntries } from "../regular-file-ofd-offset-state.js";
+import {
+  deleteRegularFileOfdOffsetSnapshot,
+  regularFileOfdOffsetSnapshotEntries,
+  writeRegularFileOfdOffsetState,
+} from "../regular-file-ofd-offset-state.js";
 import { networkOfdSlotWatermarks } from "../network-socket-state.js";
 import { supervisorProcessOfdForFd } from "./fd-table.js";
 import {
@@ -198,15 +202,24 @@ export function restoreRegularFileOffsetsForStep(handle: ProcessHandle): void {
   if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
     return;
   }
-  const view = new DataView(handle.memory.buffer);
   for (const [ofdId, snapshot] of offsets) {
     if (ofdId <= 0 || ofdId >= maxFds) {
+      deleteRegularFileOfdOffsetSnapshot(handle, ofdId);
+      continue;
+    }
+    if (
+      supervisorOfdFdType(handle, ofdId) !== handle.kernel.abi_fd_type_file()
+      || supervisorOfdRefcount(handle, ofdId) <= 0
+      || supervisorOfdHostFd(handle, ofdId) !== snapshot.hostFd
+      || supervisorOfdIno(handle, ofdId) !== snapshot.ino
+    ) {
+      deleteRegularFileOfdOffsetSnapshot(handle, ofdId);
       continue;
     }
     if (restoreAction(ofdId, snapshot.hostFd, snapshot.ino, snapshot.offset) !== applyAction) {
       continue;
     }
-    view.setBigInt64(handle.kernelState.ofdTablePtr + ofdId * slotBytes + OFD_OFFSET_OFFSET, snapshot.offset, true);
+    writeRegularFileOfdOffsetState(handle, ofdId, slotBytes, snapshot.offset);
   }
 }
 

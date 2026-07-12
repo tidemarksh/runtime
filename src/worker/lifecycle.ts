@@ -176,7 +176,43 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
     }
   }
 
+  function adoptExitVmPtrForTeardown(handle: ProcessHandle, exitVmPtr?: number): void {
+    if (!exitVmPtr || exitVmPtr === handle.vmPtr || handle.pid <= 0) {
+      return;
+    }
+    const ownerMatches = handle.kernel.supervisor_process_owner_matches;
+    if (typeof ownerMatches !== "function") {
+      return;
+    }
+    let matches = 0;
+    try {
+      matches = ownerMatches.call(handle.kernel, exitVmPtr, handle.pid);
+    } catch (error) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-vm-adopt-skip:${handle.pid}:from=0x${handle.vmPtr.toString(16)}`
+          + `:to=0x${exitVmPtr.toString(16)}`
+          + `:error=${JSON.stringify(error instanceof Error ? error.message : String(error))}`,
+      );
+      return;
+    }
+    if (matches <= 0) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `exit-vm-adopt-skip:${handle.pid}:from=0x${handle.vmPtr.toString(16)}`
+          + `:to=0x${exitVmPtr.toString(16)}:match=${matches}`,
+      );
+      return;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `exit-vm-adopt:${handle.pid}:from=0x${handle.vmPtr.toString(16)}:to=0x${exitVmPtr.toString(16)}`,
+    );
+    handle.vmPtr = exitVmPtr;
+  }
+
   async function completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void> {
+    adoptExitVmPtrForTeardown(handle, exitVmPtr);
     if (!beginProcessTeardown(handle)) {
       return;
     }

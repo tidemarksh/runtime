@@ -6,6 +6,7 @@ import type {
 import type {
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
+  ThreadWorkerProcessIdentity,
 } from "../../messages.js";
 import type { KernelRpcResumeOutcome } from "../kernel-rpc/outcomes.js";
 
@@ -84,4 +85,4 @@ export interface WorkerSchedulerStateSyncHelpers {
   wakePipeAndEpollWaitersInKernelShare(handle: ProcessHandle, pipeUsed: bigint): void;
 }
 
-export type { ThreadWorkerInbound };
+export type { ThreadWorkerInbound, ThreadWorkerProcessIdentity };

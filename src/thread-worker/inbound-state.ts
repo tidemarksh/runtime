@@ -1,6 +1,10 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
 import { attachKernelRuntimeState } from "../abi.js";
 import { kernelNetBufferCount } from "../kernel-socket-layout.js";
+import {
+  readRuntimeFdAuthorityEpoch,
+  type RuntimeStateBridge,
+} from "../bridge/runtime-state.js";
 import type {
   GuestMemoryWriteSnapshot,
   GuestWriteWatchRegion,
@@ -8,16 +12,19 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
+  ThreadWorkerProcessIdentity,
 } from "../messages.js";
 
 export interface ThreadWorkerInboundStateContext {
   kernelExports: KernelExports;
   guestBase: number;
+  runtimeBridge?: RuntimeStateBridge | null;
 }
 
 export interface ThreadWorkerInboundStatePayload {
   kernelState: KernelRuntimeState;
   targetVmPtr: number;
+  processIdentity?: ThreadWorkerProcessIdentity;
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   socketState?: KernelWorkerSocketStateSnapshot;
@@ -28,6 +35,45 @@ export interface ThreadWorkerInboundStatePayload {
 
 let activeGuestWriteWatchRegions: readonly GuestWriteWatchRegion[] = [];
 const inboundGuestWriteDebug: string[] = [];
+const SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
+
+function applyProcessIdentity(
+  kernelExports: KernelExports,
+  targetVmPtr: number,
+  identity?: ThreadWorkerProcessIdentity,
+): void {
+  if (
+    identity === undefined
+    || targetVmPtr === 0
+    || !Number.isInteger(identity.processPtr)
+    || identity.processPtr <= 0
+    || !Number.isInteger(identity.pid)
+    || identity.pid <= 0
+    || !Number.isInteger(identity.ppid)
+    || identity.ppid < 0
+    || !Number.isInteger(identity.nextPid)
+    || identity.nextPid <= 0
+  ) {
+    return;
+  }
+  if (kernelExports.thread_process_ptr(targetVmPtr) !== identity.processPtr) {
+    return;
+  }
+  const currentPid = kernelExports.process_current_pid(targetVmPtr);
+  const currentPpid = kernelExports.process_current_ppid(targetVmPtr);
+  if (
+    currentPid === identity.pid
+    && currentPpid === identity.ppid
+  ) {
+    return;
+  }
+  kernelExports.process_restore_current_identity(
+    targetVmPtr,
+    identity.pid,
+    identity.ppid,
+    identity.nextPid,
+  );
+}
 
 function toKernelU64(value: number): bigint {
   return BigInt(Math.trunc(value));
@@ -188,6 +234,7 @@ function applySocketState(
 function applyOfdSlots(
   kernelExports: KernelExports,
   kernelState: KernelRuntimeState,
+  protectedOfdId: number,
   ofdSlots?: KernelWorkerOfdSlotSnapshot[],
 ): void {
   if (!ofdSlots || ofdSlots.length === 0) {
@@ -204,6 +251,7 @@ function applyOfdSlots(
     if (
       snapshot.ofdId <= 0
       || snapshot.ofdId >= maxFds
+      || (protectedOfdId > 0 && snapshot.ofdId === protectedOfdId)
       || snapshot.slot.length !== slotBytes
     ) {
       continue;
@@ -212,9 +260,32 @@ function applyOfdSlots(
   }
 }
 
+function ofdIsPipeLike(kernelExports: KernelExports, ofdId: number): boolean {
+  if (ofdId <= 0 || ofdId >= kernelExports.abi_max_fds()) {
+    return false;
+  }
+  const pipeSyncCandidate = kernelExports.supervisor_pipe_sync_ofd_candidate?.(ofdId);
+  if (pipeSyncCandidate !== undefined) {
+    return pipeSyncCandidate === 1;
+  }
+  const fdType = kernelExports.supervisor_ofd_fd_type?.(ofdId)
+    ?? kernelExports.kernel_ofd_fd_type?.(ofdId)
+    ?? 0;
+  const pipeType = kernelExports.abi_fd_type_pipe?.();
+  if (pipeType !== undefined && fdType === pipeType) {
+    return true;
+  }
+  const ptyMaster = kernelExports.abi_fd_type_pty_master?.();
+  const ptySlave = kernelExports.abi_fd_type_pty_slave?.();
+  return (ptyMaster !== undefined && fdType === ptyMaster)
+    || (ptySlave !== undefined && fdType === ptySlave);
+}
+
 function applyFdEntries(
   kernelExports: KernelExports,
   targetVmPtr: number,
+  protectedOfdId: number,
+  runtimeBridge: RuntimeStateBridge | null | undefined,
   fdEntries?: KernelWorkerFdEntrySnapshot[],
 ): void {
   if (!fdEntries || fdEntries.length === 0 || targetVmPtr === 0) {
@@ -222,11 +293,71 @@ function applyFdEntries(
   }
   const maxFds = kernelExports.abi_max_fds();
   for (const entry of fdEntries) {
-    if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
+    if (
+      entry.fd < 0
+      || entry.fd >= maxFds
+      || entry.ofdId < 0
+      || entry.ofdId >= maxFds
+      || (protectedOfdId > 0 && entry.ofdId === protectedOfdId)
+      || (
+        entry.authorityEpoch !== undefined
+        && runtimeBridge !== null
+        && runtimeBridge !== undefined
+        && readRuntimeFdAuthorityEpoch(runtimeBridge, entry.fd) > entry.authorityEpoch
+      )
+    ) {
       continue;
+    }
+    const currentOfdId = kernelExports.supervisor_process_ofd_for_fd?.(targetVmPtr, entry.fd)
+      ?? kernelExports.process_fd_ofd_id(targetVmPtr, entry.fd);
+    const currentFdFlags = kernelExports.supervisor_process_fd_flags_for_fd?.(targetVmPtr, entry.fd)
+      ?? kernelExports.process_fd_flags(targetVmPtr, entry.fd);
+    if (currentOfdId === entry.ofdId && currentFdFlags === entry.fdFlags) {
+      continue;
+    }
+    const currentGeneration = kernelExports.process_fd_generation?.(targetVmPtr, entry.fd);
+    if (
+      entry.generation !== undefined
+      && currentGeneration !== undefined
+      && currentGeneration > entry.generation
+    ) {
+      if (entry.monotonicGeneration === true) {
+        continue;
+      }
+      if (ofdIsPipeLike(kernelExports, currentOfdId)) {
+        continue;
+      }
+      const restoreAction = kernelExports.supervisor_fd_entry_restore_action;
+      const restoreSkip = kernelExports.supervisor_fd_entry_restore_action_skip?.();
+      const regularFileFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_regular_file?.() ?? 0;
+      const epollDependentFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent?.() ?? 0;
+      const restoreFlags = regularFileFlag | epollDependentFlag;
+      if (
+        restoreAction
+        && restoreSkip !== undefined
+        && restoreFlags !== 0
+        && restoreAction(
+          targetVmPtr,
+          entry.fd,
+          entry.ofdId,
+          SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE,
+          restoreFlags,
+        ) === restoreSkip
+      ) {
+        continue;
+      }
     }
     kernelExports.process_set_fd_entry(targetVmPtr, entry.fd, entry.ofdId, entry.fdFlags);
   }
+}
+
+function fdEntriesTargetCurrentProcess(
+  kernelExports: KernelExports,
+  targetVmPtr: number,
+  identity?: ThreadWorkerProcessIdentity,
+): boolean {
+  return identity === undefined
+    || (targetVmPtr !== 0 && kernelExports.thread_process_ptr(targetVmPtr) === identity.processPtr);
 }
 
 export function applyThreadWorkerInboundState(
@@ -234,11 +365,23 @@ export function applyThreadWorkerInboundState(
   payload: ThreadWorkerInboundStatePayload,
 ): void {
   const { kernelExports } = context;
+  const protectedOfdId = payload.targetVmPtr === 0
+    ? 0
+    : (kernelExports.thread_blocked_ofd_id?.(payload.targetVmPtr) ?? 0);
   if (payload.guestWriteWatchRegions !== undefined) {
     activeGuestWriteWatchRegions = payload.guestWriteWatchRegions;
   }
-  applyOfdSlots(kernelExports, payload.kernelState, payload.ofdSlots);
-  applyFdEntries(kernelExports, payload.targetVmPtr, payload.fdEntries);
+  applyProcessIdentity(kernelExports, payload.targetVmPtr, payload.processIdentity);
+  applyOfdSlots(kernelExports, payload.kernelState, protectedOfdId, payload.ofdSlots);
+  if (fdEntriesTargetCurrentProcess(kernelExports, payload.targetVmPtr, payload.processIdentity)) {
+    applyFdEntries(
+      kernelExports,
+      payload.targetVmPtr,
+      protectedOfdId,
+      context.runtimeBridge,
+      payload.fdEntries,
+    );
+  }
   applySocketState(kernelExports, payload.kernelState, payload.socketState);
   applyInboundPipeSlots(kernelExports, payload.kernelState, payload.pipeSlots);
   applyThreadWorkerGuestMemoryWrites(context, payload.guestMemoryWrites);

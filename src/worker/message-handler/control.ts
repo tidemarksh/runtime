@@ -29,10 +29,12 @@ import {
   getThreadReinitCount,
   getThreadOwnerAsyncStatus,
   setThreadInitialized,
+  takeThreadCloneSpawnHostOp,
   takeThreadResumeWorkersOnReady,
   threadResumeWorkersOnReadyCount,
 } from "../thread-host-state.js";
 import { getThreadActivityState } from "../thread-activity-state.js";
+import { completeSupervisorCloneSpawnHostOp } from "../supervisor-host-op.js";
 
 function formatDebugError(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -189,35 +191,70 @@ export function createWorkerControlMessageHandler(deps: WorkerMessageHandlerDeps
         }
         deps.clearVforkSnapshot(handle);
       }
+      const cloneSpawnHostOp = takeThreadCloneSpawnHostOp(thread);
+      if (cloneSpawnHostOp !== null) {
+        const completionStatus = completeSupervisorCloneSpawnHostOp(handle, cloneSpawnHostOp);
+        if (completionStatus < 0) {
+          deps.failProcess(
+            handle,
+            new Error(
+              `clone spawn HostCompletion failed pid=${handle.pid}`
+                + ` tid=${cloneSpawnHostOp.tid}:status=${completionStatus}`,
+            ),
+          );
+          return true;
+        }
+        deps.appendWorkerDebugLog(
+          handle,
+          `clone-spawn-host-complete:parent=0x${cloneSpawnHostOp.parentVmPtr.toString(16)}`
+            + `:child=0x${cloneSpawnHostOp.childVmPtr.toString(16)}`
+            + `:tid=${cloneSpawnHostOp.tid}:seq=${cloneSpawnHostOp.seq.toString()}`,
+        );
+      }
       const resumeWorkersOnReady = takeThreadResumeWorkersOnReady(thread);
       const releaseCloneSpawnResumeWorkers = (): void => {
+        const okStatus = handle.kernel.abi_status_ok();
         for (const resumeWorker of resumeWorkersOnReady) {
           const resumeThread = deps.threadWorkerStates.get(resumeWorker);
+          if (resumeThread === undefined) {
+            continue;
+          }
           const ownerAsyncStatus = getThreadOwnerAsyncStatus(resumeThread);
+          const ownerAsyncIsCloneSpawn = ownerAsyncStatus !== null
+            && supervisorProcessStatusIsCloneSpawn(handle.kernel, ownerAsyncStatus);
+          const currentStatus = handle.kernel.thread_status(resumeThread.vmPtr);
+          const currentOwnerIsHandle = getThreadOwnerPid(resumeThread) === handle.pid;
           if (
-            resumeThread !== undefined
-            && ownerAsyncStatus !== null
-            && supervisorProcessStatusIsCloneSpawn(handle.kernel, ownerAsyncStatus)
+            !ownerAsyncIsCloneSpawn
+            && (!currentOwnerIsHandle || currentStatus !== okStatus)
           ) {
+            continue;
+          }
+          if (ownerAsyncIsCloneSpawn) {
             clearThreadOwnerAsyncStatus(resumeThread);
-            const resumeActivity = getThreadActivityState(resumeThread);
-            const readyThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
-              sequence: resumeActivity.statusCount,
-              vmPtr: resumeThread.vmPtr,
-              pid: handle.pid,
-              tid: handle.kernel.thread_tid?.(resumeThread.vmPtr) ?? 0,
-              status: handle.kernel.abi_status_ok(),
-              syncEffects: 0,
-              blockedReason: 0,
-              pc: handle.kernel.thread_pc(resumeThread.vmPtr),
-              sp: handle.kernel.thread_sp(resumeThread.vmPtr),
-            });
-            if (readyThreadEventResult !== undefined && readyThreadEventResult < 0) {
-              deps.appendWorkerDebugLog(
-                handle,
-                `supervisor-clone-parent-ready-event:submit-error:${readyThreadEventResult}`,
-              );
-            }
+          } else {
+            deps.appendWorkerDebugLog(
+              handle,
+              `supervisor-clone-parent-ready-event:refresh-ok:0x${resumeThread.vmPtr.toString(16)}`,
+            );
+          }
+          const resumeActivity = getThreadActivityState(resumeThread);
+          const readyThreadEventResult = submitSupervisorShadowStatusEvent(handle, {
+            sequence: resumeActivity.statusCount,
+            vmPtr: resumeThread.vmPtr,
+            pid: handle.pid,
+            tid: handle.kernel.thread_tid?.(resumeThread.vmPtr) ?? 0,
+            status: okStatus,
+            syncEffects: 0,
+            blockedReason: 0,
+            pc: handle.kernel.thread_pc(resumeThread.vmPtr),
+            sp: handle.kernel.thread_sp(resumeThread.vmPtr),
+          });
+          if (readyThreadEventResult !== undefined && readyThreadEventResult < 0) {
+            deps.appendWorkerDebugLog(
+              handle,
+              `supervisor-clone-parent-ready-event:submit-error:${readyThreadEventResult}`,
+            );
           }
         }
       };

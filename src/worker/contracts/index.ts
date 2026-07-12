@@ -19,6 +19,7 @@ export type {
   ThreadWorkerInbound,
   ThreadWorkerMemoryPreserveRange,
   ThreadWorkerOutbound,
+  ThreadWorkerProcessIdentity,
   ThreadWorkerPreparedMessage,
   ThreadWorkerReadyMessage,
   ThreadWorkerStatusMessage,

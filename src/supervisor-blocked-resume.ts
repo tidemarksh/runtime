@@ -138,7 +138,8 @@ export interface SupervisorWorkerSleepStatusActions {
 export type SupervisorBlockedStaleRetryResultAction =
   | "none"
   | "handle-current-result"
-  | "handle-current-result-wait4";
+  | "handle-current-result-wait4"
+  | "resume-wait4";
 
 export type SupervisorBlockedRpcPipeSyncAction =
   | "not-pipe"
@@ -280,6 +281,7 @@ type SupervisorNumberConstExportName =
   | "supervisor_blocked_stale_retry_result_action_none"
   | "supervisor_blocked_stale_retry_result_action_handle_current_result"
   | "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4"
+  | "supervisor_blocked_stale_retry_result_action_resume_wait4"
   | "supervisor_blocked_rpc_pipe_sync_action_not_pipe"
   | "supervisor_blocked_rpc_pipe_sync_action_none"
   | "supervisor_blocked_rpc_pipe_sync_action_sync_socket"
@@ -2126,6 +2128,11 @@ function supervisorBlockedStaleRetryResultActionValue(
         kernel,
         "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4",
       );
+    case "resume-wait4":
+      return readSupervisorNumberConst(
+        kernel,
+        "supervisor_blocked_stale_retry_result_action_resume_wait4",
+      );
     default: {
       const exhaustive: never = action;
       return exhaustive;
@@ -2141,6 +2148,7 @@ function normalizeSupervisorBlockedStaleRetryResultAction(
     "none",
     "handle-current-result",
     "handle-current-result-wait4",
+    "resume-wait4",
   ];
   for (const action of actions) {
     if (result === supervisorBlockedStaleRetryResultActionValue(kernel, action)) {

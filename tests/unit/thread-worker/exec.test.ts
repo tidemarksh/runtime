@@ -107,7 +107,7 @@ test("stepThread does not reroute OK through the blocked-status handlers", () =>
   expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
 
-test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () => {
+test("stepThread returns an already-woken FUTEX_WAIT to the owner before another guest step", () => {
   const clearSyscallTrace = vi.fn();
   const threadStep = vi.fn();
   const completeFutexWait = vi.fn(() => {
@@ -150,10 +150,9 @@ test("stepThread resolves FUTEX_WAIT in-worker before reporting completion", () 
     reattachPublishedKernelRuntimeState: () => {},
   }, 20_000);
 
-  expect(clearSyscallTrace).toHaveBeenCalledTimes(2);
-  expect(threadStep).toHaveBeenCalledTimes(2);
-  expect(threadStep).toHaveBeenNthCalledWith(1, 0x1234, 20_000);
-  expect(threadStep).toHaveBeenNthCalledWith(2, 0x1234, 20_000);
+  expect(clearSyscallTrace).toHaveBeenCalledTimes(1);
+  expect(threadStep).toHaveBeenCalledTimes(1);
+  expect(threadStep).toHaveBeenCalledWith(0x1234, 20_000);
   expect(completeFutexWait).toHaveBeenCalledTimes(1);
   expect(completeFutexWait).toHaveBeenCalledWith(0x1234, 1);
   expect(postStatus).toHaveBeenCalledTimes(1);

@@ -157,6 +157,7 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
+    kernel_ofd_table_bytes: () => 256 * 32,
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
     kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
     kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,

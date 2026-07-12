@@ -1,11 +1,19 @@
 import type { HostBlockedWorkerState, ProcessHandle, VforkSnapshot } from "./types.js";
 
+export interface RegularFileFsInFlightMarker {
+  worker: Worker;
+  vmPtr: number;
+  fd: number;
+  ofdId: number;
+}
+
 export interface HostExecutionState {
   vforkReadyWorkers: Worker[];
   runningWorker: Worker | null;
   hostBlockedWorkers: Map<Worker, HostBlockedWorkerState>;
   vforkSnapshot: VforkSnapshot | null;
   vforkWorker: Worker | null;
+  regularFileFsInFlight: RegularFileFsInFlightMarker | null;
 }
 
 const hostExecutionStates = new WeakMap<ProcessHandle, HostExecutionState>();
@@ -43,12 +51,14 @@ export function hostExecutionState(handle: ProcessHandle): HostExecutionState {
       || "hostBlockedWorkers" in legacy
       || "vforkSnapshot" in legacy
       || "vforkWorker" in legacy
+      || "regularFileFsInFlight" in legacy
     ) {
       legacy.vforkReadyWorkers ??= [];
       legacy.runningWorker ??= null;
       legacy.hostBlockedWorkers ??= new Map();
       legacy.vforkSnapshot ??= null;
       legacy.vforkWorker ??= null;
+      legacy.regularFileFsInFlight ??= null;
       state = legacy as HostExecutionState;
     } else {
       state = {
@@ -57,9 +67,25 @@ export function hostExecutionState(handle: ProcessHandle): HostExecutionState {
         hostBlockedWorkers: new Map(),
         vforkSnapshot: null,
         vforkWorker: null,
+        regularFileFsInFlight: null,
       };
     }
     storeHostExecutionState(handle, state);
   }
   return state;
+}
+
+export function markRegularFileFsInFlight(
+  handle: ProcessHandle,
+  marker: RegularFileFsInFlightMarker | null,
+): () => void {
+  if (marker === null) {
+    return () => {};
+  }
+  hostExecutionState(handle).regularFileFsInFlight = marker;
+  return () => {
+    if (hostExecutionState(handle).regularFileFsInFlight === marker) {
+      hostExecutionState(handle).regularFileFsInFlight = null;
+    }
+  };
 }

@@ -110,6 +110,7 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
         continue;
       }
       if (shouldPreserveProcessOwnedWorker(handle, thread.vmPtr)) {
+        deps.clearBlockedWorker(handle, worker);
         deps.appendWorkerDebugLog(
           handle,
           `prune-skip-process-owned:0x${thread.vmPtr.toString(16)}:${handle.kernel.thread_status(thread.vmPtr)}`,

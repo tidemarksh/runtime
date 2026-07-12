@@ -5,6 +5,7 @@ import {
   logSkip,
   readKernelWasm,
   runtimeDebugSummary,
+  testStageDebug,
 } from "./runtime-workload.js";
 import {
   type SnapshotBuildOptions,
@@ -26,6 +27,7 @@ export interface ScriptRuntimeEntry {
   timeoutMs: number;
   stdin?: "pipe" | "closed";
   guestMemoryPolicyLimitBytes: number;
+  pageCacheDataCapacityBytes?: number;
   hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   expectedSubstrings: readonly string[];
@@ -46,6 +48,7 @@ export type ScriptRuntimeFailureBucket =
 
 const SCRIPT_RUNTIME_TIMEOUT_ENV = "TIDEMARK_TEST_SCRIPT_RUNTIME_TIMEOUT_MS";
 const SCRIPT_RUNTIME_TEST_TIMEOUT_ENV = "TIDEMARK_TEST_SCRIPT_RUNTIME_TEST_TIMEOUT_MS";
+const SCRIPT_RUNTIME_KEEP_TIMEOUT_REF_ENV = "TIDEMARK_TEST_SCRIPT_RUNTIME_KEEP_TIMEOUT_REF";
 
 function readPositiveIntegerEnv(name: string): number | null {
   const raw = (globalThis as typeof globalThis & {
@@ -53,6 +56,12 @@ function readPositiveIntegerEnv(name: string): number | null {
   }).process?.env?.[name];
   const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function keepScriptRuntimeTimeoutRef(): boolean {
+  return ((globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.[SCRIPT_RUNTIME_KEEP_TIMEOUT_REF_ENV] ?? "") === "1";
 }
 
 export function resolveScriptRuntimeTimeoutMs(entry: ScriptRuntimeEntry): number {
@@ -72,6 +81,38 @@ export function resolveScriptRuntimeTestTimeoutMs(
   return Math.max(20_000, timeoutMs + marginMs);
 }
 
+function compactScriptRuntimeExecutionStats(runtime: RuntimeInstance): string {
+  return JSON.stringify(runtime.debugExecutionStats().map((proc) => ({
+    pid: proc.pid,
+    cmd: proc.cmd.split(/\s+/).slice(0, 3).join(" ").slice(0, 96),
+    running: proc.running,
+    memoryBytes: proc.memoryBytes,
+    vforkReadyWorkers: proc.vforkReadyWorkers,
+    hostBlockedWorkers: proc.hostBlockedWorkers,
+    transferDebugStats: proc.transferDebugStats,
+    cpuDebugStats: proc.cpuDebugStats,
+    syscallDebugStats: proc.syscallDebugStats,
+    workers: proc.workers.map((worker) => ({
+      ownerState: worker.ownerState,
+      stepCount: worker.stepCount,
+      totalStepBudget: worker.totalStepBudget,
+      totalStepWallMs: worker.totalStepWallMs,
+      maxStepWallMs: worker.maxStepWallMs,
+      lastStepDurationMs: worker.lastStepDurationMs,
+      lastStatusName: worker.lastStatusName,
+      lastStepPc: worker.lastStepPc,
+      hotStepPcs: worker.hotStepPcs.slice(0, 5),
+      statusCountsByName: Object.fromEntries(
+        Object.entries(worker.statusCountsByName)
+          .filter(([, count]) => count !== 0),
+      ),
+      threadStepEntry: worker.threadStepEntry,
+      threadStepStatus: worker.threadStepStatus,
+      threadStepPhase: worker.threadStepPhase,
+    })),
+  })));
+}
+
 export function buildScriptRuntimeSnapshot(entry: ScriptRuntimeEntry) {
   const result = buildSnapshotFromSources(entry.snapshotSources, {
     missingLabel: "script runtime artifact",
@@ -85,30 +126,41 @@ export function buildScriptRuntimeSnapshot(entry: ScriptRuntimeEntry) {
 export async function prepareScriptRuntime(
   entry: ScriptRuntimeEntry,
 ): Promise<{ runtime: RuntimeInstance; elfBytes: Uint8Array } | null> {
+  testStageDebug(`script-runtime:prepare:start id=${entry.id}`);
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
+    testStageDebug(`script-runtime:prepare:skip-missing-wasm id=${entry.id}`);
     return null;
   }
   if (!existsSync(entry.hostExecutablePath)) {
+    testStageDebug(`script-runtime:prepare:skip-missing-executable id=${entry.id}`);
     return logSkip(`missing script runtime executable: ${entry.hostExecutablePath}`);
   }
+  testStageDebug(`script-runtime:prepare:runtime-create:start id=${entry.id}`);
   const runtime = await Runtime.create({
     wasmBytes,
     guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
+    pageCacheDataCapacityBytes: entry.pageCacheDataCapacityBytes,
   });
+  testStageDebug(`script-runtime:prepare:runtime-create:done id=${entry.id}`);
   try {
+    testStageDebug(`script-runtime:prepare:snapshot:start id=${entry.id}`);
     const applied = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {
       missingLabel: "script runtime artifact",
       hostFileBackingMode: entry.hostFileBackingMode,
     });
     if (applied.skipReason) {
       runtime.destroy();
+      testStageDebug(`script-runtime:prepare:snapshot:skip id=${entry.id}`);
       return logSkip(applied.skipReason);
     }
+    testStageDebug(`script-runtime:prepare:snapshot:done id=${entry.id}`);
   } catch (error) {
     runtime.destroy();
+    testStageDebug(`script-runtime:prepare:snapshot:error id=${entry.id}`);
     throw error;
   }
+  testStageDebug(`script-runtime:prepare:read-elf id=${entry.id}`);
 
   return {
     runtime,
@@ -121,12 +173,14 @@ export async function runScriptRuntimeEntry(
   entry: ScriptRuntimeEntry,
   elfBytes: Uint8Array,
 ): Promise<ScriptRuntimeResult> {
+  testStageDebug(`script-runtime:spawn:start id=${entry.id}`);
   const proc = await runtime.spawn(
     new Uint8Array(elfBytes),
     [...entry.argv],
     [...entry.env],
     { stdin: entry.stdin ?? "closed" },
   );
+  testStageDebug(`script-runtime:spawn:done id=${entry.id}`);
   let output = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   const timeoutMs = resolveScriptRuntimeTimeoutMs(entry);
@@ -139,7 +193,12 @@ export async function runScriptRuntimeEntry(
       proc.waitForExit(),
       new Promise<never>((_resolve, reject) => {
         timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
-        if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
+        if (
+          !keepScriptRuntimeTimeoutRef()
+          && typeof timeoutId === "object"
+          && timeoutId !== null
+          && "unref" in timeoutId
+        ) {
           timeoutId.unref();
         }
       }),
@@ -148,7 +207,8 @@ export async function runScriptRuntimeEntry(
   } catch (error) {
     const summary = await runtimeDebugSummary(runtime);
     const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    throw new Error(`${detail}\n${summary}`);
+    const execution = compactScriptRuntimeExecutionStats(runtime);
+    throw new Error(`${detail}\nexecution=${execution}\n${summary}`);
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);

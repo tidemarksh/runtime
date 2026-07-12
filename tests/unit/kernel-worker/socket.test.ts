@@ -37,6 +37,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
   const exports = {
     memory,
     abi_max_fds: () => 256,
+    abi_max_sockets: () => 64,
     abi_max_threads: () => 64,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
@@ -148,7 +149,7 @@ function seedSocketState(
 }
 
 function netBufferSlotBytes(exports: TestKernelExports): number {
-  return Math.floor(exports.kernel_net_buf_pool_bytes() / 64);
+  return Math.floor(exports.kernel_net_buf_pool_bytes() / (exports.abi_max_sockets() * 2));
 }
 
 function seedNetBuffer(
@@ -256,15 +257,15 @@ test("kernel-worker socket sync does not rewind a process-local net buffer consu
   seedSocketState(parentExports, parentMemory, 1, 1n, 0xaa, 0xab);
   seedSocketState(childExports, childMemory, 1, 1n, 0xbb, 0xbc);
   seedNetBuffer(parentExports, parentMemory, 0, { head: 0, tail: 4096, marker: 0x11 });
-  seedNetBuffer(childExports, childMemory, 0, { head: 8192, tail: 8192, marker: 0x22 });
+  seedNetBuffer(childExports, childMemory, 0, { head: 3000, tail: 3000, marker: 0x22 });
 
   sharedStateSync.syncSocketState(1, readKernelRuntimeState(parentExports));
 
   const state = makeKernelState();
   const childSlotBase = state.netBufBase;
   const childView = new DataView(childMemory.buffer);
-  expect(childView.getUint32(childSlotBase, true)).toBe(8192);
-  expect(childView.getUint32(childSlotBase + 4, true)).toBe(8192);
+  expect(childView.getUint32(childSlotBase, true)).toBe(3000);
+  expect(childView.getUint32(childSlotBase + 4, true)).toBe(4096);
   expect(new Uint8Array(childMemory.buffer)[childSlotBase + 16]).toBe(0x22);
 });
 

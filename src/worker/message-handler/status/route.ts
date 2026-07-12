@@ -11,6 +11,7 @@ import {
 import {
   applyThreadPipeSlots,
 } from "../../ownership/pipe-control.js";
+import { reconcileKernelSharePipeControl } from "../../kernel-share/pipe.js";
 import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { adoptKernelStateForHandle } from "../../sync.js";
 import {
@@ -36,6 +37,8 @@ import {
 import {
   hasSuspiciousLowStateDebug,
   readLocalProcessPid,
+  statusProcessBelongsToHandle,
+  statusProcessIncarnationMatches,
 } from "./route-state.js";
 import {
   processLastDebugMessage,
@@ -54,7 +57,10 @@ import {
   applyThreadSocketState,
 } from "./socket-state.js";
 import { handleOwnerAsyncStatusReturn } from "./owner-async.js";
-import { applyStatusFdEntries } from "./fd-entries.js";
+import {
+  applyStatusFdEntries,
+  markStatusFdChangesForNextStep,
+} from "./fd-entries.js";
 import {
   clearThreadRunningGeneration,
   getThreadGeneration,
@@ -68,6 +74,11 @@ import {
   applyStatusEventfdTraceOffset,
   applyStatusOfdSlots,
 } from "./ofd-slots.js";
+import {
+  canonicalFdTableVmPtrForThread,
+  supervisorProcessFdFlagsForFd,
+  supervisorProcessOfdForFd,
+} from "../../ownership/fd-table.js";
 import { resolveWorkerMessageHandlerSyncEffects } from "../sync-effects.js";
 import {
   readSupervisorFaultExitDecision,
@@ -79,6 +90,11 @@ import {
   supervisorProcessStatusIsExecveSpawn,
   supervisorProcessStatusRouteActions,
 } from "../../supervisor-status.js";
+import { clearSupervisorHostTimer } from "../../supervisor-host-op.js";
+import {
+  takeChangedFdEntriesWithBaselineSincePosted,
+  takeChangedOfdSlotsWithBaselineSincePosted,
+} from "../../thread-step-payload.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -86,6 +102,9 @@ const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
 const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_LIFECYCLE_DEBUG ?? "") === "1";
+const FD_CONTROL_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FD_CONTROL_DEBUG ?? "") === "1";
 
 interface ThreadRegisterSnapshot {
   vmPtr: number;
@@ -107,6 +126,56 @@ function appendFsStatusRouteTiming(
   const event = `fs-status-route-${phase}:${handle.pid}:0x${vmPtr.toString(16)}:t=${Date.now()}${detail}`;
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
   console.error(`[tidemark-fs] ${event}`);
+}
+
+function statusRouteFdTraceIsRelevant(msg: ThreadWorkerStatusMessage): boolean {
+  return msg.syscallNr === 19n
+    || msg.syscallNr === 20n
+    || msg.syscallNr === 21n
+    || msg.syscallNr === 94n
+    || (msg.fdEntries ?? []).some((entry) => entry.fd >= 3 && entry.fd <= 5 && entry.ofdId !== 0);
+}
+
+function formatMessageFdFocus(msg: ThreadWorkerStatusMessage): string {
+  return [3, 4, 5].map((fd) => {
+    const entry = msg.fdEntries?.find((candidate) => candidate.fd === fd);
+    return entry === undefined
+      ? `${fd}=missing`
+      : `${fd}=${entry.ofdId}/fl${entry.fdFlags}/gen${entry.generation ?? "n/a"}`;
+  }).join(",");
+}
+
+function formatKernelFdFocus(handle: ProcessHandle, vmPtr: number): string {
+  return [3, 4, 5].map((fd) => {
+    const generation = handle.kernel.process_fd_generation?.(vmPtr, fd);
+    return `${fd}=${supervisorProcessOfdForFd(handle, vmPtr, fd)}`
+      + `/fl${supervisorProcessFdFlagsForFd(handle, vmPtr, fd)}`
+      + `/gen${generation ?? "n/a"}`;
+  }).join(",");
+}
+
+function appendStatusRouteFdDebug(
+  phase: string,
+  handle: ProcessHandle,
+  msg: ThreadWorkerStatusMessage,
+  detail = "",
+): void {
+  if (!FD_CONTROL_DEBUG_ENABLED || !statusRouteFdTraceIsRelevant(msg)) {
+    return;
+  }
+  const canonicalVmPtr = canonicalFdTableVmPtrForThread(handle, msg.vmPtr);
+  const canonicalSuffix = canonicalVmPtr === msg.vmPtr
+    ? ""
+    : `:canonical=0x${canonicalVmPtr.toString(16)}:canonicalLocal=${formatKernelFdFocus(handle, canonicalVmPtr)}`;
+  console.error(
+    "[tidemark-fd-route] "
+      + `phase=${phase}:handle=${handle.pid}:vm=0x${msg.vmPtr.toString(16)}`
+      + `:status=${msg.status}:syscall=${msg.syscallNr?.toString() ?? "n/a"}`
+      + detail
+      + `:msg=${formatMessageFdFocus(msg)}`
+      + `:local=${formatKernelFdFocus(handle, msg.vmPtr)}`
+      + canonicalSuffix,
+  );
 }
 
 export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps) {
@@ -158,6 +227,10 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       return;
     }
     const status = msg.status;
+    const pendingWaitingStatus = getThreadWaitingInWorkerStatus(thread);
+    if (pendingWaitingStatus !== null && status !== pendingWaitingStatus) {
+      clearSupervisorHostTimer(handle, thread.vmPtr);
+    }
     const fsStatus = handle.kernel.abi_status_fs?.();
     const traceFsStatus = fsStatus !== undefined && status === fsStatus;
     const traceFsStatusTiming = traceFsStatus && FS_LIFECYCLE_DEBUG_ENABLED;
@@ -165,23 +238,68 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       appendFsStatusRouteTiming(deps, handle, "entry", msg.vmPtr);
     }
     const processPidField = readProcessPidField(msg.debug);
+    const trustedProcessPidField = processPidField !== null && processPidField > 0
+      ? processPidField
+      : null;
     const localProcessPid = readLocalProcessPid(handle, msg.vmPtr);
-    const transientProcessOwnerMismatch = processPidField !== null
-      ? processPidField !== handle.pid
-      : localProcessPid !== null && localProcessPid !== handle.pid;
+    const localProcessPtr = handle.kernel.thread_process_ptr?.(msg.vmPtr) ?? 0;
+    const statusProcessIdentityMatches = statusProcessIncarnationMatches(
+      msg.processPtr,
+      msg.processPid,
+      localProcessPtr,
+      localProcessPid,
+    );
+    const transientProcessOwnerMismatch = !statusProcessBelongsToHandle(
+      handle.pid,
+      localProcessPid,
+      trustedProcessPidField,
+    );
     const activeVforkWorker = hostExecutionState(handle).vforkSnapshot !== null && hostExecutionState(handle).vforkWorker === worker;
     const statusBelongsToHandle = !transientProcessOwnerMismatch || activeVforkWorker;
     const faultStatus = handle.kernel.abi_status_fault?.();
     const statusStateBelongsToHandle = statusBelongsToHandle
+      && statusProcessIdentityMatches
       && !(activeVforkWorker && status === faultStatus);
+    appendStatusRouteFdDebug(
+      "pre-owner-async",
+      handle,
+      msg,
+      `:processField=${processPidField ?? "n/a"}`
+        + `:trustedField=${trustedProcessPidField ?? "n/a"}`
+        + `:localPid=${localProcessPid ?? "n/a"}`
+        + `:msgProcess=0x${(msg.processPtr ?? 0).toString(16)}/${msg.processPid ?? "n/a"}`
+        + `:localProcess=0x${localProcessPtr.toString(16)}`
+        + `:belongs=${statusStateBelongsToHandle ? 1 : 0}`
+        + `:ownerAsync=${getThreadOwnerAsyncStatus(thread) ?? "null"}`,
+    );
+    const fdChanges = takeChangedFdEntriesWithBaselineSincePosted(thread, msg.fdEntries);
+    const authoritativeFds = fdChanges?.authoritativeFds;
+    const postedFdEntries = fdChanges?.postedFdEntries;
+    const ofdChanges = takeChangedOfdSlotsWithBaselineSincePosted(thread, msg.ofdSlots);
+    const authoritativeOfdIds = ofdChanges?.authoritativeOfdIds;
+    const postedOfdSlots = ofdChanges?.postedOfdSlots;
     if (handleOwnerAsyncStatusReturn({
       handle,
       worker,
       thread,
       msg,
       statusBelongsToHandle: statusStateBelongsToHandle,
+      authoritativeFds,
+      postedFdEntries,
+      authoritativeOfdIds,
+      postedOfdSlots,
       deps,
     })) {
+      appendStatusRouteFdDebug(
+        "owner-async-return",
+        handle,
+        msg,
+        `:processField=${processPidField ?? "n/a"}`
+          + `:trustedField=${trustedProcessPidField ?? "n/a"}`
+          + `:localPid=${localProcessPid ?? "n/a"}`
+          + `:belongs=${statusStateBelongsToHandle ? 1 : 0}`
+          + `:ownerAsync=${getThreadOwnerAsyncStatus(thread) ?? "null"}`,
+      );
       if (CLONE_SPAWN_DEBUG_ENABLED && supervisorProcessStatusIsCloneSpawn(handle.kernel, status)) {
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
@@ -203,13 +321,25 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           + `:field=${processPidField ?? "n/a"}`
           + `:local=${localProcessPid ?? "n/a"}`
           + `:kind=${handle.kernel.thread_spawn_kind?.(msg.vmPtr) ?? -1}`
-          + `:child=${handle.kernel.thread_spawn_child_pid?.(msg.vmPtr) ?? -1}`,
+          + `:child=${handle.kernel.thread_spawn_child_pid?.(msg.vmPtr) ?? -1}`
+          + `:pc=${handle.kernel.thread_pc?.(msg.vmPtr)?.toString(16) ?? "n/a"}`
+          + `:a0=${handle.kernel.thread_a0?.(msg.vmPtr)?.toString() ?? "n/a"}`
+          + `:a7=${handle.kernel.thread_a7?.(msg.vmPtr)?.toString() ?? "n/a"}`,
       );
     }
     const routeActions = supervisorProcessStatusRouteActions(handle.kernel, status, {
       statusStateBelongsToHandle,
       kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
     });
+    appendStatusRouteFdDebug(
+      "route-actions",
+      handle,
+      msg,
+      `:belongs=${statusStateBelongsToHandle ? 1 : 0}`
+        + `:applyFd=${routeActions.applyStatusFdState ? 1 : 0}`
+        + `:adopt=${routeActions.adoptThreadKernelState ? 1 : 0}`
+        + `:fsWrites=${routeActions.applyFsMemoryWrites ? 1 : 0}`,
+    );
     const isRunningWorker = hostExecutionState(handle).runningWorker === worker;
     const shouldApplyDetachedEventfdTraceOffset = (
       !routeActions.applyStatusFdState
@@ -235,7 +365,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           + `:ret=${msg.fdTraceResult?.toString() ?? "n/a"}`,
       );
     }
-    const trustRegularFileOfdOffsets = traceFsStatus || isRunningWorker;
     if (traceFsStatusTiming) {
       appendFsStatusRouteTiming(
         deps,
@@ -249,9 +378,41 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
     if (routeActions.applyStatusFdState) {
-      applyStatusOfdSlots(handle, msg, { trustRegularFileOfdOffsets });
-      applyStatusFdEntries(handle, msg);
+      const changedRegularFileOfdFds = applyStatusOfdSlots(handle, msg, {
+        authoritativeOfdIds,
+        postedFdEntries,
+        postedOfdSlots,
+      });
+      markStatusFdChangesForNextStep(
+        handle,
+        deps.threadWorkerStates,
+        [...new Set([
+          ...changedRegularFileOfdFds,
+          ...applyStatusFdEntries(handle, msg, authoritativeFds, postedFdEntries, postedOfdSlots),
+        ])],
+      );
       pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
+      appendStatusRouteFdDebug("after-status-fd", handle, msg);
+    }
+    if (
+      msg.blockedSyscallNr !== undefined
+      && msg.blockedSyscallArgs !== undefined
+      && (handle.kernel.thread_blocked_syscall_nr?.(thread.vmPtr) ?? 0n) === 0n
+    ) {
+      const restoreBlockedState = handle.kernel.thread_restore_blocked_syscall_state;
+      if (!restoreBlockedState) {
+        throw new Error("kernel supervisor ABI missing thread_restore_blocked_syscall_state");
+      }
+      const restoreResult = restoreBlockedState(
+        thread.vmPtr,
+        msg.blockedFd ?? Number(msg.blockedSyscallArgs[0]),
+        msg.blockedHasOfdPin === true ? 1 : 0,
+        msg.blockedSyscallNr,
+        ...msg.blockedSyscallArgs,
+      );
+      if (restoreResult < 0) {
+        throw new Error(`kernel supervisor rejected blocked syscall state restore: ${restoreResult}`);
+      }
     }
     if (traceFsStatusTiming) {
       appendFsStatusRouteTiming(
@@ -357,10 +518,10 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         `status_debug:0x${thread.vmPtr.toString(16)}:${msg.debug}`,
       );
     }
-    if (processPidField !== null && processPidField !== handle.pid) {
+    if (trustedProcessPidField !== null && trustedProcessPidField !== handle.pid) {
       deps.appendWorkerDebugLog(
         handle,
-        `status_debug:0x${thread.vmPtr.toString(16)}:handle_pid=${handle.pid}:process_pid_field=${processPidField}`,
+        `status_debug:0x${thread.vmPtr.toString(16)}:handle_pid=${handle.pid}:process_pid_field=${trustedProcessPidField}`,
       );
     }
     const writeDebugSuffix = formatCompactDebugSuffix(msg.debug, WRITE_DEBUG_KEYS);
@@ -400,6 +561,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       && (msg.pipeSlots?.length ?? 0) > 0
       && !(activeVforkWorker && status === faultStatus)
     );
+    let appliedPipeControlSnapshot = false;
     if (routeActions.adoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -415,9 +577,22 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
       );
-      applyStatusOfdSlots(handle, msg, { trustRegularFileOfdOffsets });
-      applyStatusFdEntries(handle, msg);
+      appliedPipeControlSnapshot = (msg.pipeSlots ?? []).some((snapshot) => snapshot.controlChanged === true);
+      const changedRegularFileOfdFds = applyStatusOfdSlots(handle, msg, {
+        authoritativeOfdIds,
+        postedFdEntries,
+        postedOfdSlots,
+      });
+      markStatusFdChangesForNextStep(
+        handle,
+        deps.threadWorkerStates,
+        [...new Set([
+          ...changedRegularFileOfdFds,
+          ...applyStatusFdEntries(handle, msg, authoritativeFds, postedFdEntries, postedOfdSlots),
+        ])],
+      );
       applyThreadSocketState(handle, msg);
+      appendStatusRouteFdDebug("after-adopt", handle, msg);
       for (const pre of adoptPreSnapshots) {
         const postPc = handle.kernel.thread_pc(pre.vmPtr);
         const postSp = handle.kernel.thread_sp(pre.vmPtr);
@@ -442,6 +617,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
       );
+      appliedPipeControlSnapshot = (msg.pipeSlots ?? []).some((snapshot) => snapshot.controlChanged === true);
     } else if (routeActions.applyFsMemoryWrites) {
       applyThreadKernelMemoryWrites(
         handle,
@@ -450,6 +626,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
+    }
+    if (appliedPipeControlSnapshot) {
+      reconcileKernelSharePipeControl(handle);
     }
     if (traceFsStatusTiming) {
       appendFsStatusRouteTiming(

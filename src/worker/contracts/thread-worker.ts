@@ -11,6 +11,13 @@ import type {
   ThreadWorkerMemoryPreserveRange,
 } from "./snapshots.js";
 
+export interface ThreadWorkerProcessIdentity {
+  processPtr: number;
+  pid: number;
+  ppid: number;
+  nextPid: number;
+}
+
 export type ThreadWorkerInbound =
   | {
       type: "prepare";
@@ -36,6 +43,7 @@ export type ThreadWorkerInbound =
       preserveMemoryBytes?: number;
       preserveMemoryRanges?: ThreadWorkerMemoryPreserveRange[];
       guestWriteWatchRegions?: GuestWriteWatchRegion[];
+      processIdentity?: ThreadWorkerProcessIdentity;
       kernelState: KernelRuntimeState;
       pipeSlots?: KernelWorkerPipeSlotSnapshot[];
       socketState?: KernelWorkerSocketStateSnapshot;
@@ -49,6 +57,7 @@ export type ThreadWorkerInbound =
   | {
       type: "step";
       budget: number;
+      processIdentity?: ThreadWorkerProcessIdentity;
       kernelState: KernelRuntimeState;
       pipeSlots?: KernelWorkerPipeSlotSnapshot[];
       socketState?: KernelWorkerSocketStateSnapshot;
@@ -83,9 +92,15 @@ export interface ThreadWorkerStatusMessage {
   sp?: bigint;
   s11?: bigint;
   syscallNr?: bigint;
+  blockedFd?: number;
+  blockedHasOfdPin?: boolean;
+  blockedSyscallNr?: bigint;
+  blockedSyscallArgs?: [bigint, bigint, bigint, bigint, bigint, bigint];
   futexWaitAddr?: bigint;
   futexBlockedAddr?: bigint;
   vmPtr: number;
+  processPtr?: number;
+  processPid?: number;
   kernelState: KernelRuntimeState;
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];

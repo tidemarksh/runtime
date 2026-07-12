@@ -5,6 +5,10 @@ import {
   applyThreadWorkerInboundState,
   consumeThreadWorkerInboundGuestWriteDebug,
 } from "../../../src/thread-worker/inbound-state.js";
+import {
+  createRuntimeStateBridge,
+  publishRuntimeFdAuthorityEpoch,
+} from "../../../src/bridge/runtime-state.js";
 
 function makeState(): KernelRuntimeState {
   return {
@@ -42,9 +46,12 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     kernel_pipe_region_bytes: () => 64,
     kernel_socket_table_bytes: () => 16,
     kernel_net_buf_pool_bytes: () => 32,
+    process_fd_ofd_id: () => 0,
+    process_fd_flags: () => 0,
     process_set_fd_entry: vi.fn(),
     process_record_child_exit: vi.fn(),
     process_record_child_exit_for_parent: vi.fn(),
+    thread_process_ptr: () => 0x2000,
     debug_clear_guest_write_watch_trace: vi.fn(),
     debug_configure_guest_write_watch: vi.fn(),
     kernel_attach_runtime_state: vi.fn(),
@@ -95,6 +102,148 @@ test("applyThreadWorkerInboundState applies fd, pipe, socket, guest write, and w
   expect(attachCall?.[11]).toBe(3n);
 });
 
+test("applyThreadWorkerInboundState preserves a blocked OFD across an inbound ID collision", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  const kernelExports = makeKernelExports(memory);
+  const kernelState = makeState();
+  const blockedSlot = Uint8Array.from([0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8]);
+  bytes.set(blockedSlot, kernelState.ofdTablePtr + 2 * blockedSlot.length);
+  let blockedOfdId = 2;
+  Object.assign(kernelExports, {
+    thread_blocked_ofd_id: () => blockedOfdId,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 4 ? 4 : 0,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState,
+    targetVmPtr: 0x1234,
+    ofdSlots: [
+      { ofdId: 2, slot: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]) },
+      { ofdId: 3, slot: Uint8Array.from([9, 10, 11, 12, 13, 14, 15, 16]) },
+    ],
+    fdEntries: [
+      { fd: 4, ofdId: 0, fdFlags: 0 },
+      { fd: 5, ofdId: 2, fdFlags: 0 },
+      { fd: 6, ofdId: 3, fdFlags: 0 },
+    ],
+  });
+
+  expect([...bytes.slice(0x50, 0x58)]).toEqual([...blockedSlot]);
+  expect([...bytes.slice(0x58, 0x60)]).toEqual([9, 10, 11, 12, 13, 14, 15, 16]);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 4, 0, 0);
+  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 5, 2, 0);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 6, 3, 0);
+
+  blockedOfdId = 0;
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState,
+    targetVmPtr: 0x1234,
+    ofdSlots: [{ ofdId: 2, slot: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]) }],
+    fdEntries: [{ fd: 5, ofdId: 2, fdFlags: 0 }],
+  });
+
+  expect([...bytes.slice(0x50, 0x58)]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 5, 2, 0);
+});
+
+test("applyThreadWorkerInboundState asks Kernel to restore canonical process identity", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const restoreCurrentIdentity = vi.fn();
+  Object.assign(kernelExports, {
+    process_current_pid: () => 2,
+    process_current_ppid: () => 1,
+    process_restore_current_identity: restoreCurrentIdentity,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    processIdentity: { processPtr: 0x2000, pid: 6, ppid: 1, nextPid: 7 },
+  });
+
+  expect(restoreCurrentIdentity).toHaveBeenCalledWith(0x1234, 6, 1, 7);
+});
+
+test("applyThreadWorkerInboundState restores a zeroed process identity", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const restoreCurrentIdentity = vi.fn();
+  Object.assign(kernelExports, {
+    process_current_pid: () => 0,
+    process_current_ppid: () => 0,
+    process_restore_current_identity: restoreCurrentIdentity,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    processIdentity: { processPtr: 0x2000, pid: 1, ppid: 0, nextPid: 7 },
+  });
+
+  expect(restoreCurrentIdentity).toHaveBeenCalledWith(0x1234, 1, 0, 7);
+});
+
+test("applyThreadWorkerInboundState leaves matching process identity unchanged", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const restoreCurrentIdentity = vi.fn();
+  Object.assign(kernelExports, {
+    process_current_pid: () => 6,
+    process_current_ppid: () => 1,
+    process_restore_current_identity: restoreCurrentIdentity,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    processIdentity: { processPtr: 0x2000, pid: 6, ppid: 1, nextPid: 7 },
+  });
+
+  expect(restoreCurrentIdentity).not.toHaveBeenCalled();
+});
+
+test("applyThreadWorkerInboundState rejects stale identity after process ownership changes", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const restoreCurrentIdentity = vi.fn();
+  Object.assign(kernelExports, {
+    thread_process_ptr: () => 0x3000,
+    process_current_pid: () => 6,
+    process_current_ppid: () => 1,
+    process_restore_current_identity: restoreCurrentIdentity,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    processIdentity: { processPtr: 0x2000, pid: 1, ppid: 0, nextPid: 7 },
+    fdEntries: [{ fd: 7, ofdId: 6, fdFlags: 1 }],
+  });
+
+  expect(restoreCurrentIdentity).not.toHaveBeenCalled();
+  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalled();
+});
+
 test("applyThreadWorkerInboundState records watched inbound guest write overlap", () => {
   consumeThreadWorkerInboundGuestWriteDebug();
   const memory = new WebAssembly.Memory({ initial: 1 });
@@ -116,4 +265,238 @@ test("applyThreadWorkerInboundState records watched inbound guest write overlap"
     "thread-inbound-guest-write:slot=1:ptr=0x14:len=4:overlap=0x15..0x17:sample=adbe",
   ]);
   expect(consumeThreadWorkerInboundGuestWriteDebug()).toEqual([]);
+});
+
+test("applyThreadWorkerInboundState treats inbound fd entries as canonical across worker generations", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
+    [5, { ofdId: 6, fdFlags: 0, generation: 3 }],
+  ]);
+  Object.assign(kernelExports, {
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdState.get(fd)?.generation ?? 0,
+    process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      const current = fdState.get(fd) ?? { ofdId: 0, fdFlags: 0, generation: 0 };
+      fdState.set(fd, { ofdId, fdFlags, generation: current.generation + 1 });
+    }),
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 5, ofdId: 0, fdFlags: 0, generation: 2 }],
+  });
+
+  expect(fdState.get(5)?.ofdId).toBe(0);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 5, 0, 0);
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 5, ofdId: 0, fdFlags: 0, generation: 4 }],
+  });
+
+  expect(fdState.get(5)?.ofdId).toBe(0);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledTimes(1);
+});
+
+test("applyThreadWorkerInboundState preserves a newer live worker fd from an older inbound snapshot", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
+    [3, { ofdId: 4, fdFlags: 0, generation: 3 }],
+  ]);
+  const restoreAction = vi.fn(() => 2);
+  Object.assign(kernelExports, {
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdState.get(fd)?.generation ?? 0,
+    process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      const current = fdState.get(fd) ?? { ofdId: 0, fdFlags: 0, generation: 0 };
+      fdState.set(fd, { ofdId, fdFlags, generation: current.generation + 1 });
+    }),
+    supervisor_fd_entry_restore_action: restoreAction,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 3, ofdId: 0, fdFlags: 0, generation: 1 }],
+  });
+
+  expect(fdState.get(3)?.ofdId).toBe(4);
+  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalled();
+  expect(restoreAction).toHaveBeenCalledWith(0x1234, 3, 0, 0xffffffffffffffffn, 3);
+});
+
+test("applyThreadWorkerInboundState preserves a newer live pipe fd from an older inbound snapshot", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
+    [14, { ofdId: 20, fdFlags: 1, generation: 3 }],
+  ]);
+  const restoreAction = vi.fn(() => 1);
+  const pipeSyncCandidate = vi.fn((ofdId: number) => (ofdId === 20 ? 1 : 0));
+  Object.assign(kernelExports, {
+    abi_max_fds: () => 32,
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdState.get(fd)?.generation ?? 0,
+    process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      const current = fdState.get(fd) ?? { ofdId: 0, fdFlags: 0, generation: 0 };
+      fdState.set(fd, { ofdId, fdFlags, generation: current.generation + 1 });
+    }),
+    supervisor_fd_entry_restore_action: restoreAction,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+    supervisor_pipe_sync_ofd_candidate: pipeSyncCandidate,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 14, ofdId: 0, fdFlags: 0, generation: 1 }],
+  });
+
+  expect(fdState.get(14)).toEqual({ ofdId: 20, fdFlags: 1, generation: 3 });
+  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalled();
+  expect(pipeSyncCandidate).toHaveBeenCalledWith(20);
+  expect(restoreAction).not.toHaveBeenCalled();
+});
+
+test("applyThreadWorkerInboundState does not reopen a same-ProcessState fd from a delayed snapshot", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
+    [6, { ofdId: 0, fdFlags: 0, generation: 13 }],
+  ]);
+  Object.assign(kernelExports, {
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdState.get(fd)?.generation ?? 0,
+    process_set_fd_entry: vi.fn(),
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{
+      fd: 6,
+      ofdId: 8,
+      fdFlags: 1,
+      generation: 12,
+      monotonicGeneration: true,
+    }],
+  });
+
+  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalled();
+});
+
+test("applyThreadWorkerInboundState rejects an fd payload older than Runtime authority", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const runtimeBridge = createRuntimeStateBridge();
+  publishRuntimeFdAuthorityEpoch(runtimeBridge, 6);
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+    runtimeBridge,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 6, ofdId: 7, fdFlags: 1, authorityEpoch: 0 }],
+  });
+
+  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalled();
+});
+
+test("applyThreadWorkerInboundState applies a newer inbound fd snapshot even when local fd is live", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
+    [3, { ofdId: 4, fdFlags: 0, generation: 1 }],
+  ]);
+  const restoreAction = vi.fn(() => 2);
+  Object.assign(kernelExports, {
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdState.get(fd)?.generation ?? 0,
+    process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      const current = fdState.get(fd) ?? { ofdId: 0, fdFlags: 0, generation: 0 };
+      fdState.set(fd, { ofdId, fdFlags, generation: current.generation + 1 });
+    }),
+    supervisor_fd_entry_restore_action: restoreAction,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 3, ofdId: 0, fdFlags: 0, generation: 3 }],
+  });
+
+  expect(fdState.get(3)?.ofdId).toBe(0);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 0, 0);
+  expect(restoreAction).not.toHaveBeenCalled();
+});
+
+test("applyThreadWorkerInboundState applies a canonical generationless fd over a live worker fd", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
+    [6, { ofdId: 5, fdFlags: 0, generation: 12 }],
+  ]);
+  const restoreAction = vi.fn(() => 2);
+  Object.assign(kernelExports, {
+    process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
+    process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fdState.get(fd)?.generation ?? 0,
+    process_set_fd_entry: vi.fn((_vmPtr: number, fd: number, ofdId: number, fdFlags: number) => {
+      const current = fdState.get(fd) ?? { ofdId: 0, fdFlags: 0, generation: 0 };
+      fdState.set(fd, { ofdId, fdFlags, generation: current.generation + 1 });
+    }),
+    supervisor_fd_entry_restore_action: restoreAction,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_fd_entry_restore_flag_preserve_live_regular_file: () => 1,
+    supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent: () => 2,
+  });
+
+  applyThreadWorkerInboundState({
+    kernelExports,
+    guestBase: 0,
+  }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    fdEntries: [{ fd: 6, ofdId: 7, fdFlags: 0 }],
+  });
+
+  expect(fdState.get(6)).toEqual({ ofdId: 7, fdFlags: 0, generation: 13 });
+  expect(restoreAction).not.toHaveBeenCalled();
 });

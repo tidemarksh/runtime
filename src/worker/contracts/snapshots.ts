@@ -11,11 +11,18 @@ export interface KernelWorkerOfdSlotSnapshot {
   slot: Uint8Array;
 }
 
+export interface KernelWorkerRegularFileFsSnapshot {
+  fd: number;
+  ofdId: number;
+  ofdSlot: Uint8Array;
+}
+
 export interface KernelWorkerPipeSlotSnapshot {
   pipeSlot: number;
   slot: Uint8Array;
   mode?: number;
   fresh?: boolean;
+  controlChanged?: boolean;
 }
 
 export interface KernelWorkerNetBufferSnapshot {
@@ -35,7 +42,9 @@ export interface KernelWorkerFdEntrySnapshot {
   fd: number;
   ofdId: number;
   fdFlags: number;
+  authorityEpoch?: number;
   generation?: number;
+  monotonicGeneration?: boolean;
 }
 
 export interface KernelWorkerPidStateSnapshot {

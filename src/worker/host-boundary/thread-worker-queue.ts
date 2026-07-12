@@ -4,6 +4,7 @@ import {
   deleteProcessWorker,
   processHasWorker,
   processWorkerCount,
+  processWorkerList,
 } from "../process-worker-state.js";
 import {
   setWorkerErrorHandler,
@@ -25,12 +26,15 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
-import { kernelStackSlotForWorker } from "../pool.js";
+import { kernelStackSlotForWorker, releaseWorker } from "../pool.js";
 import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
 } from "../supervisor-shadow.js";
-import { snapshotProcessFdEntriesForThread } from "../ownership/fd-table.js";
+import {
+  snapshotAuthoritativeProcessFdEntriesForThread,
+  snapshotProcessFdEntriesForThread,
+} from "../ownership/fd-table.js";
 import {
   restoreRegularFileOffsetsForStep,
   snapshotOfdSlotsForThread,
@@ -39,7 +43,9 @@ import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import {
+  clearThreadOwnerAsyncStatus,
   clearThreadRunningGeneration,
+  clearThreadWaitingInWorkerStatus,
   getThreadGeneration,
   getThreadOwnerPid,
   getThreadReinitCount,
@@ -51,14 +57,19 @@ import {
   setThreadReinitCount,
   setThreadRunningGeneration,
 } from "../thread-host-state.js";
+import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
 import {
   getThreadActivityState,
   incrementBoundedActivityCounter,
   pushRecentStepActivity,
   resetThreadActivityState,
+  threadLatestStepAnswered,
 } from "../thread-activity-state.js";
 import {
+  recordPostedFdEntriesForNextStatus,
+  recordPostedOfdSlotsForNextStatus,
   takePendingGuestMemoryWritesForNextStep,
+  takePendingAuthoritativeFdEntriesForNextStep,
   takePendingKernelStateForNextStep,
   takePendingPipeSlotsForNextStep,
 } from "../thread-step-payload.js";
@@ -71,15 +82,61 @@ import {
 } from "../diagnostics/scheduler-queue.js";
 import type {
   ThreadWorkerInbound,
+  ThreadWorkerProcessIdentity,
   WorkerSchedulerQueueHelpers,
 } from "./worker-scheduler-types.js";
+import { DEFAULT_NODE_EXECUTION_STEP_BUDGET } from "../../execution/budget.js";
 
-const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = 5_000_000;
+const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = DEFAULT_NODE_EXECUTION_STEP_BUDGET;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = 10_000;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
-const MAX_SCHEDULER_STEP_BUDGET = 5_000_000;
+const MAX_SCHEDULER_STEP_BUDGET = 100_000_000;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
+const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_LIFECYCLE_DEBUG ?? "") === "1";
 let nextThreadWorkerGeneration = 1;
+
+export function snapshotThreadWorkerProcessIdentity(
+  handle: ProcessHandle,
+  vmPtr: number,
+): ThreadWorkerProcessIdentity | undefined {
+  if (vmPtr === 0) {
+    return undefined;
+  }
+  const processPtr = handle.kernel.thread_process_ptr(vmPtr);
+  const currentPid = handle.kernel.process_current_pid(vmPtr);
+  const vforkSnapshot = hostExecutionState(handle).vforkSnapshot;
+  const activeVforkChildPid = handle.kernel.thread_vfork_child_pid();
+  const transientVforkChild = activeVforkChildPid > 0
+    && currentPid === activeVforkChildPid
+    && currentPid !== handle.pid;
+  const canonicalVforkChild = vforkSnapshot?.childPid;
+  const canonicalVforkChildMatches = canonicalVforkChild === null
+    || canonicalVforkChild === undefined
+    || canonicalVforkChild === activeVforkChildPid;
+  const useVforkChildIdentity = transientVforkChild && canonicalVforkChildMatches;
+  const pid = useVforkChildIdentity ? currentPid : handle.pid;
+  const ppid = useVforkChildIdentity
+    ? handle.kernel.process_child_ppid?.(pid)
+    : (handle.parentPid ?? 0);
+  const nextPid = handle.kernel.process_next_pid?.();
+  if (
+    !Number.isInteger(processPtr)
+    || processPtr <= 0
+    || !Number.isInteger(pid)
+    || pid <= 0
+    || ppid === undefined
+    || !Number.isInteger(ppid)
+    || ppid < 0
+    || nextPid === undefined
+    || !Number.isInteger(nextPid)
+    || nextPid <= 0
+  ) {
+    return undefined;
+  }
+  return { processPtr, pid, ppid, nextPid };
+}
 
 function appendDetailedSchedulerQueueDebugLog(
   handle: ProcessHandle,
@@ -126,6 +183,20 @@ interface WorkerSchedulerQueueDeps {
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
 
+function appendSchedulerFsTiming(
+  deps: WorkerSchedulerQueueDeps,
+  handle: ProcessHandle,
+  phase: string,
+  detail = "",
+): void {
+  if (!FS_LIFECYCLE_DEBUG_ENABLED) {
+    return;
+  }
+  const event = `fs-scheduler-${phase}:${handle.pid}:t=${Date.now()}${detail}`;
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
+  console.error(`[tidemark-fs] ${event}`);
+}
+
 function removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void {
   for (let index = hostExecutionState(handle).vforkReadyWorkers.length - 1; index >= 0; index -= 1) {
     if (hostExecutionState(handle).vforkReadyWorkers[index] === worker) {
@@ -139,6 +210,7 @@ function clearBlockedWorker(deps: WorkerSchedulerQueueDeps, handle: ProcessHandl
   if (!blocked) {
     return;
   }
+  clearSupervisorHostTimer(handle, blocked.vmPtr);
   deps.clearHostBlockedRetryTimer(handle, worker);
   hostExecutionState(handle).hostBlockedWorkers.delete(worker);
 }
@@ -180,6 +252,12 @@ export function createWorkerSchedulerQueueHelpers(
       && thread
       && (getThreadRunningGeneration(thread) ?? getThreadGeneration(thread)) === getThreadGeneration(thread)
     ) {
+      if (threadLatestStepAnswered(thread)) {
+        hostExecutionState(handle).runningWorker = null;
+        clearThreadRunningGeneration(thread);
+        deps.appendWorkerDebugLog(handle, "running-worker-cleared:answered");
+        return null;
+      }
       return runningWorker;
     }
     hostExecutionState(handle).runningWorker = null;
@@ -188,6 +266,57 @@ export function createWorkerSchedulerQueueHelpers(
     }
     deps.appendWorkerDebugLog(handle, "running-worker-cleared:stale");
     return null;
+  }
+
+  function selectActiveVforkChildReadyWorker(
+    handle: ProcessHandle,
+  ): Worker | undefined {
+    const state = hostExecutionState(handle);
+    const snapshot = state.vforkSnapshot;
+    const childPid = snapshot?.childPid ?? null;
+    if (
+      snapshot === null
+      || childPid === null
+      || childPid <= 0
+      || state.vforkReadyWorkers.length !== 1
+    ) {
+      return undefined;
+    }
+    const worker = state.vforkReadyWorkers[0];
+    const thread = deps.threadWorkerStates.get(worker);
+    if (
+      worker !== state.vforkWorker
+      || thread === undefined
+      || !processHasWorker(handle, worker)
+      || getThreadWaitingInWorkerStatus(thread) !== null
+      || getThreadOwnerAsyncStatus(thread) !== null
+    ) {
+      return undefined;
+    }
+    const status = handle.kernel.thread_status(thread.vmPtr);
+    const currentPid = handle.kernel.process_current_pid(thread.vmPtr);
+    const processPtr = handle.kernel.thread_process_ptr(thread.vmPtr);
+    if (
+      (
+        status !== handle.kernel.abi_status_vfork_wait()
+        && status !== handle.kernel.abi_status_ok()
+      )
+      || currentPid !== childPid
+      || processPtr === 0
+    ) {
+      return undefined;
+    }
+    removeVforkReadyWorker(handle, worker);
+    clearBlockedWorker(deps, handle, worker);
+    clearThreadWaitingInWorkerStatus(thread);
+    clearThreadRunningGeneration(thread);
+    deps.appendWorkerDebugLog(
+      handle,
+      `supervisor-resume:runnable:vfork-child-ready:0x${thread.vmPtr.toString(16)}`
+        + `:child=${childPid}:process=0x${processPtr.toString(16)}`
+        + `:status=${status}:ready=1`,
+    );
+    return worker;
   }
 
   function assertThreadOwnershipInvariant(
@@ -320,7 +449,7 @@ export function createWorkerSchedulerQueueHelpers(
       event.preventDefault?.();
     });
     const runtimeEpoch = publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const fdEntries = snapshotProcessFdEntriesForThread(handle, vmPtr);
+    const fdEntries = snapshotAuthoritativeProcessFdEntriesForThread(handle, vmPtr);
     const initMessage: ThreadWorkerInbound = {
       type: "init",
       wasmModule: handle.wasmModule,
@@ -339,6 +468,10 @@ export function createWorkerSchedulerQueueHelpers(
       runtimeNotify: handle.runtimeBridge.notifySab,
       runtimeState: handle.runtimeBridge.stateSab,
     };
+    const processIdentity = snapshotThreadWorkerProcessIdentity(handle, vmPtr);
+    if (processIdentity !== undefined) {
+      initMessage.processIdentity = processIdentity;
+    }
     const initSocketState = snapshotSocketStateForThread(handle);
     const initOfdSlots = snapshotOfdSlotsForThread(handle, fdEntries);
     if (initSocketState !== undefined) {
@@ -350,6 +483,8 @@ export function createWorkerSchedulerQueueHelpers(
     if (initOfdSlots !== undefined) {
       initMessage.ofdSlots = initOfdSlots;
     }
+    recordPostedFdEntriesForNextStatus(thread, fdEntries);
+    recordPostedOfdSlotsForNextStatus(thread, initOfdSlots);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `clone-child-init-post:${handle.pid}:vm=0x${vmPtr.toString(16)}`
@@ -364,12 +499,31 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     const thread = deps.threadWorkerStates.get(worker);
+    if (FS_LIFECYCLE_DEBUG_ENABLED) {
+      appendSchedulerFsTiming(
+        deps,
+        handle,
+        "enqueue-entry",
+        `:vm=0x${(thread?.vmPtr ?? 0).toString(16)}`
+          + `:running=${hostExecutionState(handle).runningWorker === null ? 0 : 1}`
+          + `:ownerAsync=${getThreadOwnerAsyncStatus(thread) ?? "null"}`
+          + `:waiting=${getThreadWaitingInWorkerStatus(thread) ?? "null"}`,
+      );
+    }
     if (
       hostExecutionState(handle).runningWorker === worker
       && processHasWorker(handle, worker)
       && thread !== undefined
     ) {
-      return;
+      if (!threadLatestStepAnswered(thread)) {
+        return;
+      }
+      hostExecutionState(handle).runningWorker = null;
+      clearThreadRunningGeneration(thread);
+      appendSchedulerQueueDebugLog(
+        handle,
+        `running-worker-cleared:enqueue-answered:0x${thread.vmPtr.toString(16)}`,
+      );
     }
     if (
       deps.isSupervisorFutexWaiter(handle, worker)
@@ -382,6 +536,14 @@ export function createWorkerSchedulerQueueHelpers(
         && getThreadWaitingInWorkerStatus(thread) === null
         && ownerAsyncStatus !== null
       ) {
+        if (FS_LIFECYCLE_DEBUG_ENABLED) {
+          appendSchedulerFsTiming(
+            deps,
+            handle,
+            "enqueue-defer-owner-async",
+            `:vm=0x${thread.vmPtr.toString(16)}:async=${ownerAsyncStatus}`,
+          );
+        }
         appendSchedulerQueueDebugLog(handle, `runnable-defer-owner-async:0x${thread.vmPtr.toString(16)}:async=${ownerAsyncStatus}`);
       } else if (ownerAsyncStatus === null) {
         removeVforkReadyWorker(handle, worker);
@@ -409,6 +571,14 @@ export function createWorkerSchedulerQueueHelpers(
       && !hostExecutionState(handle).vforkReadyWorkers.includes(worker)
     ) {
       hostExecutionState(handle).vforkReadyWorkers.push(worker);
+    }
+    if (FS_LIFECYCLE_DEBUG_ENABLED) {
+      appendSchedulerFsTiming(
+        deps,
+        handle,
+        "enqueue-ready",
+        `:vm=0x${(vmPtr ?? 0).toString(16)}:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+      );
     }
     pumpProcess(handle);
   }
@@ -453,9 +623,124 @@ export function createWorkerSchedulerQueueHelpers(
     return true;
   }
 
+  function completeFaultedWaitingWorker(handle: ProcessHandle): boolean {
+    const faultStatus = handle.kernel.abi_status_fault?.();
+    if (faultStatus === undefined) {
+      return false;
+    }
+    for (const worker of processWorkerList(handle)) {
+      const thread = deps.threadWorkerStates.get(worker);
+      const waitingStatus = getThreadWaitingInWorkerStatus(thread);
+      if (thread === undefined || waitingStatus === null) {
+        continue;
+      }
+      if (handle.kernel.thread_status(thread.vmPtr) !== faultStatus) {
+        continue;
+      }
+      const decision = readSupervisorFaultExitDecision(handle, thread.vmPtr);
+      if (decision === undefined) {
+        deps.failProcess(
+          handle,
+          new Error(`supervisor fault exit decision required for vm=0x${thread.vmPtr.toString(16)}`),
+        );
+        return true;
+      }
+
+      clearBlockedWorker(deps, handle, worker);
+      removeVforkReadyWorker(handle, worker);
+      clearSupervisorHostTimer(handle, thread.vmPtr);
+      clearThreadWaitingInWorkerStatus(thread);
+      clearThreadOwnerAsyncStatus(thread);
+      clearThreadRunningGeneration(thread);
+      if (hostExecutionState(handle).runningWorker === worker) {
+        hostExecutionState(handle).runningWorker = null;
+      }
+      if (hostExecutionState(handle).vforkWorker === worker) {
+        hostExecutionState(handle).vforkWorker = null;
+      }
+
+      if (decision.kind === supervisorFaultExitKindProcessExit(handle.kernel)) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `complete-exit:waiting-fault:0x${decision.exitVmPtr.toString(16)}`
+            + `:wait=${waitingStatus}:seq=${decision.seq.toString()}`
+            + `:threads=${decision.liveThreads}/${decision.remainingThreads}`,
+        );
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `complete-exit-request:waiting-fault:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+            + `:exitVm=0x${decision.exitVmPtr.toString(16)}`
+            + `:exit=${decision.exitCode}:${decision.termSignal}`
+            + `:seq=${decision.seq.toString()}`
+            + `:wait=${waitingStatus}`
+            + `:threads=${decision.liveThreads}/${decision.remainingThreads}`,
+        );
+        void deps.completeProcessExit(
+          handle,
+          decision.exitCode,
+          decision.termSignal,
+          decision.exitVmPtr,
+        ).catch((error) => {
+          deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+        });
+        return true;
+      }
+
+      deps.appendWorkerDebugLog(
+        handle,
+        `fault-wait-worker-delete:0x${thread.vmPtr.toString(16)}`
+          + `:wait=${waitingStatus}:seq=${decision.seq.toString()}`
+          + `:threads=${decision.liveThreads}/${decision.remainingThreads}`,
+      );
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `fault-wait-worker-delete:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`
+          + `:wait=${waitingStatus}`
+          + `:exit=${decision.exitCode}:${decision.termSignal}`
+          + `:seq=${decision.seq.toString()}`
+          + `:threads=${decision.liveThreads}/${decision.remainingThreads}`,
+      );
+      deleteProcessWorker(handle, worker);
+      deps.threadWorkerStates.delete(worker);
+      releaseWorker(worker);
+      pumpProcess(handle);
+      return true;
+    }
+    return false;
+  }
+
+  function selectBlockedResumeWorkerAfterSupervisorNone(handle: ProcessHandle): Worker | null {
+    for (const worker of processWorkerList(handle)) {
+      const thread = deps.threadWorkerStates.get(worker);
+      if (thread === undefined) {
+        continue;
+      }
+      if (!deps.takeThreadWorkerBlockedResume(handle, worker)) {
+        continue;
+      }
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-resume:runnable:blocked-resume:0x${thread.vmPtr.toString(16)}`
+          + `:status=${handle.kernel.thread_status(thread.vmPtr)}`,
+      );
+      return worker;
+    }
+    return null;
+  }
+
   function pumpProcess(handle: ProcessHandle): void {
     if (processExitInProgress(handle)) {
       return;
+    }
+    if (FS_LIFECYCLE_DEBUG_ENABLED) {
+      appendSchedulerFsTiming(
+        deps,
+        handle,
+        "pump-entry",
+        `:running=${hostExecutionState(handle).runningWorker === null ? 0 : 1}`
+          + `:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`
+          + `:blocked=${hostExecutionState(handle).hostBlockedWorkers.size}`,
+      );
     }
     const forkSharedSyncPromise = getProcessKernelShareForkSharedSync(handle);
     if (forkSharedSyncPromise !== null) {
@@ -468,6 +753,24 @@ export function createWorkerSchedulerQueueHelpers(
         return;
       }
     }
+    const regularFileFsInFlight = hostExecutionState(handle).regularFileFsInFlight;
+    if (regularFileFsInFlight !== null) {
+      appendSchedulerQueueDebugLog(
+        handle,
+        `pump-held:regular-file-fs:vm=0x${regularFileFsInFlight.vmPtr.toString(16)}`
+          + `:fd=${regularFileFsInFlight.fd}:ofd=${regularFileFsInFlight.ofdId}`,
+      );
+      if (FS_LIFECYCLE_DEBUG_ENABLED) {
+        appendSchedulerFsTiming(
+          deps,
+          handle,
+          "pump-held-regular-file-fs",
+          `:vm=0x${regularFileFsInFlight.vmPtr.toString(16)}`
+            + `:fd=${regularFileFsInFlight.fd}:ofd=${regularFileFsInFlight.ofdId}`,
+        );
+      }
+      return;
+    }
     const runningWorker = sanitizeRunningWorker(handle);
     if (runningWorker !== null) {
       const thread = deps.threadWorkerStates.get(runningWorker);
@@ -479,31 +782,64 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     const supervisorResumeSelected = supervisorResumeHostBoundary.drainSupervisorResumeQueue(handle);
+    if (completeFaultedWaitingWorker(handle)) {
+      return;
+    }
     if (completeFaultedProcessWithoutWorkers(handle)) {
       return;
     }
     let next: Worker | undefined;
+    let selectedForBlockedResume = false;
     if (supervisorResumeSelected !== null) {
-      next = supervisorResumeSelected;
+      next = supervisorResumeSelected.worker;
+      selectedForBlockedResume = supervisorResumeSelected.resumeBlockedSyscall;
     } else {
-      const supervisorSelected = supervisorResumeHostBoundary.selectSupervisorRunnableWorker(handle);
-      if (supervisorSelected !== undefined) {
-        next = supervisorSelected ?? undefined;
-      } else {
-        deps.appendWorkerDebugLog(
-          handle,
-          `supervisor-resume:runnable:missing-export:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
-        );
-        return;
+      next = selectActiveVforkChildReadyWorker(handle);
+      if (!next) {
+        const supervisorSelected = supervisorResumeHostBoundary.selectSupervisorRunnableWorker(handle);
+        if (supervisorSelected !== undefined) {
+          if (supervisorSelected !== null) {
+            next = supervisorSelected.worker;
+            selectedForBlockedResume = supervisorSelected.resumeBlockedSyscall;
+          } else {
+            const blockedResumeWorker = selectBlockedResumeWorkerAfterSupervisorNone(handle);
+            if (blockedResumeWorker !== null) {
+              next = blockedResumeWorker;
+              selectedForBlockedResume = true;
+            }
+          }
+        } else {
+          deps.appendWorkerDebugLog(
+            handle,
+            `supervisor-resume:runnable:missing-export:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+          );
+          return;
+        }
       }
     }
     if (!next) {
+      if (FS_LIFECYCLE_DEBUG_ENABLED) {
+        appendSchedulerFsTiming(
+          deps,
+          handle,
+          "pump-none",
+          `:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
+        );
+      }
       return;
     }
     hostExecutionState(handle).runningWorker = next;
     const thread = deps.threadWorkerStates.get(next);
     const stepBudget = SCHEDULER_STEP_BUDGET;
     const vmPtr = thread?.vmPtr;
+    if (FS_LIFECYCLE_DEBUG_ENABLED) {
+      appendSchedulerFsTiming(
+        deps,
+        handle,
+        "pump-selected",
+        `:vm=0x${(vmPtr ?? 0).toString(16)}:budget=${stepBudget}`,
+      );
+    }
     if (thread && vmPtr !== undefined) {
       appendSchedulerQueueDebugLog(
         handle,
@@ -520,6 +856,14 @@ export function createWorkerSchedulerQueueHelpers(
       activity.lastStepPc = handle.kernel.thread_pc(vmPtr);
       activity.lastStepSp = handle.kernel.thread_sp(vmPtr);
       activity.lastStepS11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
+      if (FS_LIFECYCLE_DEBUG_ENABLED) {
+        appendSchedulerFsTiming(
+          deps,
+          handle,
+          "step-activity",
+          `:vm=0x${vmPtr.toString(16)}:step=${activity.stepCount}:pc=0x${activity.lastStepPc.toString(16)}`,
+        );
+      }
       incrementBoundedActivityCounter(activity.hotStepPcs, `0x${activity.lastStepPc.toString(16)}`);
       pushRecentStepActivity(activity, {
         pc: activity.lastStepPc,
@@ -540,13 +884,20 @@ export function createWorkerSchedulerQueueHelpers(
       }
     }
     publishRuntimeBridgeEpoch(handle.runtimeBridge);
-    const fdEntries = snapshotProcessFdEntriesForThread(handle, vmPtr ?? 0);
+    const fdEntries = takePendingAuthoritativeFdEntriesForNextStep(
+      thread,
+      snapshotProcessFdEntriesForThread(handle, vmPtr ?? 0),
+    );
     const pendingKernelState = takePendingKernelStateForNextStep(thread);
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
       budget: stepBudget,
       kernelState: pendingKernelState ?? handle.kernelState,
     };
+    const processIdentity = snapshotThreadWorkerProcessIdentity(handle, vmPtr ?? 0);
+    if (processIdentity !== undefined) {
+      stepMessage.processIdentity = processIdentity;
+    }
     const stepSocketState = snapshotSocketStateForThread(handle);
     const stepOfdSlots = snapshotOfdSlotsForThread(handle, fdEntries);
     if (stepSocketState !== undefined) {
@@ -557,6 +908,10 @@ export function createWorkerSchedulerQueueHelpers(
     }
     if (stepOfdSlots !== undefined) {
       stepMessage.ofdSlots = stepOfdSlots;
+    }
+    if (thread) {
+      recordPostedFdEntriesForNextStatus(thread, fdEntries);
+      recordPostedOfdSlotsForNextStatus(thread, stepOfdSlots);
     }
     appendDetailedSchedulerQueueDebugLog(
       handle,
@@ -570,10 +925,30 @@ export function createWorkerSchedulerQueueHelpers(
     if (pendingGuestMemoryWrites.length > 0) {
       stepMessage.guestMemoryWrites = pendingGuestMemoryWrites;
     }
-    if (thread && deps.takeThreadWorkerBlockedResume(handle, next)) {
-      stepMessage.resumeBlockedSyscall = true;
+      if (thread) {
+        const pendingBlockedResume = deps.takeThreadWorkerBlockedResume(handle, next);
+        if (selectedForBlockedResume || pendingBlockedResume) {
+          stepMessage.resumeBlockedSyscall = true;
+        }
+      }
+    const postStartMs = FS_LIFECYCLE_DEBUG_ENABLED ? Date.now() : 0;
+    if (FS_LIFECYCLE_DEBUG_ENABLED) {
+      appendSchedulerFsTiming(
+        deps,
+        handle,
+        "step-post-start",
+        `:vm=0x${(vmPtr ?? 0).toString(16)}:fdEntries=${fdEntries?.length ?? 0}:ofdSlots=${stepOfdSlots?.length ?? 0}`,
+      );
     }
     next.postMessage(stepMessage);
+    if (FS_LIFECYCLE_DEBUG_ENABLED) {
+      appendSchedulerFsTiming(
+        deps,
+        handle,
+        "step-post-done",
+        `:vm=0x${(vmPtr ?? 0).toString(16)}:dt=${Date.now() - postStartMs}`,
+      );
+    }
   }
 
   return {

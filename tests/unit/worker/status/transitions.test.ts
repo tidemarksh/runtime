@@ -20,6 +20,7 @@ import {
   setThreadOwnerAsyncStatus,
   setThreadOwnerPid,
   snapshotThreadResumeWorkersOnReady,
+  takeThreadCloneSpawnHostOp,
 } from "../../../../src/worker/thread-host-state.js";
 import {
   makeSupervisorAbiStubs,
@@ -459,6 +460,7 @@ function makeDeps(worker: Worker) {
     requestEpollDependentOfdStateSync: vi.fn(async () => {}),
     requestEpollStateSync: vi.fn(async () => {}),
     requestPipeStateSync: vi.fn(async () => {}),
+    requestThreadWorkerBlockedResume: vi.fn(),
     requestSocketStateSync: vi.fn(async () => {}),
     resolveNetworkConnect: vi.fn(async () => 0n),
     resumeConnectViaKernelWorker: vi.fn(async () => {}),
@@ -484,6 +486,56 @@ function makeDeps(worker: Worker) {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+test("vfork wait does not reschedule the worker before child canonicalization", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  handle.kernel.thread_vfork_child_pid = () => 4;
+  const deps = makeDeps(worker);
+  deps.captureVforkSnapshot = vi.fn(() => ({
+    vmPtr: 0x1234,
+    childPid: null,
+    kernelState: makeKernelState(),
+  }));
+  deps.syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  deps.canonicalizeActiveVforkChildViaKernelWorker = vi.fn(async () => ({
+    kind: "completed",
+    status: handle.kernel.abi_status_vfork_wait(),
+  }));
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+  const status = handle.kernel.abi_status_vfork_wait();
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  expect(deps.pumpProcess).not.toHaveBeenCalled();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(deps.canonicalizeActiveVforkChildViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    worker,
+    0x1234,
+    4,
+  );
 });
 
 test("status transitions append supervisor fd-control diagnostics once per sequence", () => {
@@ -944,6 +996,56 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
   expect(deps.blockWorker).not.toHaveBeenCalled();
 });
 
+test("STATUS_CONNECT without a runtime network bridge resumes refused connect without socket sync", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 4;
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  handle.memory = memory;
+  const supervisorSubmitThreadEvent = vi.fn(() => 0);
+  Object.assign(handle.kernel, {
+    memory,
+    supervisor_submit_thread_event: supervisorSubmitThreadEvent,
+  });
+  const deps = makeDeps(worker);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: deps.threadWorkerStates.get(worker)! as never,
+    msg: {
+      type: "status",
+      status: 28,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 28,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.resumeConnectViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234, -111n);
+  });
+  expect(deps.requestSocketStateSync).not.toHaveBeenCalled();
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
+  expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  expect(deps.blockWorker).not.toHaveBeenCalled();
+  expect(supervisorSubmitThreadEvent).toHaveBeenCalledWith(
+    expect.any(Number),
+    80,
+  );
+  const [eventPtr, eventLen] = supervisorSubmitThreadEvent.mock.calls[0]!;
+  const eventView = new DataView(memory.buffer, eventPtr, eventLen);
+  expect(eventView.getUint32(12, true)).toBe(2);
+  expect(eventView.getUint32(40, true)).toBe(0);
+});
+
 test("STATUS_SOCKET_RECV restores a related runtime network connection before blocking", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
@@ -996,7 +1098,9 @@ test("STATUS_SOCKET_RECV restores a related runtime network connection before bl
   expect(handle.networkBridge).toBe(bridge);
   expect(networkConnections(handle).get(3)).toBe(connection);
   expect(networkConnectionOfds(handle as never).get(3)).toBe(12);
-  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
+  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234, {
+    deferInitialRetry: false,
+  });
 });
 
 test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", async () => {
@@ -1036,7 +1140,9 @@ test("STATUS_SOCKET_RECV syncs socket state before fork-shared blocked sync", as
   await vi.waitFor(() => {
     expect(deps.syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalled();
   });
-  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234);
+  expect(deps.blockWorker).toHaveBeenCalledWith(handle, worker, 30, 0x1234, {
+    deferInitialRetry: false,
+  });
   expect(deps.requestSocketStateSync).toHaveBeenCalledWith(handle, true);
   expect(order).toEqual(["socket", "fork-shared"]);
 });
@@ -1321,6 +1427,13 @@ test("STATUS_CLONE_SPAWN attaches child from supervisor HostOp record", async ()
   });
   expect(getThreadOwnerAsyncStatus(thread as never)).toBe(25);
   expect(snapshotThreadResumeWorkersOnReady(childThread as never)).toEqual([worker]);
+  expect(takeThreadCloneSpawnHostOp(childThread as never)).toMatchObject({
+    kind: 1,
+    seq: 1n,
+    parentVmPtr: 0x1234,
+    childVmPtr: 0x2000,
+    tid: 2,
+  });
   expect(deps.appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "clone_spawn_hostop:parent=0x1234:child=0x2000:tid=2:seq=1",
@@ -1852,7 +1965,7 @@ test("STATUS_FS supervisor pipe-refresh NONE action skips shared pipe refresh", 
   expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
 });
 
-test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", async () => {
+test("STATUS_FS completed outcome skips stale enqueue when fs helper already queued worker", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 3;
@@ -1860,7 +1973,61 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   const kernel = handle.kernel as typeof handle.kernel & {
     supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
   };
+  kernel.supervisor_fs_pipe_refresh_before_resume_action = vi.fn(() => 0);
+  const deps = makeDeps(worker);
+  const resumeFsViaKernelWorkerOutcome = vi.fn(async () => ({
+    kind: "completed" as const,
+    status: 0,
+    workerQueued: true as const,
+  }));
+  (deps as { resumeFsViaKernelWorkerOutcome?: typeof resumeFsViaKernelWorkerOutcome })
+    .resumeFsViaKernelWorkerOutcome = resumeFsViaKernelWorkerOutcome;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 6,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 6,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 0,
+  });
+
+  await vi.waitFor(() => {
+    expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
+  });
+  await Promise.resolve();
+
+  expect(deps.requestThreadWorkerBlockedResume).not.toHaveBeenCalled();
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+  expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+});
+
+test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 3;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "unused" })));
+  const kernel = handle.kernel as typeof handle.kernel & {
+    supervisor_fs_pipe_refresh_before_resume_action: (vmPtr: number, flags: number) => number;
+    supervisor_fs_pending_regular_file_fd: (vmPtr: number) => number;
+    supervisor_fs_pending_regular_file_ofd: (vmPtr: number) => number;
+  };
   kernel.supervisor_fs_pipe_refresh_before_resume_action = vi.fn(() => 1);
+  kernel.supervisor_fs_pending_regular_file_fd = vi.fn(() => 3);
+  kernel.supervisor_fs_pending_regular_file_ofd = vi.fn(() => 9);
   const deps = makeDeps(worker);
   let resolvePipeSync: (() => void) | undefined;
   deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
@@ -1897,12 +2064,19 @@ test("STATUS_FS with shared pipe fds resumes filesystem after pipe refresh", asy
   expect(kernel.supervisor_fs_pipe_refresh_before_resume_action).toHaveBeenCalledWith(0x1234, 1);
   expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, false);
   expect(resumeFsViaKernelWorkerOutcome).not.toHaveBeenCalled();
+  expect(hostExecutionState(handle).regularFileFsInFlight).toMatchObject({
+    worker,
+    vmPtr: 0x1234,
+    fd: 3,
+    ofdId: 9,
+  });
 
   resolvePipeSync?.();
   await vi.waitFor(() => {
     expect(resumeFsViaKernelWorkerOutcome).toHaveBeenCalledWith(handle, worker, 0x1234);
   });
 
+  expect(hostExecutionState(handle).regularFileFsInFlight).toBeNull();
   expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
 });
@@ -2041,7 +2215,7 @@ test("STATUS_OK re-syncs when hidden inherited output appears after pipe sync", 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
 });
 
-test("STATUS_OK pipe sync clears owner async state before requeueing", async () => {
+test("STATUS_OK pipe sync holds owner async state through scheduler notification", async () => {
   const worker = {} as Worker;
   const handle = makeHandle(worker);
   handle.pid = 7;
@@ -2054,6 +2228,13 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
   }));
   const thread = deps.threadWorkerStates.get(worker)!;
   setThreadOwnerPid(thread as never, handle.pid);
+  deps.enqueueWorker = vi.fn(() => {
+    expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
+  });
+  deps.notifyWorkerStatusProgress = vi.fn(() => {
+    expect(getThreadOwnerAsyncStatus(thread as never)).toBe(0);
+    expect(deps.enqueueWorker).not.toHaveBeenCalled();
+  });
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -2088,4 +2269,145 @@ test("STATUS_OK pipe sync clears owner async state before requeueing", async () 
 
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+});
+
+test("STATUS_OK pipe sync exits without failing when worker ownership changes during sync", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 7;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  deps.requestPipeStateSync = vi.fn(async () => {
+    setThreadOwnerPid(thread as never, 44);
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  });
+
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
+  expect(deps.failProcess).not.toHaveBeenCalled();
+  expect(deps.notifyWorkerStatusProgress).not.toHaveBeenCalled();
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+});
+
+test("STATUS_OK pipe sync exits without failing when kernel owner changes during sync", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 7;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  let ownerMismatch = false;
+  handle.kernel.supervisor_process_owner_mismatch = vi.fn(() => ownerMismatch ? 1 : 0);
+  deps.requestPipeStateSync = vi.fn(async () => {
+    ownerMismatch = true;
+  });
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  });
+
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
+  expect(deps.failProcess).not.toHaveBeenCalled();
+  expect(deps.notifyWorkerStatusProgress).not.toHaveBeenCalled();
+  expect(deps.enqueueWorker).not.toHaveBeenCalled();
+});
+
+test("STATUS_OK pipe sync keeps active vfork child despite kernel owner mismatch", async () => {
+  const worker = {} as Worker;
+  const handle = makeHandle(worker);
+  handle.pid = 1;
+  setProcessKernelWorkerRequest(handle, vi.fn(async () => ({ type: "pipe-state-synced" })));
+  hostExecutionState(handle).vforkSnapshot = {
+    vmPtr: 0x1234,
+    parentPid: 1,
+    parentProcessPtr: 0x5000,
+    childPid: 4,
+    nextPid: 5,
+    pgid: 1,
+    sid: 1,
+    inheritedSharedOfdIds: [],
+  };
+  hostExecutionState(handle).vforkWorker = worker;
+  handle.kernel.process_current_pid = () => 4;
+  const deps = makeDeps(worker);
+  deps.syncEffectPipeState = 1;
+  deps.requestPipeStateSync = vi.fn(async () => {});
+  const thread = deps.threadWorkerStates.get(worker)!;
+  setThreadOwnerPid(thread as never, handle.pid);
+  const transition = createWorkerStatusTransitionHandler(deps as never);
+
+  transition({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    msg: {
+      type: "status",
+      status: 0,
+      exitCode: 0,
+      termSignal: 0,
+      pc: 0n,
+      vmPtr: 0x1234,
+      kernelState: makeKernelState(),
+    },
+    status: 0,
+    wroteToPipe: false,
+    drainedPipe: false,
+    completedSyncEffects: 1,
+  });
+
+  await vi.waitFor(() => {
+    expect(deps.enqueueWorker).toHaveBeenCalledWith(handle, worker);
+  });
+
+  expect(getThreadOwnerAsyncStatus(thread as never)).toBeNull();
+  expect(deps.failProcess).not.toHaveBeenCalled();
+  expect(deps.pumpProcess).not.toHaveBeenCalled();
+  expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
 });

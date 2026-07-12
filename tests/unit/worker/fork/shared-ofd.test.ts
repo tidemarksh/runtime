@@ -4,6 +4,7 @@ import {
   reconcileInheritedSharedOfdsAfterVforkExecve,
   trackVforkExecveChildSharedOfds,
 } from "../../../../src/worker/fork/shared-ofd.js";
+import { reconcileForkSharedOfdRefcounts } from "../../../../src/worker/fork-shared.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeHandle(
@@ -53,4 +54,20 @@ test("vfork execve child tracking records only exec-inherited fd entries", () =>
   ]);
 
   expect(kernelShareSharedOfdIdList(child).sort((left, right) => left - right)).toEqual([7, 9]);
+});
+
+test("vfork execve reconciles an OFD aliased by parent and child descriptors", () => {
+  const parent = makeHandle([0, 0, 0, 0, 0, 0, 8], [8]);
+  const child = makeHandle([8], [8]);
+  const reconciled: Array<[number, number]> = [];
+  parent.kernel.supervisor_ofd_reconcile_refcount = (ofdId: number, refcount: number) => {
+    reconciled.push([ofdId, refcount]);
+    return refcount;
+  };
+  addKernelShareMember(parent);
+  addKernelShareMember(parent, child);
+
+  reconcileForkSharedOfdRefcounts(parent, [8]);
+
+  expect(reconciled).toEqual([[8, 2]]);
 });

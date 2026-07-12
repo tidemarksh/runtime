@@ -6,6 +6,7 @@ import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerFileLayerEntry,
   KernelWorkerOfdSlotSnapshot,
+  KernelWorkerRegularFileFsSnapshot,
   KernelWorkerOutbound,
   KernelWorkerPidStateSnapshot,
   KernelWorkerPipeSlotSnapshot,
@@ -79,6 +80,7 @@ interface KernelWorkerMessageHandlerDeps {
     pid: number,
     vmPtr: number,
     kernelState: KernelRuntimeState,
+    regularFileRequest?: KernelWorkerRegularFileFsSnapshot,
     postProgress?: (progress: ProcessFsProgress) => void,
   ): ProcessFsResult | Promise<ProcessFsResult>;
   recordChildExit(
@@ -332,7 +334,13 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
               });
             }
             : undefined;
-          const result = await deps.processFs(msg.pid, msg.vmPtr, msg.kernelState, postProgress);
+          const result = await deps.processFs(
+            msg.pid,
+            msg.vmPtr,
+            msg.kernelState,
+            msg.regularFileRequest,
+            postProgress,
+          );
           deps.postResponse({
             type: "fs-processed",
             requestId: msg.requestId,

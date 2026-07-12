@@ -14,6 +14,7 @@ import {
   finishBlockedRpc as finishHostBlockedRpc,
 } from "../host-blocked-state.js";
 import { clearForkSharedSyncIfCurrent } from "../fork-shared-sync-state.js";
+import { threadLatestStepAnswered } from "../thread-activity-state.js";
 
 export function logNetworkDebug(_event: string): void {
   // Runtime diagnostics are kept in the per-process worker debug buffer.
@@ -111,6 +112,11 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
     const runningThread = deps.threadWorkerStates.get(runningWorker);
     if (!runningThread) {
       hostExecutionState(handle).runningWorker = null;
+      return true;
+    }
+    if (threadLatestStepAnswered(runningThread)) {
+      hostExecutionState(handle).runningWorker = null;
+      clearThreadRunningGeneration(runningThread);
       return true;
     }
     return false;

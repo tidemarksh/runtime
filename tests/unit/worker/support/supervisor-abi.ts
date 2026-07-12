@@ -275,6 +275,7 @@ const DEFAULT_NUMERIC_EXPORTS: Record<string, number> = {
   supervisor_blocked_stale_retry_result_action_none: 0,
   supervisor_blocked_stale_retry_result_action_handle_current_result: 1,
   supervisor_blocked_stale_retry_result_action_handle_current_result_wait4: 2,
+  supervisor_blocked_stale_retry_result_action_resume_wait4: 3,
   supervisor_blocked_rpc_pipe_sync_action_not_pipe: 0,
   supervisor_blocked_rpc_pipe_sync_action_none: 1,
   supervisor_blocked_rpc_pipe_sync_action_sync_socket: 2,
@@ -698,7 +699,7 @@ export function makeSupervisorAbiStubs(
     }
     if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
       return rpcPending
-        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_skip
+        ? DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_retry
         : DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_log_epoll_and_retry;
     }
     return DEFAULT_NUMERIC_EXPORTS.supervisor_blocked_wait_wake_action_retry;
@@ -875,7 +876,7 @@ export function makeSupervisorAbiStubs(
     }
     if (runningWorker && epollStateKernelOwns && hasEpollEffect && heldEpollOfd) {
       action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_sync_epoll;
-      if (!wroteOrDrainedPipe) {
+      if (!wroteOrDrainedPipe || hasEpollDependentOfdEffect) {
         action |= DEFAULT_NUMERIC_EXPORTS.supervisor_owned_state_sync_action_retry_epoll_waiters;
       }
     }
@@ -886,6 +887,9 @@ export function makeSupervisorAbiStubs(
     status: number,
   ): number => {
     if (status === callOptionalNumber(receiver, "abi_status_wait4")) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc;
+    }
+    if (status === callOptionalNumber(receiver, "abi_status_epoll_wait")) {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_wait4_child_exit_blocked_parent_action_invalidate_rpc;
     }
     if (status === callOptionalNumber(receiver, "abi_status_pipe_wait")) {
@@ -1427,6 +1431,52 @@ export function makeSupervisorAbiStubs(
     view.setInt32(slotOffset + 12, Math.trunc(writeOpen), true);
     return 1;
   };
+  const pipeGenerationMatches = (
+    receiver: Partial<KernelExports>,
+    pipeSlot: number,
+    expectedGeneration: number,
+  ): boolean => {
+    const maxPipes = callOptionalNumber(receiver, "abi_max_pipes") ?? 64;
+    if (pipeSlot <= 0 || pipeSlot >= maxPipes) {
+      return false;
+    }
+    if (expectedGeneration === 0) {
+      return true;
+    }
+    const pipeRegionBytes = callOptionalNumber(receiver, "kernel_pipe_region_bytes") ?? 0;
+    const pipeBase = callOptionalNumber(receiver, "kernel_pipe_base") ?? 0;
+    const memory = receiver.memory ?? overrides.memory;
+    if (!memory || pipeRegionBytes <= 0) {
+      return true;
+    }
+    const slotBytes = pipeRegionBytes / maxPipes;
+    if (!Number.isInteger(slotBytes) || slotBytes <= 24) {
+      return true;
+    }
+    const generationOffset = pipeBase + pipeSlot * slotBytes + 20;
+    if (generationOffset < 0 || generationOffset + 4 > memory.buffer.byteLength) {
+      return true;
+    }
+    return new DataView(memory.buffer).getUint32(generationOffset, true) === expectedGeneration;
+  };
+  const pipeCandidateGenerationMatches = (
+    receiver: Partial<KernelExports>,
+    candidateType: number,
+    candidateIno: number,
+    candidateOffset: bigint | number,
+  ): boolean => {
+    const pipeType = callOptionalNumber(receiver, "abi_fd_type_pipe");
+    if (pipeType === undefined || candidateType !== pipeType) {
+      return true;
+    }
+    const candidate = typeof candidateOffset === "bigint"
+      ? candidateOffset
+      : BigInt(Math.trunc(Number(candidateOffset)));
+    if (candidate < 0n || candidate > 0xffff_ffffn) {
+      return false;
+    }
+    return pipeGenerationMatches(receiver, candidateIno, Number(candidate));
+  };
   const pipeCounterAhead = (sourceValue: number, targetValue: number): boolean =>
     sourceValue > targetValue
     || (
@@ -1740,6 +1790,9 @@ export function makeSupervisorAbiStubs(
     ) {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
     }
+    if (!pipeCandidateGenerationMatches(receiver, candidateType, candidateIno, candidateOffset)) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
     const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
     if (
       currentType === callNumber(receiver, "abi_fd_type_file")
@@ -1767,9 +1820,26 @@ export function makeSupervisorAbiStubs(
     if (currentType === 0 || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0) {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
     }
+    if (!pipeCandidateGenerationMatches(receiver, candidateType, candidateIno, candidateOffset)) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+    }
     const referencedByFdEntry = (flags
       & DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_referenced_by_fd_entry) !== 0;
-    if (!referencedByFdEntry) {
+    const fileType = callNumber(receiver, "abi_fd_type_file");
+    if (referencedByFdEntry) {
+      if (candidateType === 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
+      if (
+        candidateType !== currentType
+        || currentType !== fileType
+        || candidateType !== fileType
+        || candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
+        || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
+      }
+    } else {
       if (candidateType === 0 || candidateType !== currentType) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
       }
@@ -1782,13 +1852,14 @@ export function makeSupervisorAbiStubs(
     }
     if (
       (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_ofd_slot_restore_flag_trust_regular_file_offset) !== 0
-      || currentType !== callNumber(receiver, "abi_fd_type_file")
-      || candidateType !== callNumber(receiver, "abi_fd_type_file")
+      || currentType !== fileType
+      || candidateType !== fileType
       || candidateHostFd !== callNumber(receiver, "kernel_ofd_host_fd", ofdId)
       || candidateIno !== callNumber(receiver, "kernel_ofd_ino", ofdId)
     ) {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
     }
+    const syscall = typeof syscallNr === "bigint" ? syscallNr : BigInt(Math.trunc(syscallNr));
     const currentOffset = callBigInt(receiver, "kernel_ofd_offset", ofdId);
     const candidate = typeof candidateOffset === "bigint" ? candidateOffset : BigInt(Math.trunc(candidateOffset));
     const floor = ofdRestoreOffsetFloors.get(ofdId);
@@ -1805,7 +1876,6 @@ export function makeSupervisorAbiStubs(
     if (candidate >= currentOffset) {
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
     }
-    const syscall = typeof syscallNr === "bigint" ? syscallNr : BigInt(Math.trunc(syscallNr));
     return syscall === BigInt(callNumber(receiver, "abi_sys_lseek"))
       ? DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply
       : DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
@@ -2760,6 +2830,16 @@ export function makeSupervisorAbiStubs(
       if (fd < 0 || fd >= maxFds) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
       }
+      if (
+        snapshotOfdId !== 0
+        && (
+          snapshotOfdId < 0
+          || snapshotOfdId >= maxFds
+          || callNumber(receiver, "kernel_ofd_fd_type", snapshotOfdId) <= 0
+        )
+      ) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      }
       if (syscallMayClearFdEntries(receiver, syscallNr)) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
       }
@@ -2774,11 +2854,22 @@ export function makeSupervisorAbiStubs(
       ) {
         return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
       }
-      if (
-        (flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent) !== 0
-        && processEpollDependentOfdIds(receiver, vmPtr).includes(currentOfdId)
-      ) {
-        return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+      if ((flags & DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent) !== 0) {
+        const currentFdType = callNumber(receiver, "kernel_ofd_fd_type", currentOfdId);
+        const epollStateFdTypes = [
+          callNumber(receiver, "abi_fd_type_epoll"),
+          callNumber(receiver, "abi_fd_type_eventfd"),
+          callNumber(receiver, "abi_fd_type_timerfd"),
+        ].filter((fdType) => fdType > 0);
+        if (
+          (
+            epollStateFdTypes.includes(currentFdType)
+            && callNumber(receiver, "kernel_ofd_refcount", currentOfdId) > 0
+          )
+          || processEpollDependentOfdIds(receiver, vmPtr).includes(currentOfdId)
+        ) {
+          return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_skip;
+        }
       }
       return DEFAULT_NUMERIC_EXPORTS.supervisor_fd_entry_restore_action_apply;
     },

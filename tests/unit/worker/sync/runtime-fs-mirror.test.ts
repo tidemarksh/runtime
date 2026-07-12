@@ -194,6 +194,36 @@ async function flushMicrotasks(turns = 20): Promise<void> {
   }
 }
 
+function childExitKernelWorkerRequest(requests: KernelWorkerRequest[]) {
+  return async (msg: KernelWorkerRequest): Promise<KernelWorkerOutbound> => {
+    requests.push(msg);
+    switch (msg.type) {
+      case "register-process":
+        return { type: "process-registered", requestId: 0, kernelState: msg.kernelState };
+      case "initialize-process-lifecycle":
+        return { type: "process-lifecycle-initialized", requestId: 0, kernelState: msg.kernelState };
+      case "sync-process-lifecycle":
+        return { type: "process-lifecycle-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-epoll-state":
+        return { type: "epoll-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-socket-state":
+        return { type: "socket-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-pipe-state":
+        return { type: "pipe-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "sync-fork-shared-state":
+        return { type: "fork-shared-state-synced", requestId: 0, kernelState: msg.kernelState };
+      case "record-child-exit":
+        return { type: "child-exit-recorded", requestId: 0, kernelState: msg.kernelState };
+      case "release-host-stdio":
+        return { type: "host-stdio-released", requestId: 0, kernelState: msg.kernelState };
+      case "unregister-process":
+        return { type: "process-unregistered", requestId: 0 };
+      default:
+        throw new Error(`unexpected kernel-worker request: ${msg.type}`);
+    }
+  };
+}
+
 function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
   let nextVmPtr = 0x2000;
   let runtimeState = makeKernelState();
@@ -636,11 +666,14 @@ afterEach(() => {
 
 test("child exit records wait status on parent kernel state", async () => {
   threadCountQueue.push(1, 0);
+  const requests: KernelWorkerRequest[] = [];
+  const kernelWorkerRequest = childExitKernelWorkerRequest(requests);
 
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1, kernelWorkerRequest });
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 2,
     parentPid: 1,
+    kernelWorkerRequest,
   });
 
   emitReady(createdWorkers[0]);
@@ -659,6 +692,12 @@ test("child exit records wait status on parent kernel state", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks(100);
 
+  expect(requests).toContainEqual(expect.objectContaining({
+    type: "record-child-exit",
+    pid: 1,
+    childPid: 2,
+    waitStatus: 7 << 8,
+  }));
   expect(createdKernelExports[0].recordedChildExits).toEqual([[2, 7 << 8]]);
 });
 
@@ -793,11 +832,14 @@ test("runtime-owned fs mirroring preserves kernel-worker-owned pipe, epoll, and 
 
 test("signaled child exit records signaled wait status on parent kernel state", async () => {
   threadCountQueue.push(1, 0);
+  const requests: KernelWorkerRequest[] = [];
+  const kernelWorkerRequest = childExitKernelWorkerRequest(requests);
 
-  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1 });
+  await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), { pid: 1, kernelWorkerRequest });
   await createProcess(new Uint8Array([0]), new Uint8Array([1, 2, 3]), {
     pid: 2,
     parentPid: 1,
+    kernelWorkerRequest,
   });
 
   emitReady(createdWorkers[0]);
@@ -816,5 +858,11 @@ test("signaled child exit records signaled wait status on parent kernel state", 
   await new Promise((resolve) => setTimeout(resolve, 0));
   await flushMicrotasks(100);
 
+  expect(requests).toContainEqual(expect.objectContaining({
+    type: "record-child-exit",
+    pid: 1,
+    childPid: 2,
+    waitStatus: 9,
+  }));
   expect(createdKernelExports[0].recordedChildExits).toEqual([[2, 9]]);
 });

@@ -29,7 +29,11 @@ import {
 } from "../../fs/supervisor-backing-fill.js";
 import { supervisorResidentPageTableAuthority } from "../../fs/supervisor-page-table.js";
 import { captureExecveGuestHandoff, decodeExecveBytes, stageExecveGuestHandoff } from "./execve-handoff.js";
-import { captureVforkSnapshot, snapshotKernelShareOfdSlots } from "../fork-shared.js";
+import {
+  captureVforkSnapshot,
+  reconcileForkSharedOfdRefcounts,
+  snapshotKernelShareOfdSlots,
+} from "../fork-shared.js";
 import { getThreadExecveProcessState } from "../thread-execve-state.js";
 import { getThreadActivityState } from "../thread-activity-state.js";
 import { activeKernelShareOfdIds, collectProcessHeldOfds } from "../ownership/ofd-table.js";
@@ -68,7 +72,12 @@ import {
   setProcessLastDebugMessage,
 } from "../process-debug-state.js";
 import { processKernelWorkerRequest } from "../process-kernel-worker-request-state.js";
+import {
+  processMemfsNeedsPublication,
+  setProcessMemfsDirty,
+} from "../process-memfs-state.js";
 import { setProcessOnError } from "../process-callback-state.js";
+import { setProcessInheritedParentOutput } from "../process-stdio-state.js";
 import { acquireWorker, ensureEvictionTimer } from "../pool.js";
 import { createForkChildHandle } from "./common.js";
 import {
@@ -88,6 +97,68 @@ interface KernelChildLifecycle {
   nextPid: number;
   pgid: number;
   sid: number;
+}
+
+function formatProcessStateFdEntries(processState: Uint8Array, limit = 12): string {
+  const view = new DataView(
+    processState.buffer,
+    processState.byteOffset,
+    processState.byteLength,
+  );
+  return Array.from({ length: limit }, (_value, fd) => {
+    const offset = fd * 8;
+    if (offset + 8 > view.byteLength) {
+      return null;
+    }
+    const ofdId = view.getUint32(offset, true);
+    if (ofdId === 0) {
+      return null;
+    }
+    return `${fd}->${ofdId}/${view.getUint32(offset + 4, true)}`;
+  }).filter(Boolean).join(" ");
+}
+
+export function fdEntriesDifferingFromSnapshot<
+  T extends { fd: number; ofdId: number; fdFlags: number; generation?: number },
+>(
+  entries: readonly T[],
+  otherEntries: readonly { fd: number; ofdId: number; fdFlags: number; generation?: number }[],
+): T[] {
+  const otherByFd = new Map(otherEntries.map((entry) => [entry.fd, entry]));
+  return entries.filter((entry) => {
+    const other = otherByFd.get(entry.fd);
+    return other === undefined
+      || other.ofdId !== entry.ofdId
+      || other.fdFlags !== entry.fdFlags
+      || other.generation !== entry.generation;
+  });
+}
+
+export function fdAuthorityEntriesChangedBetweenSnapshots(
+  entries: readonly { fd: number; ofdId: number; fdFlags: number; generation?: number }[],
+  otherEntries: readonly { fd: number; ofdId: number; fdFlags: number; generation?: number }[],
+): Array<{ fd: number }> {
+  const changedFds = new Set([
+    ...fdEntriesDifferingFromSnapshot(entries, otherEntries).map((entry) => entry.fd),
+    ...fdEntriesDifferingFromSnapshot(otherEntries, entries).map((entry) => entry.fd),
+  ]);
+  return [...changedFds].sort((left, right) => left - right).map((fd) => ({ fd }));
+}
+
+export function fdAuthorityEntriesMutatedInBothSnapshots(
+  entries: readonly { fd: number; ofdId: number; fdFlags: number; generation?: number }[],
+  otherEntries: readonly { fd: number; ofdId: number; fdFlags: number; generation?: number }[],
+): Array<{ fd: number }> {
+  const otherByFd = new Map(otherEntries.map((entry) => [entry.fd, entry]));
+  return entries.filter((entry) => {
+    const other = otherByFd.get(entry.fd);
+    return other !== undefined
+      && (
+        other.ofdId !== entry.ofdId
+        || other.fdFlags !== entry.fdFlags
+        || other.generation !== entry.generation
+      );
+  }).map((entry) => ({ fd: entry.fd }));
 }
 
 function readKernelChildLifecycle(kernel: KernelExports, childPid: number): KernelChildLifecycle {
@@ -369,6 +440,37 @@ function reattachRestoredVforkParentWorker(
   deps.notifyForkProgress(handle);
 }
 
+export function transferVforkExecveWorkers(
+  deps: Pick<
+    WorkerForkDeps,
+    "attachThreadWorker" | "markCanonicalFdEntriesForNextStep" | "notifyForkProgress"
+  >,
+  parentHandle: ProcessHandle,
+  childHandle: ProcessHandle,
+  parentWorker: Worker,
+  childWorker: Worker,
+  vmPtr: number,
+  parentFdEntries: readonly { fd: number }[],
+  childFdEntries: readonly { fd: number }[],
+): void {
+  parentHandle.worker = childWorker;
+  deps.attachThreadWorker(childHandle, {
+    worker: parentWorker,
+    vmPtr,
+    transferFrom: parentHandle,
+  });
+  deps.attachThreadWorker(parentHandle, {
+    worker: childWorker,
+    vmPtr,
+  });
+
+  // FD authority is worker-local, so publish it only after both workers have
+  // reached their final process owners.
+  deps.markCanonicalFdEntriesForNextStep?.(parentHandle, parentFdEntries);
+  deps.markCanonicalFdEntriesForNextStep?.(childHandle, childFdEntries);
+  deps.notifyForkProgress(parentHandle);
+}
+
 export async function handleVforkExecve(
   deps: WorkerForkDeps,
   handle: ProcessHandle,
@@ -387,6 +489,7 @@ export async function handleVforkExecve(
         + `:path=0x${handoffBeforePreflight.path.toString(16)}:${formatGuestCStringForDebug(handle, handoffBeforePreflight.path)}`
         + `:argv=0x${handoffBeforePreflight.argv.toString(16)}:${formatGuestStrvecForDebug(handle, handoffBeforePreflight.argv)}`
         + `:envp=0x${handoffBeforePreflight.envp.toString(16)}`
+        + `:cwd_ino=${handle.kernel.process_cwd_ino(parentThread.vmPtr)}`
         + `:${formatThreadSyscallArgsForDebug(handle, parentThread.vmPtr)}`,
     );
     const execveGuestPayload = captureExecveGuestHandoff(
@@ -399,9 +502,28 @@ export async function handleVforkExecve(
     );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `vfork-execve:memfs-preflight-skipped:${childPid}`,
+      `vfork-execve:captured-child-fds:${childPid}`
+        + `:${formatProcessStateFdEntries(execveGuestPayload.processState)}`,
     );
-    assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-no-preflight");
+    if (processMemfsNeedsPublication(handle)) {
+      await deps.syncForkSharedStateViaKernelWorker(handle, [], {
+        cause: { kind: "syscall", nr: -1n, name: "vfork-execve-parent-memfs-publication" },
+        includeMemfs: true,
+        memfsOnly: true,
+        sourceVmPtr: parentThread.vmPtr,
+      });
+      setProcessMemfsDirty(handle, false);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `vfork-execve:parent-memfs-published:${handle.pid}`,
+      );
+    } else {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `vfork-execve:parent-memfs-clean:${handle.pid}`,
+      );
+    }
+    assertVforkChildHandoffState(handle, parentThread.vmPtr, childPid, "child-handoff-preflight");
     deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:start:${childPid}`);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
@@ -413,6 +535,19 @@ export async function handleVforkExecve(
     const parentActivity = getThreadActivityState(parentThread);
     const childLifecycle = readKernelChildLifecycle(handle.kernel, childPid);
     const inheritedSharedOfdIds = new Set(snapshot.inheritedSharedOfdIds);
+    const parentResumeFdEntries = snapshot.parentFdEntries
+      ?? snapshotProcessFdEntries(handle, parentThread.vmPtr);
+    const parentResumeHeldOfdIds = snapshot.parentHeldOfdIds
+      ?? [...new Set([
+        ...collectProcessHeldOfds(handle),
+        ...parentResumeFdEntries
+          .map((entry) => entry.ofdId)
+          .filter((ofdId) => ofdId > 0 && ofdId < handle.kernel.abi_max_fds()),
+      ])];
+    const parentResumeOfdSlots = snapshot.parentOfdSlots
+      ?? snapshotKernelShareOfdSlots(handle, parentResumeHeldOfdIds);
+    const parentResumePipeSlots = snapshot.parentPipeSlots
+      ?? snapshotLocalPipeSlots(handle, parentResumeHeldOfdIds);
     const handoff = readProcessSpawnHandoff(handle.kernel, parentThread.vmPtr);
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
@@ -480,6 +615,13 @@ export async function handleVforkExecve(
         + `:${debugVforkVmState(handle, parentThread.vmPtr)}`,
     );
     await deps.rollbackVforkExecveHandoffViaKernelWorker(handle, parentThread.vmPtr, childPid);
+    restoreLocalOfdSlots(handle, parentResumeOfdSlots);
+    restoreLocalPipeSlots(handle, parentResumePipeSlots);
+    const parentAuthorityFdEntries = fdEntriesDifferingFromSnapshot(
+      parentResumeFdEntries,
+      snapshotProcessFdEntries(handle, parentThread.vmPtr),
+    );
+    alignPipeOfdGenerationOffsets(handle, collectProcessHeldOfds(handle));
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
       `vfork-execve:rollback:restored:${childPid}`
@@ -494,6 +636,7 @@ export async function handleVforkExecve(
     );
     publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
     reattachRestoredVforkParentWorker(deps, handle, parentWorker, parentThread.vmPtr);
+    deps.markCanonicalFdEntriesForNextStep?.(handle, parentAuthorityFdEntries);
   };
 
   const childVmPtr = parentThread.vmPtr;
@@ -537,6 +680,7 @@ export async function handleVforkExecve(
     + `:path=0x${stagedExecveHandoff.pathPtr.toString(16)}`
     + `:argv=0x${stagedExecveHandoff.argvPtr.toString(16)}`
     + `:envp=0x${stagedExecveHandoff.envpPtr.toString(16)}`
+    + `:cwd_ino=${childKernel.process_cwd_ino(childVmPtr)}`
     + `:policy=${guestMemoryPolicyLimit}`
     + `:maxPages=${processMaxMemoryPages}`;
   deps.appendRuntimeLifecycleEvent(
@@ -636,15 +780,30 @@ export async function handleVforkExecve(
     guestMemoryPolicyLimit,
   );
   const childExecFdEntries = snapshotProcessFdEntries(childHandle, childVmPtr);
+  const parentAuthorityFdEntries = fdAuthorityEntriesChangedBetweenSnapshots(
+    parentResumeFdEntries,
+    childExecFdEntries,
+  );
+  const childAuthorityFdEntries = fdAuthorityEntriesChangedBetweenSnapshots(
+    parentResumeFdEntries,
+    childExecFdEntries,
+  );
   deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-execve");
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `vfork-execve:child-exec-fds:${childPid}:${formatOpenFdSummary(childHandle)}`,
   );
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-kernel-ready:${childPid}`);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `vfork-execve:child-cwd-ready:${childPid}:${childKernel.process_cwd_ino(childVmPtr)}`,
+  );
   setProcessLastDebugMessage(handle, `vfork-execve:child-kernel-ready child=${childPid}`);
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:start:${childPid}`);
   await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
+  restoreLocalOfdSlots(handle, parentResumeOfdSlots);
+  restoreLocalPipeSlots(handle, parentResumePipeSlots);
+  alignPipeOfdGenerationOffsets(handle, collectProcessHeldOfds(handle));
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:done:${childPid}`);
   assertVforkParentState(handle, parentThread.vmPtr, "parent-post-resume");
   deps.appendRuntimeLifecycleEvent(
@@ -686,6 +845,7 @@ export async function handleVforkExecve(
     cause: { kind: "fork-child-ready", childPid },
     includeMemfs: false,
     trackHeldOfds: false,
+    ofdIds: [...childHeldOfdIds],
   });
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:done:${childPid}`);
@@ -725,6 +885,7 @@ export async function handleVforkExecve(
   restoreProcessFdEntries(childHandle, childVmPtr, childExecFdEntries);
   alignPipeOfdGenerationOffsets(childHandle, collectProcessHeldOfds(childHandle));
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
+  reconcileForkSharedOfdRefcounts(childHandle, activeKernelShareOfdIds(childHandle));
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `vfork-execve:child-fds-restored:${childPid}:${formatOpenFdSummary(childHandle)}`,
@@ -747,6 +908,14 @@ export async function handleVforkExecve(
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `vfork-execve:child-fds-ready:${childPid}:${formatOpenFdSummary(childHandle)}`,
+  );
+  setProcessInheritedParentOutput(
+    childHandle,
+    [1, 2].every((fd) => {
+      const childOfdId = childHandle.kernel.process_fd_ofd_id(childVmPtr, fd);
+      const parentOfdId = handle.kernel.process_fd_ofd_id(parentThread.vmPtr, fd);
+      return childOfdId > 0 && childOfdId === parentOfdId;
+    }),
   );
   assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-lifecycle");
   const childThreadCount = childHandle.kernel.thread_process_thread_count(childVmPtr);
@@ -776,19 +945,17 @@ export async function handleVforkExecve(
     handle.runtimeId,
     `spawn:${childPid}:${JSON.stringify(processDebugCommand(childHandle))}`,
   );
-  handle.worker = childWorker;
-  deps.attachThreadWorker(childHandle, {
-    worker: parentWorker,
-    vmPtr: childVmPtr,
-    transferFrom: handle,
-  });
-
   assertVforkParentState(handle, parentThread.vmPtr, "parent-pre-enqueue");
-  deps.attachThreadWorker(handle, {
-    worker: childWorker,
-    vmPtr: parentThread.vmPtr,
-  });
-  deps.notifyForkProgress(handle);
+  transferVforkExecveWorkers(
+    deps,
+    handle,
+    childHandle,
+    parentWorker,
+    childWorker,
+    parentThread.vmPtr,
+    parentAuthorityFdEntries,
+    childAuthorityFdEntries,
+  );
   } finally {
     finishPendingChildSpawnRecord(handle);
     deps.notifyForkProgress(handle);

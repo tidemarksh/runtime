@@ -16,6 +16,7 @@ import type { RuntimeInstance } from "./runtime-workload.js";
 export type SnapshotSource =
   | { kind: "dir"; guestPath: string; mode?: number }
   | { kind: "file"; hostPath: string; guestPath: string; mode?: number }
+  | { kind: "materializedFile"; hostPath: string; guestPath: string; mode?: number }
   | { kind: "tree"; hostPath: string; guestPath: string }
   | { kind: "inlineFile"; guestPath: string; data: string | Uint8Array; mode?: number }
   | { kind: "fileCopies"; hostPath: string; guestPaths: readonly string[]; mode?: number };
@@ -276,7 +277,7 @@ function totalSnapshotMaterializedBytes(plan: SnapshotPlan): number {
   for (const entry of plan.entries.values()) {
     total += snapshotEntryMaterializedBytes(entry);
   }
-  for (const file of plan.hostFiles) {
+  for (const file of activeHostFileTasks(plan)) {
     total += file.size;
   }
   return total;
@@ -303,7 +304,7 @@ function createHostFileBackingSourceTasks(
   plan: SnapshotPlan,
   options: { contentAddressed?: boolean } = {},
 ): HostFileBackingSourceTask[] {
-  return plan.hostFiles.map((file) => {
+  return activeHostFileTasks(plan).map((file) => {
     const digest = options.contentAddressed
       ? sha256Digest(new Uint8Array(readFileSync(file.hostPath)))
       : undefined;
@@ -320,6 +321,16 @@ function createHostFileBackingSourceTasks(
       },
     });
     return { ...file, sourceIdentity, digest };
+  });
+}
+
+function activeHostFileTasks(plan: SnapshotPlan): HostFileSnapshotTask[] {
+  return plan.hostFiles.filter((file) => {
+    const entry = plan.entries.get(file.guestPath);
+    if (!entry) {
+      return true;
+    }
+    return entry?.kind === "file" && entry.data === undefined && (entry.size ?? file.size) === file.size;
   });
 }
 
@@ -441,6 +452,10 @@ function buildSnapshotPlan(
       appendFileCopyTasks(entries, hostFiles, source.hostPath, source.guestPaths, source.mode);
       continue;
     }
+    if (source.kind === "materializedFile") {
+      appendFileSnapshot(entries, source.hostPath, source.guestPath, source.mode);
+      continue;
+    }
     if (source.kind === "file") {
       appendHostFileTask(entries, hostFiles, source.hostPath, source.guestPath, source.mode);
       continue;
@@ -460,7 +475,7 @@ export function buildSnapshotFromSources(
     return { skipReason: plan.skipReason };
   }
   assertArtifactMaterializationBudget(plan, options.artifactMaterializationBudgetBytes);
-  for (const file of plan.hostFiles) {
+  for (const file of activeHostFileTasks(plan)) {
     appendFileSnapshot(plan.entries, file.hostPath, file.guestPath, file.mode);
   }
 
@@ -524,7 +539,7 @@ export async function applySnapshotSourcesToRuntime(
     return {};
   }
 
-  for (const file of plan.hostFiles) {
+  for (const file of activeHostFileTasks(plan)) {
     let data: Uint8Array;
     try {
       data = new Uint8Array(readFileSync(file.hostPath));

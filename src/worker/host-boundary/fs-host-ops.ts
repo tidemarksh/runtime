@@ -1,4 +1,7 @@
-import { hostExecutionState } from "../host-execution-state.js";
+import {
+  hostExecutionState,
+  markRegularFileFsInFlight,
+} from "../host-execution-state.js";
 import { processHasKernelWorkerOwnership } from "../kernel-worker-ownership.js";
 import { processHasWorker, processWorkers } from "../process-worker-state.js";
 import { guestWriteWatchRegions } from "../guest-write-watch-state.js";
@@ -13,10 +16,17 @@ import {
 } from "../ownership/ofd-table.js";
 import {
   applyThreadFdEntries,
+  canonicalFdTableVmPtrForThread,
   supervisorProcessFdFlagsForFd,
   supervisorProcessOfdForFd,
 } from "../ownership/fd-table.js";
-import { supervisorOfdFdType } from "../ownership/ofd-metadata.js";
+import {
+  supervisorOfdFdType,
+  supervisorOfdHostFd,
+  supervisorOfdIno,
+  supervisorOfdOffset,
+  supervisorOfdStatusFlags,
+} from "../ownership/ofd-metadata.js";
 import { applyThreadOfdSlots } from "../ownership/ofd-slot.js";
 import {
   appendPendingGuestMemoryWrites,
@@ -52,11 +62,15 @@ import {
   setThreadOwnerAsyncStatus,
 } from "../thread-host-state.js";
 import { maybeThreadActivityState, getThreadActivityState } from "../thread-activity-state.js";
-import { setPendingKernelStateForNextStep } from "../thread-step-payload.js";
+import {
+  appendPendingAuthoritativeFdForNextStep,
+  setPendingKernelStateForNextStep,
+} from "../thread-step-payload.js";
 import type {
   GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
+  KernelWorkerRegularFileFsSnapshot,
   KernelWorkerPidBytesSnapshot,
 } from "../../messages.js";
 import type { SyncCause } from "../contracts/sync.js";
@@ -81,7 +95,11 @@ import {
   FS_RING_REQUEST_FLAGS_OFFSET,
   FS_RING_REQUEST_OPCODE_OFFSET,
   FS_RING_REQUEST_OFFSET_OFFSET,
+  FS_RING_REQUEST_MODE_OFFSET,
+  FS_RING_REQUEST_OFD_ID_OFFSET,
+  FS_RING_REQUEST_INO_OFFSET,
   FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_PATH_PTR_OFFSET,
   FS_RING_REQUEST_LEN_OFFSET,
   FS_RING_REQUEST_VM_PTR_OFFSET,
   FS_RING_RESPONSE_RESULT_OFFSET,
@@ -92,6 +110,13 @@ import {
   fsRingCompletionEntryOffset,
   fsRingRequestEntryOffset,
 } from "../../layout/fs-ring.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_STATUS_FLAGS_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../layout/ofd.js";
 import {
   completedKernelRpcOutcome,
   type KernelRpcResumeOutcome,
@@ -105,6 +130,23 @@ const FS_DEBUG_PATH_BUF_LEN = 4096;
 const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_LIFECYCLE_DEBUG ?? "") === "1";
+const FS_PROCESS_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_PROCESS_DEBUG ?? "") === "1";
+const FS_FD_STATE_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_FD_STATE_DEBUG ?? "") === "1";
+const FS_CREATED_FD_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_CREATED_FD_DEBUG ?? "") === "1";
+const FS_TRACE_INO = Number((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_TRACE_INO ?? "0");
+const FS_TRACE_STALE_READ = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_TRACE_STALE_READ ?? "") === "1";
+const FS_FD_STATE_DETAIL_ENABLED = FS_LIFECYCLE_DEBUG_ENABLED || FS_FD_STATE_DEBUG_ENABLED;
+const MAX_CHAINED_FS_RESUME_ATTEMPTS = 64;
 
 function supervisorNumber(value: bigint | number | undefined, name: string): number {
   const numeric = typeof value === "bigint" ? Number(value) : value;
@@ -126,6 +168,8 @@ interface PendingFsContext {
   opcode: number;
   effects: number;
   targetIno: number;
+  fd: number;
+  flags: number;
   path: string | null;
   secondaryPath: string | null;
 }
@@ -153,9 +197,22 @@ interface FsRingProgressSnapshot {
   completeTail: number;
 }
 
+interface RegularFileIdentity {
+  fileType: number;
+  ino: number;
+  hostFd: number;
+  statusFlags: number;
+  offset: bigint;
+}
+
 interface PendingRegularFileFsRequest {
   fd: number;
   ofdId: number;
+  ringOfdId: number;
+  ino: number;
+  requestOffset: bigint | null;
+  generation?: number;
+  identity: RegularFileIdentity | null;
 }
 
 interface FsGuestMemoryWriteOptions {
@@ -227,6 +284,7 @@ export interface WorkerKernelRpcFsDeps {
 
 export function createWorkerKernelRpcFsHelpers(deps: WorkerKernelRpcFsDeps) {
   const fsResumeInFlight = new WeakMap<ProcessHandle, Map<string, Promise<KernelRpcResumeOutcome>>>();
+  const fsResumeProcessTails = new WeakMap<ProcessHandle, Promise<void>>();
   const decoder = new TextDecoder();
 
 function decodeKernelBytes(memory: WebAssembly.Memory, ptr: number, length: number): string {
@@ -252,10 +310,13 @@ function readPendingFsPath(handle: ProcessHandle, vmPtr: number, secondary = fal
 }
 
 function readPendingFsContext(handle: ProcessHandle, vmPtr: number): PendingFsContext {
+  const request = readPendingFsRingRequest(handle, vmPtr);
   return {
     opcode: handle.kernel.thread_pending_fs_opcode(vmPtr),
     effects: handle.kernel.thread_pending_fs_effects(vmPtr),
     targetIno: handle.kernel.thread_pending_fs_target_ino(vmPtr),
+    fd: request?.fd ?? -1,
+    flags: request?.flags ?? 0,
     path: readPendingFsPath(handle, vmPtr),
     secondaryPath: readPendingFsPath(handle, vmPtr, true),
   };
@@ -291,7 +352,73 @@ function formatPendingFsDebugSuffix(context: PendingFsContext): string {
   const secondaryPathSuffix = context.secondaryPath
     ? `:path2=${JSON.stringify(context.secondaryPath)}`
     : "";
-  return `:op=${context.opcode}:fx=${context.effects}:ino=${context.targetIno}${pathSuffix}${secondaryPathSuffix}`;
+  return `:op=${context.opcode}:fx=${context.effects}:ino=${context.targetIno}:fd=${context.fd}:flags=${context.flags}${pathSuffix}${secondaryPathSuffix}`;
+}
+
+function formatRegularFilePendingFsDebugSuffix(
+  handle: ProcessHandle,
+  request: PendingRegularFileFsRequest | null,
+): string {
+  if (request === null) {
+    return "";
+  }
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  if (request.ofdId <= 0 || request.ofdId >= maxFds) {
+    return `:regular=fd=${request.fd}/ofd=${request.ofdId}/invalid`;
+  }
+  if (request.identity !== null) {
+    return [
+      `:regular=fd=${request.fd}`,
+      `ofd=${request.ofdId}`,
+      `type=${request.identity.fileType}`,
+      `ino=${request.identity.ino}`,
+      `host=${request.identity.hostFd}`,
+      `status=${request.identity.statusFlags}`,
+      `offset=${request.identity.offset.toString()}`,
+    ].join("/");
+  }
+  return [
+    `:regular=fd=${request.fd}`,
+    `ofd=${request.ofdId}`,
+    `type=${supervisorOfdFdType(handle, request.ofdId)}`,
+    `ino=${supervisorOfdIno(handle, request.ofdId)}`,
+    `host=${supervisorOfdHostFd(handle, request.ofdId)}`,
+    `status=${supervisorOfdStatusFlags(handle, request.ofdId)}`,
+    `offset=${supervisorOfdOffset(handle, request.ofdId).toString()}`,
+  ].join("/");
+}
+
+function readRegularFileIdentity(handle: ProcessHandle, ofdId: number): RegularFileIdentity | null {
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  if (ofdId <= 0 || ofdId >= maxFds) {
+    return null;
+  }
+  const fileType = supervisorOfdFdType(handle, ofdId);
+  if (fileType <= 0) {
+    return null;
+  }
+  return {
+    fileType,
+    ino: supervisorOfdIno(handle, ofdId),
+    hostFd: supervisorOfdHostFd(handle, ofdId),
+    statusFlags: supervisorOfdStatusFlags(handle, ofdId),
+    offset: supervisorOfdOffset(handle, ofdId),
+  };
+}
+
+function regularFileIdentityMatches(
+  left: RegularFileIdentity | null,
+  right: RegularFileIdentity | null,
+  options: { compareOffset?: boolean } = {},
+): boolean {
+  if (left === null || right === null) {
+    return true;
+  }
+  return left.fileType === right.fileType
+    && left.ino === right.ino
+    && left.hostFd === right.hostFd
+    && left.statusFlags === right.statusFlags
+    && (options.compareOffset === false || left.offset === right.offset);
 }
 
 function applyLocalMetadataMutationAfterFs(
@@ -367,7 +494,8 @@ function appendFsLifecycleEvent(
   vmPtr: number,
   detail = "",
 ): void {
-  const event = `fs-${phase}:${handle.pid}:0x${vmPtr.toString(16)}${detail}`;
+  const timestamp = FS_LIFECYCLE_DEBUG_ENABLED ? `:t=${Date.now()}` : "";
+  const event = `fs-${phase}:${handle.pid}:0x${vmPtr.toString(16)}${timestamp}${detail}`;
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     event,
@@ -375,6 +503,30 @@ function appendFsLifecycleEvent(
   if (FS_LIFECYCLE_DEBUG_ENABLED) {
     console.error(`[tidemark-fs] ${event}`);
   }
+}
+
+function fsTimingStart(): number {
+  return FS_LIFECYCLE_DEBUG_ENABLED ? Date.now() : 0;
+}
+
+function formatFsTimingTotal(startMs: number, detail = ""): string {
+  if (!FS_LIFECYCLE_DEBUG_ENABLED || startMs === 0) {
+    return detail;
+  }
+  return `:total=${Date.now() - startMs}${detail}`;
+}
+
+function appendFsTimingSince(
+  handle: ProcessHandle,
+  phase: string,
+  vmPtr: number,
+  startMs: number,
+  detail = "",
+): void {
+  if (!FS_LIFECYCLE_DEBUG_ENABLED || startMs === 0) {
+    return;
+  }
+  appendFsLifecycleEvent(handle, `timing-${phase}`, vmPtr, `:dt=${Date.now() - startMs}${detail}`);
 }
 
 function formatFdEntrySummary(
@@ -385,6 +537,65 @@ function formatFdEntrySummary(
     .slice(0, 16)
     .map((entry) => `${entry.fd}->${entry.ofdId}/${entry.fdFlags}`);
   return nonzeroEntries.length > 0 ? nonzeroEntries.join(",") : "none";
+}
+
+function formatOfdSlotSummary(
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): string {
+  const entries = (ofdSlots ?? [])
+    .filter((slot) => slot.ofdId !== 0)
+    .slice(0, 16)
+    .map((slot) => {
+      if (slot.slot.byteLength < OFD_INO_OFFSET + 4) {
+        return `${slot.ofdId}/short=${slot.slot.byteLength}`;
+      }
+      const view = new DataView(slot.slot.buffer, slot.slot.byteOffset, slot.slot.byteLength);
+      const offset = slot.slot.byteLength >= OFD_OFFSET_OFFSET + 8
+        ? view.getBigInt64(OFD_OFFSET_OFFSET, true).toString()
+        : "short";
+      return [
+        slot.ofdId,
+        `t${view.getInt32(OFD_TYPE_OFFSET, true)}`,
+        `h${view.getInt32(OFD_HOST_FD_OFFSET, true)}`,
+        `sf${view.getInt32(OFD_STATUS_FLAGS_OFFSET, true)}`,
+        `i${view.getUint32(OFD_INO_OFFSET, true)}`,
+        `o${offset}`,
+      ].join("/");
+    });
+  return entries.length > 0 ? entries.join(",") : "none";
+}
+
+function formatCreatedFdResponseSummary(
+  fd: number | null,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): string {
+  if (fd === null) {
+    return "";
+  }
+  const entry = fdEntries?.find((candidate) => candidate.fd === fd);
+  if (!entry) {
+    return `:created=${fd}->missing`;
+  }
+  const slot = ofdSlots?.find((candidate) => candidate.ofdId === entry.ofdId);
+  return `:created=${fd}->${entry.ofdId}/${entry.fdFlags}`
+    + `:createdOfd=${slot ? formatOfdSlotSummary([slot]) : "missing"}`;
+}
+
+function formatRuntimeFdForFd(handle: ProcessHandle, vmPtr: number, fd: number | null): string {
+  if (fd === null) {
+    return "";
+  }
+  const ofdId = supervisorProcessOfdForFd(handle, vmPtr, fd);
+  return [
+    `:created=${fd}->${ofdId}`,
+    `ff${supervisorProcessFdFlagsForFd(handle, vmPtr, fd)}`,
+    `t${supervisorOfdFdType(handle, ofdId)}`,
+    `h${supervisorOfdHostFd(handle, ofdId)}`,
+    `i${supervisorOfdIno(handle, ofdId)}`,
+    `sf${supervisorOfdStatusFlags(handle, ofdId)}`,
+    `o${supervisorOfdOffset(handle, ofdId).toString()}`,
+  ].join("/");
 }
 
 function formatRuntimeFdSummary(handle: ProcessHandle, vmPtr: number): string {
@@ -398,7 +609,15 @@ function formatRuntimeFdSummary(handle: ProcessHandle, vmPtr: number): string {
     if (ofdId === 0) {
       continue;
     }
-    entries.push(`${fd}->${ofdId}/${supervisorProcessFdFlagsForFd(handle, vmPtr, fd)}`);
+    entries.push([
+      `${fd}->${ofdId}`,
+      `ff${supervisorProcessFdFlagsForFd(handle, vmPtr, fd)}`,
+      `t${supervisorOfdFdType(handle, ofdId)}`,
+      `h${supervisorOfdHostFd(handle, ofdId)}`,
+      `i${supervisorOfdIno(handle, ofdId)}`,
+      `sf${supervisorOfdStatusFlags(handle, ofdId)}`,
+      `o${supervisorOfdOffset(handle, ofdId).toString()}`,
+    ].join("/"));
   }
   return entries.length > 0 ? entries.join(",") : "none";
 }
@@ -438,6 +657,64 @@ function fsOpName(opcode: number): string {
   }
 }
 
+function readGuestCStringForFsDebug(
+  handle: ProcessHandle,
+  guestPtr: bigint | number,
+): string | null {
+  const ptr = typeof guestPtr === "bigint" ? guestPtr : BigInt(guestPtr);
+  if (ptr === 0n || ptr < 0n || ptr > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  const absolute = BigInt(handle.guestBase) + ptr;
+  if (absolute < 0n || absolute > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  const bytes = new Uint8Array(handle.memory.buffer);
+  let index = Number(absolute);
+  if (index < 0 || index >= bytes.length) {
+    return null;
+  }
+  const start = index;
+  while (index < bytes.length && bytes[index] !== 0) {
+    index += 1;
+  }
+  if (index >= bytes.length) {
+    return null;
+  }
+  return new TextDecoder().decode(bytes.subarray(start, index));
+}
+
+function formatGuestStrvecForFsDebug(
+  handle: ProcessHandle,
+  vecPtr: bigint,
+  maxEntries: number,
+): string {
+  if (vecPtr === 0n || vecPtr < 0n || vecPtr > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return "null";
+  }
+  const absolute = BigInt(handle.guestBase) + vecPtr;
+  if (absolute < 0n || absolute > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return "bad";
+  }
+  const view = new DataView(handle.memory.buffer);
+  const entries: string[] = [];
+  const base = Number(absolute);
+  for (let index = 0; index < maxEntries; index += 1) {
+    const entryOffset = base + index * 8;
+    if (entryOffset < 0 || entryOffset + 8 > view.byteLength) {
+      entries.push(`@${index}=bad`);
+      break;
+    }
+    const ptr = view.getBigUint64(entryOffset, true);
+    if (ptr === 0n) {
+      entries.push(`@${index}=null`);
+      break;
+    }
+    entries.push(`@${index}=0x${ptr.toString(16)}:${JSON.stringify(readGuestCStringForFsDebug(handle, ptr) ?? "")}`);
+  }
+  return entries.join(",");
+}
+
 function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
   const progress = snapshotFsRingProgress(handle, vmPtr);
   if (progress === null) {
@@ -451,6 +728,26 @@ function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
     completeTail,
   } = progress;
   const view = new DataView(handle.memory.buffer);
+  if (!FS_LIFECYCLE_DEBUG_ENABLED) {
+    if (submitTail < submitHead) {
+      const entry = fsRingRequestEntryOffset(ringBase, submitTail);
+      const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
+      const fd = view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
+      const offset = view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true);
+      const len = view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true);
+      const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
+      const mode = view.getUint32(entry + FS_RING_REQUEST_MODE_OFFSET, true);
+      const ofdId = view.getUint32(entry + FS_RING_REQUEST_OFD_ID_OFFSET, true);
+      const ino = view.getUint32(entry + FS_RING_REQUEST_INO_OFFSET, true);
+      return `:req=${submitTail}:op=${opcode}/${fsOpName(opcode)}/fd=${fd}/off=${offset.toString()}/len=${len.toString()}/flags=${flags}/mode=${mode}/ofd=${ofdId}/ino=${ino}`;
+    }
+    if (completeTail < completeHead) {
+      const entry = fsRingCompletionEntryOffset(ringBase, completeTail);
+      const result = view.getBigInt64(entry + FS_RING_RESPONSE_RESULT_OFFSET, true);
+      return `:cq=${completeTail}:rv=${result.toString()}`;
+    }
+    return "";
+  }
   const requests: string[] = [];
   for (let pos = submitTail; pos < submitHead && requests.length < 4; pos += 1) {
     const entry = fsRingRequestEntryOffset(ringBase, pos);
@@ -459,6 +756,7 @@ function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
     const offset = view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true);
     const len = view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true);
     const bufPtr = view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true);
+    const pathPtr = view.getBigUint64(entry + FS_RING_REQUEST_PATH_PTR_OFFSET, true);
     const flags = view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true);
     const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true);
     requests.push([
@@ -467,9 +765,15 @@ function formatFsRingDebug(handle: ProcessHandle, vmPtr: number): string {
       `off=${offset.toString()}`,
       `len=${len.toString()}`,
       `buf=0x${bufPtr.toString(16)}`,
+      opcode === FS_OP_EXECVE
+        ? `path=0x${pathPtr.toString(16)}:${JSON.stringify(readGuestCStringForFsDebug(handle, pathPtr) ?? "")}`
+        : "",
+      opcode === FS_OP_EXECVE
+        ? `argv=0x${bufPtr.toString(16)}:${formatGuestStrvecForFsDebug(handle, bufPtr, 8)}`
+        : "",
       `flags=${flags}`,
       `vm=0x${requestVmPtr.toString(16)}`,
-    ].join("/"));
+    ].filter(Boolean).join("/"));
   }
   const completions: string[] = [];
   for (let pos = completeTail; pos < completeHead && completions.length < 4; pos += 1) {
@@ -502,7 +806,29 @@ function fsRingHasPendingRequestForVm(handle: ProcessHandle, vmPtr: number): boo
   return false;
 }
 
-function pendingFsRequestFd(handle: ProcessHandle, vmPtr: number): number | null {
+interface PendingFsRingRequest {
+  opcode: number;
+  fd: number;
+  offset: bigint;
+  length: bigint;
+  bufPtr: bigint;
+  flags: number;
+  ofdId: number;
+  ino: number;
+}
+
+interface RegularFileReadBufferSnapshot {
+  guestPtr: number;
+  bytes: Uint8Array;
+}
+
+function fsRingU64ToSafeNumber(value: bigint): number | null {
+  return value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(value)
+    : null;
+}
+
+function readPendingFsRingRequest(handle: ProcessHandle, vmPtr: number): PendingFsRingRequest | null {
   const progress = snapshotFsRingProgress(handle, vmPtr);
   if (progress === null) {
     return null;
@@ -513,13 +839,175 @@ function pendingFsRequestFd(handle: ProcessHandle, vmPtr: number): number | null
     const entry = fsRingRequestEntryOffset(ringBase, pos);
     const requestVmPtr = view.getUint32(entry + FS_RING_REQUEST_VM_PTR_OFFSET, true);
     if (requestVmPtr === vmPtr) {
-      return view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true);
+      return {
+        opcode: view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true),
+        fd: view.getInt32(entry + FS_RING_REQUEST_FD_OFFSET, true),
+        offset: view.getBigUint64(entry + FS_RING_REQUEST_OFFSET_OFFSET, true),
+        length: view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true),
+        bufPtr: view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true),
+        flags: view.getUint32(entry + FS_RING_REQUEST_FLAGS_OFFSET, true),
+        ofdId: view.getUint32(entry + FS_RING_REQUEST_OFD_ID_OFFSET, true),
+        ino: view.getUint32(entry + FS_RING_REQUEST_INO_OFFSET, true),
+      };
     }
   }
   return null;
 }
 
+function snapshotPendingRegularFileReadBuffer(
+  handle: ProcessHandle,
+  request: PendingFsRingRequest | null,
+): RegularFileReadBufferSnapshot | null {
+  if (request === null || request.opcode !== FS_OP_READ) {
+    return null;
+  }
+  const guestPtr = fsRingU64ToSafeNumber(request.bufPtr);
+  const length = fsRingU64ToSafeNumber(request.length);
+  if (guestPtr === null || length === null || guestPtr <= 0 || length <= 0) {
+    return null;
+  }
+  const start = handle.guestBase + guestPtr;
+  const end = start + length;
+  if (
+    start < handle.guestBase
+    || end < start
+    || end > handle.memory.buffer.byteLength
+  ) {
+    return null;
+  }
+  return {
+    guestPtr,
+    bytes: new Uint8Array(handle.memory.buffer.slice(start, end)),
+  };
+}
+
+function restoreRegularFileReadBufferSnapshot(
+  handle: ProcessHandle,
+  snapshot: RegularFileReadBufferSnapshot | null,
+  bytesWritten: bigint,
+): boolean {
+  if (snapshot === null || bytesWritten <= 0n) {
+    return false;
+  }
+  const length = bytesWritten > BigInt(Number.MAX_SAFE_INTEGER)
+    ? snapshot.bytes.byteLength
+    : Math.min(Number(bytesWritten), snapshot.bytes.byteLength);
+  if (length <= 0) {
+    return false;
+  }
+  const start = handle.guestBase + snapshot.guestPtr;
+  const end = start + length;
+  if (
+    start < handle.guestBase
+    || end < start
+    || end > handle.memory.buffer.byteLength
+  ) {
+    return false;
+  }
+  new Uint8Array(handle.memory.buffer).set(snapshot.bytes.subarray(0, length), start);
+  return true;
+}
+
+function regularFileReadUsesSubmittedIdentity(
+  request: PendingRegularFileFsRequest | null,
+  ringRequest: PendingFsRingRequest | null,
+): boolean {
+  return request !== null
+    && ringRequest !== null
+    && ringRequest.opcode === FS_OP_READ
+    && ringRequest.fd === request.fd
+    && ringRequest.ofdId === request.ofdId
+    && ringRequest.ino > 0
+    && ringRequest.ino === request.ino;
+}
+
+function traceRegularFileRead(
+  handle: ProcessHandle,
+  phase: "submit" | "response",
+  vmPtr: number,
+  request: PendingRegularFileFsRequest | null,
+  ringRequest: PendingFsRingRequest | null,
+  result?: bigint,
+): void {
+  const requestIsStale = phase === "response"
+    && request !== null
+    && !regularFileRequestStillCurrent(handle, vmPtr, request);
+  if (
+    ringRequest?.opcode !== FS_OP_READ
+    || (
+      !(
+        FS_TRACE_INO === -1
+        || (
+          Number.isSafeInteger(FS_TRACE_INO)
+          && FS_TRACE_INO > 0
+          && (ringRequest.ino === FS_TRACE_INO || request?.identity?.ino === FS_TRACE_INO)
+        )
+      )
+      && !(FS_TRACE_STALE_READ && requestIsStale)
+    )
+  ) {
+    return;
+  }
+  const guestPtr = fsRingU64ToSafeNumber(ringRequest.bufPtr);
+  const requestedLength = fsRingU64ToSafeNumber(ringRequest.length);
+  const visibleLength = result === undefined
+    ? requestedLength
+    : Math.min(
+      requestedLength ?? 0,
+      result > 0n && result <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(result) : 0,
+    );
+  let buffer = "unavailable";
+  if (guestPtr !== null && visibleLength !== null && guestPtr > 0 && visibleLength > 0) {
+    const start = handle.guestBase + guestPtr;
+    const end = start + visibleLength;
+    if (start >= handle.guestBase && end >= start && end <= handle.memory.buffer.byteLength) {
+      const bytes = new Uint8Array(handle.memory.buffer, start, visibleLength);
+      const hex = (chunk: Uint8Array) => [...chunk]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      let hash = 0x811c9dc5;
+      for (const byte of bytes) {
+        hash = Math.imul(hash ^ byte, 0x01000193);
+      }
+      buffer = `len=${visibleLength}:hash=${(hash >>> 0).toString(16)}`
+        + `:head=${hex(bytes.subarray(0, Math.min(32, bytes.length)))}`
+        + `:tail=${hex(bytes.subarray(Math.max(0, bytes.length - 32)))}`;
+    }
+  }
+  const currentIdentity = request === null ? null : readRegularFileIdentity(handle, request.ofdId);
+  const currentGeneration = request === null
+    ? undefined
+    : handle.kernel.process_fd_generation?.(vmPtr, request.fd);
+  console.error(
+    `[tidemark-fs-trace] ${phase}:pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`
+      + `:fd=${ringRequest.fd}:ofd=${ringRequest.ofdId}:ino=${ringRequest.ino}`
+      + `:off=${ringRequest.offset.toString()}:req=${ringRequest.length.toString()}`
+      + `:buf=0x${ringRequest.bufPtr.toString(16)}`
+      + `:pendingOfd=${request?.ofdId ?? 0}:pendingIno=${request?.ino ?? 0}`
+      + `:pendingGen=${request?.generation ?? "n/a"}:currentGen=${currentGeneration ?? "n/a"}`
+      + `:identityIno=${request?.identity?.ino ?? 0}:currentIno=${currentIdentity?.ino ?? 0}`
+      + (result === undefined ? "" : `:result=${result.toString()}`)
+      + `:${buffer}`,
+  );
+}
+
+function pendingFsRequestFd(handle: ProcessHandle, vmPtr: number): number | null {
+  return readPendingFsRingRequest(handle, vmPtr)?.fd ?? null;
+}
+
 function pendingFsSharedOfdIds(handle: ProcessHandle, vmPtr: number): number[] {
+  const pendingRegularFile = supervisorPendingRegularFileFsRequest(handle, vmPtr);
+  if (pendingRegularFile !== null) {
+    const { ofdId } = pendingRegularFile;
+    if (
+      ofdId > 0
+      && ofdId < handle.kernel.abi_max_fds()
+      && kernelShareHasSharedOfdId(handle, ofdId)
+    ) {
+      return [ofdId];
+    }
+    return [];
+  }
   const fd = pendingFsRequestFd(handle, vmPtr);
   if (fd === null || fd < 0 || fd >= handle.kernel.abi_max_fds()) {
     return [];
@@ -566,6 +1054,42 @@ function supervisorPendingRingRequest(
   return pendingRingRequest.call(handle.kernel, vmPtr) !== 0;
 }
 
+function snapshotPendingRegularFileRequestOfd(
+  handle: ProcessHandle,
+  vmPtr: number,
+  request: PendingRegularFileFsRequest | null,
+): KernelWorkerRegularFileFsSnapshot | undefined {
+  if (request === null || !regularFileRequestStillCurrent(handle, vmPtr, request)) {
+    return undefined;
+  }
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  const tableBytes = handle.kernel.kernel_ofd_table_bytes?.() ?? 0;
+  const slotBytes = maxFds > 0 ? tableBytes / maxFds : 0;
+  const slotOffset = handle.kernelState.ofdTablePtr + request.ofdId * slotBytes;
+  if (
+    request.ofdId <= 0
+    || request.ofdId >= maxFds
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= 0
+    || slotOffset < 0
+    || slotOffset + slotBytes > handle.memory.buffer.byteLength
+  ) {
+    return undefined;
+  }
+  const ofdSlot = new Uint8Array(
+    handle.memory.buffer.slice(slotOffset, slotOffset + slotBytes),
+  );
+  if (request.requestOffset !== null) {
+    new DataView(ofdSlot.buffer, ofdSlot.byteOffset, ofdSlot.byteLength)
+      .setBigInt64(OFD_OFFSET_OFFSET, request.requestOffset, true);
+  }
+  return {
+    fd: request.fd,
+    ofdId: request.ofdId,
+    ofdSlot,
+  };
+}
+
 function supervisorPendingRegularFileFsRequest(
   handle: ProcessHandle,
   vmPtr: number,
@@ -577,7 +1101,18 @@ function supervisorPendingRegularFileFsRequest(
   }
   const fd = pendingFd.call(handle.kernel, vmPtr);
   const ofdId = pendingOfd.call(handle.kernel, vmPtr);
-  return fd >= 0 && ofdId > 0 ? { fd, ofdId } : null;
+  const ringRequest = fd >= 0 ? readPendingFsRingRequest(handle, vmPtr) : null;
+  return fd >= 0 && ofdId > 0
+    ? {
+      fd,
+      ofdId,
+      ringOfdId: ringRequest?.fd === fd ? ringRequest.ofdId : 0,
+      ino: ringRequest?.fd === fd ? ringRequest.ino : 0,
+      requestOffset: ringRequest?.fd === fd ? ringRequest.offset : null,
+      generation: handle.kernel.process_fd_generation?.(vmPtr, fd),
+      identity: readRegularFileIdentity(handle, ofdId),
+    }
+    : null;
 }
 
 function supervisorFsCompletionDecision(
@@ -716,6 +1251,86 @@ function supervisorFsLocalMetadataActions(
   };
 }
 
+function regularFileSnapshotIdentity(
+  snapshot: KernelWorkerOfdSlotSnapshot,
+): RegularFileIdentity | null {
+  if (snapshot.slot.byteLength < OFD_INO_OFFSET + 4) {
+    return null;
+  }
+  const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+  return {
+    fileType: view.getInt32(OFD_TYPE_OFFSET, true),
+    ino: view.getUint32(OFD_INO_OFFSET, true),
+    hostFd: view.getInt32(OFD_HOST_FD_OFFSET, true),
+    statusFlags: view.getInt32(OFD_STATUS_FLAGS_OFFSET, true),
+    offset: view.getBigInt64(OFD_OFFSET_OFFSET, true),
+  };
+}
+
+function regularFileRequestStillCurrent(
+  handle: ProcessHandle,
+  vmPtr: number,
+  request: PendingRegularFileFsRequest,
+): boolean {
+  if (supervisorProcessOfdForFd(handle, vmPtr, request.fd) !== request.ofdId) {
+    return false;
+  }
+  if (request.ringOfdId > 0 && request.ringOfdId !== request.ofdId) {
+    return false;
+  }
+  if (request.ino > 0 && supervisorOfdIno(handle, request.ofdId) !== request.ino) {
+    return false;
+  }
+  const currentGeneration = handle.kernel.process_fd_generation?.(vmPtr, request.fd);
+  if (request.generation !== undefined && currentGeneration !== undefined && currentGeneration !== request.generation) {
+    return false;
+  }
+  return regularFileIdentityMatches(
+    request.identity,
+    readRegularFileIdentity(handle, request.ofdId),
+    { compareOffset: false },
+  );
+}
+
+function regularFileSnapshotMatchesRequest(
+  request: PendingRegularFileFsRequest,
+  snapshot: KernelWorkerOfdSlotSnapshot,
+): boolean {
+  const identity = regularFileSnapshotIdentity(snapshot);
+  if (request.ino > 0) {
+    return identity !== null
+      && identity.ino === request.ino
+      && regularFileIdentityMatches(
+        request.identity,
+        identity,
+        { compareOffset: false },
+      );
+  }
+  return regularFileIdentityMatches(
+    request.identity,
+    identity,
+    { compareOffset: false },
+  );
+}
+
+function currentRegularFileOfdMatchesRequest(
+  handle: ProcessHandle,
+  request: PendingRegularFileFsRequest,
+): boolean {
+  const currentIdentity = readRegularFileIdentity(handle, request.ofdId);
+  if (currentIdentity === null) {
+    return false;
+  }
+  if (request.ino > 0 && currentIdentity.ino !== request.ino) {
+    return false;
+  }
+  return regularFileIdentityMatches(
+    request.identity,
+    currentIdentity,
+    { compareOffset: false },
+  );
+}
+
 function filterFsResponseToRegularFileRequest(
   request: PendingRegularFileFsRequest,
   fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
@@ -723,6 +1338,7 @@ function filterFsResponseToRegularFileRequest(
 ): {
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];
+  skippedIdentityMismatch: boolean;
 } {
   const requestFdEntries = (fdEntries ?? [])
     .filter((entry) => entry.fd === request.fd && entry.ofdId === request.ofdId);
@@ -730,11 +1346,15 @@ function filterFsResponseToRegularFileRequest(
   for (const entry of requestFdEntries) {
     requestOfdIds.add(entry.ofdId);
   }
-  const requestOfdSlots = (ofdSlots ?? [])
+  const candidateOfdSlots = (ofdSlots ?? [])
     .filter((snapshot) => requestOfdIds.has(snapshot.ofdId));
+  const requestOfdSlots = candidateOfdSlots
+    .filter((snapshot) => regularFileSnapshotMatchesRequest(request, snapshot));
+  const skippedIdentityMismatch = candidateOfdSlots.length > 0 && requestOfdSlots.length === 0;
   return {
-    fdEntries: requestFdEntries.length > 0 ? requestFdEntries : undefined,
+    fdEntries: skippedIdentityMismatch || requestFdEntries.length === 0 ? undefined : requestFdEntries,
     ofdSlots: requestOfdSlots.length > 0 ? requestOfdSlots : undefined,
+    skippedIdentityMismatch,
   };
 }
 
@@ -981,6 +1601,58 @@ function fsResumeKey(handle: ProcessHandle, vmPtr: number): string {
   ].join(":");
 }
 
+function fsRequestRequiresProcessWidePumpGate(
+  handle: ProcessHandle,
+  pendingFs: PendingFsContext,
+): boolean {
+  switch (pendingFs.opcode) {
+    case FS_OP_CLOSE:
+    case FS_OP_MKDIR:
+    case FS_OP_UNLINK:
+    case FS_OP_RENAME:
+    case FS_OP_TRUNCATE:
+    case FS_OP_LSEEK:
+    case FS_OP_FSYNC:
+      return true;
+    case FS_OP_OPENAT: {
+      const mutatingOpenFlags = (handle.kernel.abi_o_creat?.() ?? 0x40)
+        | (handle.kernel.abi_o_trunc?.() ?? 0x200);
+      return (pendingFs.flags & mutatingOpenFlags) !== 0;
+    }
+    default:
+      return false;
+  }
+}
+
+function beginRegularFileFsInFlight(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+  pendingFs: PendingFsContext,
+  request: PendingRegularFileFsRequest | null,
+): () => void {
+  return markRegularFileFsInFlight(
+    handle,
+    request === null
+      ? (
+        fsRequestRequiresProcessWidePumpGate(handle, pendingFs)
+          ? {
+            worker,
+            vmPtr,
+            fd: pendingFs.fd,
+            ofdId: 0,
+          }
+          : null
+      )
+      : {
+        worker,
+        vmPtr,
+        fd: request.fd,
+        ofdId: request.ofdId,
+      },
+  );
+}
+
 function normalizeFsResult(result: bigint | number): bigint {
   return typeof result === "bigint" ? result : BigInt(result);
 }
@@ -1041,12 +1713,14 @@ function rememberPendingFsMemfsChange(handle: ProcessHandle, pendingFs: PendingF
   }
 }
 
-function fsResultIsPending(handle: ProcessHandle, vmPtr: number, fsResult: bigint | number): boolean {
+function fsResumeStillPending(handle: ProcessHandle, vmPtr: number, fsResult: bigint | number): boolean {
   const result = Number(BigInt.asIntN(64, normalizeFsResult(fsResult)));
   const eagain = handle.kernel.abi_eagain?.() ?? 11;
   const fsStatus = handle.kernel.abi_status_fs?.() ?? -1;
-  return result === eagain
-    && handle.kernel.thread_status?.(vmPtr) === fsStatus;
+  if (handle.kernel.thread_status?.(vmPtr) !== fsStatus) {
+    return false;
+  }
+  return result === eagain || supervisorPendingRingRequest(handle, vmPtr);
 }
 
 function clearStaleFsStatusAfterResume(handle: ProcessHandle, vmPtr: number, fsResult: bigint | number): void {
@@ -1062,7 +1736,7 @@ function clearStaleFsStatusAfterResume(handle: ProcessHandle, vmPtr: number, fsR
     return;
   }
   const before = formatFsRingDebug(handle, vmPtr);
-  const clearedResult = handle.kernel.thread_resume_fs(vmPtr);
+  const clearedResult = handle.kernel.thread_resume_fs_result(vmPtr, BigInt(result));
   appendFsLifecycleEvent(
     handle,
     "clear-stale-status",
@@ -1145,8 +1819,105 @@ function restoreFsFdState(handle: ProcessHandle, snapshot: FsFdStateSnapshot | n
   }
 }
 
+function applyFsResponseFdEntries(
+  handle: ProcessHandle,
+  vmPtr: number,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  options?: Parameters<typeof applyThreadFdEntries>[3],
+): void {
+  applyThreadFdEntries(handle, vmPtr, fdEntries, options);
+  const canonicalVmPtr = canonicalFdTableVmPtrForThread(handle, vmPtr);
+  if (canonicalVmPtr !== vmPtr) {
+    applyThreadFdEntries(handle, canonicalVmPtr, fdEntries, options);
+  }
+}
+
+function normalizeOptionalSyscallNr(value: bigint | number | undefined): bigint | undefined {
+  return value === undefined ? undefined : BigInt(value);
+}
+
+function fsRestoreSyscallNr(
+  handle: ProcessHandle,
+  pendingFs: PendingFsContext,
+): bigint | undefined {
+  switch (pendingFs.opcode) {
+    case FS_OP_OPENAT:
+      return normalizeOptionalSyscallNr(handle.kernel.abi_sys_openat?.());
+    case FS_OP_CLOSE:
+      return normalizeOptionalSyscallNr(handle.kernel.abi_sys_close?.());
+    case FS_OP_EXECVE:
+      return normalizeOptionalSyscallNr(handle.kernel.abi_sys_execve?.());
+    default:
+      return undefined;
+  }
+}
+
+function fsCreatedFdFromResult(
+  handle: ProcessHandle,
+  pendingFs: PendingFsContext,
+  fsResult: bigint,
+  fsSucceeded: boolean,
+): number | null {
+  if (!fsSucceeded || pendingFs.opcode !== FS_OP_OPENAT) {
+    return null;
+  }
+  const createdFd = Number(BigInt.asIntN(64, fsResult));
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  return Number.isInteger(createdFd) && createdFd >= 0 && createdFd < maxFds
+    ? createdFd
+    : null;
+}
+
+function fdEntriesExcludingFd(
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  fd: number | null,
+): readonly KernelWorkerFdEntrySnapshot[] | undefined {
+  if (!fdEntries || fd === null) {
+    return fdEntries;
+  }
+  const filtered = fdEntries.filter((entry) => entry.fd !== fd);
+  return filtered.length > 0 ? filtered : undefined;
+}
+
+function fdEntriesForFd(
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  fd: number | null,
+): readonly KernelWorkerFdEntrySnapshot[] | undefined {
+  if (!fdEntries || fd === null) {
+    return undefined;
+  }
+  const filtered = fdEntries.filter((entry) => entry.fd === fd);
+  return filtered.length > 0 ? filtered : undefined;
+}
+
+function applySubmittedIdentityRegularFileOfdSlots(
+  handle: ProcessHandle,
+  vmPtr: number,
+  request: PendingRegularFileFsRequest,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): boolean {
+  if (!currentRegularFileOfdMatchesRequest(handle, request)) {
+    return false;
+  }
+  const requestFsState = filterFsResponseToRegularFileRequest(
+    request,
+    undefined,
+    ofdSlots,
+  );
+  if (!requestFsState.ofdSlots) {
+    return false;
+  }
+  applyThreadOfdSlots(handle, {
+    vmPtr,
+    ofdSlots: requestFsState.ofdSlots,
+    recordRegularFileOfdOffsets: true,
+  });
+  return true;
+}
+
 function applyFsGuestMemoryWrites(
   handle: ProcessHandle,
+  worker: Worker,
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>,
   writes: GuestMemoryWriteSnapshot[] | undefined,
   options?: FsGuestMemoryWriteOptions,
@@ -1188,11 +1959,8 @@ function applyFsGuestMemoryWrites(
   if (!queueThreadWorkerWrites || pendingWrites.length === 0) {
     return;
   }
-  for (const worker of processWorkers(handle)) {
-    const thread = threadWorkerStates.get(worker);
-    if (!thread) {
-      continue;
-    }
+  const thread = threadWorkerStates.get(worker);
+  if (thread) {
     appendPendingGuestMemoryWrites(thread, pendingWrites);
   }
 }
@@ -1208,14 +1976,22 @@ async function resumeFsViaKernelWorker(
   if (existing) {
     deps.appendWorkerDebugLog(handle, `fs-join:0x${vmPtr.toString(16)}`);
     appendFsLifecycleEvent(handle, "join", vmPtr, "");
-    await existing;
-    return completedKernelRpcOutcome(handle.kernel.thread_status?.(vmPtr));
+    return existing;
   }
   if (byVmPtr === undefined) {
     byVmPtr = new Map();
     fsResumeInFlight.set(handle, byVmPtr);
   }
-  const resume = resumeFsViaKernelWorkerInner(handle, worker, vmPtr);
+  const previousTail = fsResumeProcessTails.get(handle);
+  const resume = (async () => {
+    await previousTail;
+    return resumeFsViaKernelWorkerInner(handle, worker, vmPtr);
+  })();
+  const processTail = resume.then(
+    () => undefined,
+    () => undefined,
+  );
+  fsResumeProcessTails.set(handle, processTail);
   byVmPtr.set(key, resume);
   try {
     return await resume;
@@ -1225,6 +2001,9 @@ async function resumeFsViaKernelWorker(
     }
     if (byVmPtr.size === 0) {
       fsResumeInFlight.delete(handle);
+    }
+    if (fsResumeProcessTails.get(handle) === processTail) {
+      fsResumeProcessTails.delete(handle);
     }
   }
 }
@@ -1241,8 +2020,10 @@ async function completeFsResumeFromSupervisorDecision(
     forceExecveSpawn?: boolean;
   },
 ): Promise<KernelRpcResumeOutcome> {
+  const completionStartMs = fsTimingStart();
   const sourcePrefix = options.source === "local" ? ":local" : "";
   const finalStatus = options.finalStatus ?? handle.kernel.thread_status?.(vmPtr);
+  appendFsTimingSince(handle, "complete-start", vmPtr, completionStartMs, sourcePrefix);
   deps.appendWorkerDebugLog(
     handle,
     `fs-done:0x${vmPtr.toString(16)}${sourcePrefix}:rv=${fsResult.toString()}`,
@@ -1253,7 +2034,7 @@ async function completeFsResumeFromSupervisorDecision(
     vmPtr,
     `${sourcePrefix}:rv=${fsResult.toString()}:status=${finalStatus ?? "n/a"}${formatFsRingDebug(handle, vmPtr)}`,
   );
-  if (fsResultIsPending(handle, vmPtr, fsResult)) {
+  if (fsResumeStillPending(handle, vmPtr, fsResult)) {
     appendFsLifecycleEvent(
       handle,
       "pending",
@@ -1261,6 +2042,7 @@ async function completeFsResumeFromSupervisorDecision(
       `${sourcePrefix}:rv=${fsResult.toString()}${formatFsRingDebug(handle, vmPtr)}`,
     );
     await options.applyPostFsWake();
+    appendFsTimingSince(handle, "post-wake-done", vmPtr, completionStartMs, sourcePrefix);
     const status = handle.kernel.abi_status_fs?.() ?? -1;
     return { kind: "blocked", status };
   }
@@ -1268,13 +2050,21 @@ async function completeFsResumeFromSupervisorDecision(
     || (finalStatus !== undefined && supervisorProcessStatusIsExecveSpawn(handle.kernel, finalStatus));
   if (resolvedToExecveSpawn && finalStatus !== undefined) {
     await options.applyPostFsWake();
+    appendFsTimingSince(handle, "post-wake-done", vmPtr, completionStartMs, sourcePrefix);
     await handleFsExecveSpawn(handle, worker, vmPtr, finalStatus);
+    appendFsTimingSince(handle, "execve-spawn-done", vmPtr, completionStartMs, sourcePrefix);
     return completedKernelRpcOutcome();
   }
   await options.applyPostFsWake();
+  appendFsTimingSince(handle, "post-wake-done", vmPtr, completionStartMs, sourcePrefix);
   submitSupervisorFsReadyEvent(handle, vmPtr, finalStatus);
+  const thread = deps.threadWorkerStates.get(worker);
+  if (thread?.vmPtr === vmPtr) {
+    clearThreadOwnerAsyncStatus(thread);
+  }
   deps.enqueueWorker(handle, worker);
-  return completedKernelRpcOutcome(finalStatus);
+  appendFsTimingSince(handle, "enqueue-done", vmPtr, completionStartMs, sourcePrefix);
+  return completedKernelRpcOutcome(finalStatus, { workerQueued: true });
 }
 
 async function handleFsExecveSpawn(
@@ -1305,16 +2095,64 @@ async function resumeFsViaKernelWorkerInner(
   worker: Worker,
   vmPtr: number,
 ): Promise<KernelRpcResumeOutcome> {
+  for (let attempt = 0; attempt < MAX_CHAINED_FS_RESUME_ATTEMPTS; attempt += 1) {
+    const outcome = await resumeFsViaKernelWorkerOnce(handle, worker, vmPtr);
+    const fsStatus = handle.kernel.abi_status_fs?.() ?? -1;
+    if (handle.kernel.thread_status?.(vmPtr) !== fsStatus || !supervisorPendingRingRequest(handle, vmPtr)) {
+      return outcome;
+    }
+    appendFsLifecycleEvent(
+      handle,
+      "chain",
+      vmPtr,
+      `:attempt=${attempt + 1}${formatFsRingDebug(handle, vmPtr)}`,
+    );
+  }
+  throw new Error(
+    `fs resume chain exceeded ${MAX_CHAINED_FS_RESUME_ATTEMPTS} attempts: `
+      + `vm=0x${vmPtr.toString(16)}${formatFsRingDebug(handle, vmPtr)}`,
+  );
+}
+
+function isActiveVforkChildWorker(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+): boolean {
+  const executionState = hostExecutionState(handle);
+  return executionState.vforkWorker === worker
+    && executionState.vforkSnapshot?.vmPtr === vmPtr;
+}
+
+async function resumeFsViaKernelWorkerOnce(
+  handle: ProcessHandle,
+  worker: Worker,
+  vmPtr: number,
+): Promise<KernelRpcResumeOutcome> {
+  const resumeStartMs = fsTimingStart();
   const pendingFs = readPendingFsContext(handle, vmPtr);
-  const fsDebugSuffix = formatPendingFsDebugSuffix(pendingFs);
   const pendingRingRequest = supervisorPendingRingRequest(handle, vmPtr);
   const regularFilePendingFs = supervisorPendingRegularFileFsRequest(handle, vmPtr);
+  const fsDebugSuffix = formatPendingFsDebugSuffix(pendingFs)
+    + (
+      FS_LIFECYCLE_DEBUG_ENABLED
+        ? formatRegularFilePendingFsDebugSuffix(handle, regularFilePendingFs)
+        : ""
+    );
   const regularFileOnlyPendingFs = regularFilePendingFs !== null;
   const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeFsViaKernelWorker");
+  const clearRegularFileFsInFlight = beginRegularFileFsInFlight(
+    handle,
+    worker,
+    vmPtr,
+    pendingFs,
+    regularFilePendingFs,
+  );
 
   try {
     deps.appendWorkerDebugLog(handle, `fs-start:0x${vmPtr.toString(16)}${fsDebugSuffix}`);
     appendFsLifecycleEvent(handle, "start", vmPtr, `${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
+    appendFsTimingSince(handle, "inner-entry", vmPtr, resumeStartMs, fsDebugSuffix);
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
     const heldOfdIds = collectProcessHeldOfds(handle);
     const missingSharedOfdIds = forkShareMembers.length === 0
@@ -1352,15 +2190,35 @@ async function resumeFsViaKernelWorkerInner(
       });
       setProcessMemfsDirty(peer, false);
     }
-    deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
+    if (!isActiveVforkChildWorker(handle, worker, vmPtr)) {
+      deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
+    }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
     const requestFsFdState = snapshotFsFdState(handle, vmPtr);
+    const requestRingState = readPendingFsRingRequest(handle, vmPtr);
+    const regularFileRequest = snapshotPendingRegularFileRequestOfd(handle, vmPtr, regularFilePendingFs);
+    const regularFileReadBuffer = regularFilePendingFs === null
+      ? null
+      : snapshotPendingRegularFileReadBuffer(handle, requestRingState);
+    traceRegularFileRead(handle, "submit", vmPtr, regularFilePendingFs, requestRingState);
+    appendFsTimingSince(handle, "pre-kernel-worker", vmPtr, resumeStartMs, fsDebugSuffix);
+    const kernelWorkerStartMs = fsTimingStart();
     const processFsResponse = await kernelWorkerRequest({
       type: "process-fs",
       pid: handle.pid,
       vmPtr,
       kernelState: handle.kernelState,
+      ...(regularFileRequest ? { regularFileRequest } : {}),
+      debugProgress: FS_PROCESS_DEBUG_ENABLED,
     });
+    appendFsTimingSince(
+      handle,
+      "kernel-worker-done",
+      vmPtr,
+      kernelWorkerStartMs,
+      formatFsTimingTotal(resumeStartMs, fsDebugSuffix),
+    );
+    const responseApplyStartMs = fsTimingStart();
     const fsProcessedResponse = expectKernelWorkerResponse(
       processFsResponse,
       "fs-processed",
@@ -1369,16 +2227,36 @@ async function resumeFsViaKernelWorkerInner(
     if (fsProcessedResponse.fsDebug) {
       appendFsLifecycleEvent(handle, "processed", vmPtr, `:${fsProcessedResponse.fsDebug}`);
     }
+    const fsResult = normalizeFsResult(fsProcessedResponse.result);
+    traceRegularFileRead(handle, "response", vmPtr, regularFilePendingFs, requestRingState, fsResult);
+    const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
+    const responseCreatedFd = fsCreatedFdFromResult(handle, pendingFs, fsResult, fsSucceeded);
+    if (FS_CREATED_FD_DEBUG_ENABLED && responseCreatedFd !== null) {
+      console.error(
+        `[tidemark-fs-created] response:pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`
+          + formatCreatedFdResponseSummary(
+            responseCreatedFd,
+            fsProcessedResponse.fdEntries,
+            fsProcessedResponse.ofdSlots,
+          ),
+      );
+    }
     if (fsProcessedResponse.fdEntries) {
+      const fdDetail = FS_FD_STATE_DETAIL_ENABLED
+        ? `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}:ofds=${formatOfdSlotSummary(fsProcessedResponse.ofdSlots)}`
+        : `:fdEntries=${fsProcessedResponse.fdEntries.length}:ofdSlots=${fsProcessedResponse.ofdSlots?.length ?? 0}`
+          + formatCreatedFdResponseSummary(
+            responseCreatedFd,
+            fsProcessedResponse.fdEntries,
+            fsProcessedResponse.ofdSlots,
+          );
       appendFsLifecycleEvent(
         handle,
         "fd-response",
         vmPtr,
-        `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
+        fdDetail,
       );
     }
-    const fsResult = normalizeFsResult(fsProcessedResponse.result);
-    const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
     const threadState = deps.threadWorkerStates.get(worker);
     const fsResponseDisposition = supervisorFsResponseDisposition(
       handle,
@@ -1393,14 +2271,60 @@ async function resumeFsViaKernelWorkerInner(
       handle.kernelState = adoptKernelStateForHandle(handle, fsProcessedResponse.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
     }
-    if (fsResponseDisposition.applyGuestMemoryWrites) {
+    const regularFileRequestCurrent = regularFilePendingFs === null
+      || regularFileRequestStillCurrent(handle, vmPtr, regularFilePendingFs);
+    const regularFileReadHasSubmittedIdentity = regularFileReadUsesSubmittedIdentity(
+      regularFilePendingFs,
+      requestRingState,
+    );
+    if (
+      regularFilePendingFs !== null
+      && !regularFileRequestCurrent
+      && !regularFileReadHasSubmittedIdentity
+      && restoreRegularFileReadBufferSnapshot(handle, regularFileReadBuffer, fsResult)
+    ) {
+      appendFsLifecycleEvent(
+        handle,
+        "read-buffer-restored",
+        vmPtr,
+        `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:reason=request-stale`,
+      );
+    } else if (
+      regularFilePendingFs !== null
+      && !regularFileRequestCurrent
+      && regularFileReadHasSubmittedIdentity
+      && regularFileReadBuffer !== null
+    ) {
+      appendFsLifecycleEvent(
+        handle,
+        "read-buffer-kept",
+        vmPtr,
+        `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:reason=submitted-identity`,
+      );
+    }
+    if (
+      fsResponseDisposition.applyGuestMemoryWrites
+      && (regularFileRequestCurrent || regularFileReadHasSubmittedIdentity)
+    ) {
       applyFsGuestMemoryWrites(
         handle,
+        worker,
         deps.threadWorkerStates,
         fsProcessedResponse.guestMemoryWrites,
         {
           queueThreadWorkerWrites: fsResponseDisposition.queueThreadWorkerWrites,
         },
+      );
+    } else if (
+      fsResponseDisposition.applyGuestMemoryWrites
+      && regularFilePendingFs
+      && (fsProcessedResponse.guestMemoryWrites?.length ?? 0) > 0
+    ) {
+      appendFsLifecycleEvent(
+        handle,
+        "guest-write-skipped",
+        vmPtr,
+        `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:reason=request-stale`,
       );
     }
     if (fsResponseDisposition.storePendingKernelState) {
@@ -1438,47 +2362,94 @@ async function resumeFsViaKernelWorkerInner(
       && !regularFileOnlyPendingFs
       && (responseFdState.ofdSlots || responseFdState.fdEntries)
     ) {
+      const restoreSyscallNr = fsRestoreSyscallNr(handle, pendingFs);
+      const createdFd = fsCreatedFdFromResult(handle, pendingFs, fsResult, fsSucceeded);
+      const protectedFdEntries = fdEntriesExcludingFd(responseFdState.fdEntries, createdFd);
+      const createdFdEntries = fdEntriesForFd(responseFdState.fdEntries, createdFd);
       applyThreadOfdSlots(handle, {
         vmPtr,
         fdEntries: responseFdState.fdEntries,
         ofdSlots: responseFdState.ofdSlots,
+        allowRegularFileIdentityReplacement: true,
       });
-      applyThreadFdEntries(handle, vmPtr, responseFdState.fdEntries, {
+      applyFsResponseFdEntries(handle, vmPtr, protectedFdEntries, {
         preserveLiveEpollDependentDescriptors: !fsResponseDisposition.fdResponseMayClearLiveFds,
         preserveLiveRegularFileDescriptors: !fsResponseDisposition.fdResponseMayClearLiveFds,
+        syscallNr: restoreSyscallNr,
       });
+      applyFsResponseFdEntries(handle, vmPtr, createdFdEntries, {
+        syscallNr: restoreSyscallNr,
+      });
+      if (createdFd !== null && createdFdEntries !== undefined) {
+        for (const processWorker of processWorkers(handle)) {
+          const processThread = deps.threadWorkerStates.get(processWorker);
+          if (processThread) {
+            appendPendingAuthoritativeFdForNextStep(processThread, createdFd);
+          }
+        }
+      }
       appendFsLifecycleEvent(
         handle,
         "fd-applied",
         vmPtr,
-        `:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
+        FS_FD_STATE_DETAIL_ENABLED
+          ? `:fds=${formatRuntimeFdSummary(handle, vmPtr)}`
+          : formatRuntimeFdForFd(handle, vmPtr, createdFd),
       );
+      if (FS_CREATED_FD_DEBUG_ENABLED && createdFd !== null) {
+        console.error(
+          `[tidemark-fs-created] applied:pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`
+            + formatRuntimeFdForFd(handle, vmPtr, createdFd),
+        );
+      }
     } else if (fsResponseDisposition.adoptKernelState && regularFilePendingFs) {
       const requestFsState = filterFsResponseToRegularFileRequest(
         regularFilePendingFs,
         responseFdState.fdEntries,
         responseFdState.ofdSlots,
       );
-      if (requestFsState.fdEntries || requestFsState.ofdSlots) {
+      const requestStillCurrent = regularFileRequestCurrent;
+      const submittedIdentityOfdApplied = !requestStillCurrent && regularFileReadHasSubmittedIdentity
+        ? applySubmittedIdentityRegularFileOfdSlots(
+          handle,
+          vmPtr,
+          regularFilePendingFs,
+          fsProcessedResponse.ofdSlots,
+        )
+        : false;
+      if ((requestFsState.fdEntries || requestFsState.ofdSlots) && requestStillCurrent) {
         applyThreadOfdSlots(handle, {
           vmPtr,
           fdEntries: requestFsState.fdEntries,
           ofdSlots: requestFsState.ofdSlots,
-          trustRegularFileOfdOffsets: true,
+          recordRegularFileOfdOffsets: true,
+          allowRegularFileIdentityReplacement: true,
         });
-        applyThreadFdEntries(handle, vmPtr, requestFsState.fdEntries);
+        applyFsResponseFdEntries(handle, vmPtr, requestFsState.fdEntries);
         appendFsLifecycleEvent(
           handle,
           "fd-apply-partial",
           vmPtr,
-          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:fds=${formatRuntimeFdSummary(handle, vmPtr)}`,
+          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}`
+            + (FS_FD_STATE_DETAIL_ENABLED ? `:fds=${formatRuntimeFdSummary(handle, vmPtr)}` : ""),
+        );
+      } else if (submittedIdentityOfdApplied) {
+        appendFsLifecycleEvent(
+          handle,
+          "fd-apply-submitted-identity",
+          vmPtr,
+          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}`
+            + (FS_FD_STATE_DETAIL_ENABLED ? `:fds=${formatRuntimeFdSummary(handle, vmPtr)}` : ""),
         );
       } else {
         appendFsLifecycleEvent(
           handle,
           "fd-apply-skipped",
           vmPtr,
-          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
+          `:fd=${regularFilePendingFs.fd}:ofd=${regularFilePendingFs.ofdId}`
+            + (requestStillCurrent ? "" : ":reason=request-stale")
+            + (requestFsState.skippedIdentityMismatch ? ":reason=identity-mismatch" : "")
+            + (FS_FD_STATE_DETAIL_ENABLED ? `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}` : ""),
         );
       }
     } else if (regularFileOnlyPendingFs) {
@@ -1486,9 +2457,17 @@ async function resumeFsViaKernelWorkerInner(
         handle,
         "fd-apply-skipped",
         vmPtr,
-        `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}`,
+        FS_FD_STATE_DETAIL_ENABLED ? `:fds=${formatFdEntrySummary(fsProcessedResponse.fdEntries)}` : "",
       );
     }
+    appendFsTimingSince(
+      handle,
+      "response-apply-done",
+      vmPtr,
+      responseApplyStartMs,
+      formatFsTimingTotal(resumeStartMs, fsDebugSuffix),
+    );
+    const postStateStartMs = fsTimingStart();
     const fsCompletion = supervisorFsCompletionDecision(handle, vmPtr, pendingFs, fsResult, {
       hostMemfsMutated: fsProcessedResponse.memfsMutated,
       hostOfdStateChanged: fsProcessedResponse.ofdStateChanged,
@@ -1569,8 +2548,16 @@ async function resumeFsViaKernelWorkerInner(
     if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
+    appendFsTimingSince(
+      handle,
+      "post-state-done",
+      vmPtr,
+      postStateStartMs,
+      formatFsTimingTotal(resumeStartMs, fsDebugSuffix),
+    );
     let postFsWakeApplied = false;
     const applyPostFsWake = async () => {
+      const postWakeStartMs = fsTimingStart();
       if (postFsWakeApplied) {
         return;
       }
@@ -1583,11 +2570,27 @@ async function resumeFsViaKernelWorkerInner(
       }
       deps.publishRuntimeKernelState(handle);
       deps.notifyHostEffectProgress(handle);
+      appendFsTimingSince(
+        handle,
+        "apply-post-wake-inner-done",
+        vmPtr,
+        postWakeStartMs,
+        formatFsTimingTotal(resumeStartMs, fsDebugSuffix),
+      );
     };
-    return completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
+    const completeStartMs = fsTimingStart();
+    const completeResult = await completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
       source: "kernel-worker",
       applyPostFsWake,
     });
+    appendFsTimingSince(
+      handle,
+      "inner-complete-done",
+      vmPtr,
+      completeStartMs,
+      formatFsTimingTotal(resumeStartMs, fsDebugSuffix),
+    );
+    return completeResult;
   } catch (error) {
     const errorDetail = formatFsErrorDetail(error);
     deps.appendWorkerDebugLog(handle, `fs-err:0x${vmPtr.toString(16)}${errorDetail}`);
@@ -1597,6 +2600,8 @@ async function resumeFsViaKernelWorkerInner(
     }
     deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     return { kind: "process-gone" };
+  } finally {
+    clearRegularFileFsInFlight();
   }
 }
 

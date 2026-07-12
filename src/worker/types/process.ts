@@ -9,6 +9,7 @@ import type {
   GuestMemoryPolicyLimitInput,
 } from "../memory-policy.js";
 import type {
+  KernelWorkerFdEntrySnapshot,
   KernelWorkerOutbound,
   KernelWorkerRequest,
   ThreadWorkerMemoryPreserveRange,
@@ -34,6 +35,10 @@ export interface VforkSnapshot {
   parentSp: bigint;
   parentS11: bigint;
   inheritedSharedOfdIds: number[];
+  parentFdEntries?: KernelWorkerFdEntrySnapshot[];
+  parentHeldOfdIds?: number[];
+  parentOfdSlots?: Map<number, Uint8Array>;
+  parentPipeSlots?: Map<number, Uint8Array>;
 }
 
 // Host-executor parking state for non-futex host effects that still need

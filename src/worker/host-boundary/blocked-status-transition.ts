@@ -21,7 +21,13 @@ import {
 interface BlockedStatusTransitionDeps {
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   appendRuntimeLifecycleEvent(runtimeId: number, event: string): void;
-  blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
+  blockWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    status: number,
+    vmPtr: number,
+    options?: { deferInitialRetry?: boolean },
+  ): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   notifyWorkerStatusProgress(handle: ProcessHandle): void;
@@ -77,6 +83,11 @@ export async function executeHostBlockedStatusTransition(
       networkConnectionsAvailable: networkConnections(handle).size > 0,
     },
   );
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `blocked-status-transition:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+      + `:status=${status}:action=${transitionAction}`,
+  );
 
   if (transitionAction === "sync-pipe") {
     if (hostExecutionState(handle).runningWorker === worker) {
@@ -84,7 +95,12 @@ export async function executeHostBlockedStatusTransition(
     }
   }
 
-  deps.blockWorker(handle, worker, status, vmPtr);
+  const syncBeforeInitialRetry = transitionAction === "sync-pipe"
+    || transitionAction === "sync-fork-shared"
+    || transitionAction === "sync-pipe-and-fork-shared";
+  deps.blockWorker(handle, worker, status, vmPtr, {
+    deferInitialRetry: syncBeforeInitialRetry,
+  });
 
   if (transitionAction === "sync-pipe") {
     if (hostExecutionState(handle).runningWorker === worker) {

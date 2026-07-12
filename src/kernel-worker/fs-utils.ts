@@ -1,4 +1,5 @@
 import {
+  attachKernelRuntimeState,
   readKernelRuntimeState,
   supervisorOfdFdType,
   supervisorOfdHostFd,
@@ -120,6 +121,7 @@ export function createKernelWorkerFsUtils(deps: KernelWorkerFsUtilsDeps) {
     targetState: KernelRuntimeState,
     options: { includeData?: boolean; targetVmPtr?: number } = {},
   ): void {
+    attachKernelRuntimeState(targetExports, targetState);
     const procSelfExe = snapshotProcSelfExe(targetExports);
     const guestMemoryPolicyLimit = guestMemoryPolicyLimitFor(targetExports, options.targetVmPtr);
     deps.copyMemfsState(

@@ -288,3 +288,54 @@ test("syncProcessLifecycleViaKernelWorker rewrites provisional child pid after s
   expect(currentPid).toBe(3);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
 });
+
+test("syncProcessLifecycleViaKernelWorker preserves an active vfork child pid after state attach", async () => {
+  const baseState = makeKernelState();
+  const syncedState = {
+    ...baseState,
+    heapPtr: baseState.heapPtr + 0x80,
+  };
+  let currentPid = 1;
+  const rewriteChildPid = vi.fn();
+  const handle = makeHandle({
+    pid: 1,
+    kernelWorkerRequest: vi.fn(async () => ({
+      type: "process-lifecycle-synced",
+      requestId: 0,
+      kernelState: syncedState,
+    })),
+  });
+  handle.kernel.process_current_pid = vi.fn(() => currentPid);
+  handle.kernel.process_rewrite_child_pid = rewriteChildPid;
+  handle.kernel.thread_vfork_child_pid = vi.fn(() => 4);
+  const originalAttach = handle.kernel.kernel_attach_runtime_state.bind(handle.kernel);
+  let exposeVforkChildOnSyncedAttach = true;
+  handle.kernel.kernel_attach_runtime_state = vi.fn((...args: Parameters<typeof handle.kernel.kernel_attach_runtime_state>) => {
+    originalAttach(...args);
+    if (exposeVforkChildOnSyncedAttach && args[1] === syncedState.heapPtr) {
+      exposeVforkChildOnSyncedAttach = false;
+      currentPid = 4;
+    }
+  });
+
+  const helpers = createWorkerKernelRpcProcessLifecycleHelpers({
+    processHandles: new Map([[handle.pid, handle]]),
+    threadWorkerStates: new WeakMap(),
+    drainProcessOutput() {
+      return false;
+    },
+    enqueueWorker() {},
+    failProcess(errorHandle, error) {
+      throw new Error(`unexpected fail for pid=${errorHandle.pid}: ${error.message}`);
+    },
+    notifyHostEffectProgress() {},
+    requestPipeStateSync: async () => {},
+    clearVforkSnapshot() {},
+  });
+
+  await helpers.syncProcessLifecycleViaKernelWorker(handle, 0x1234);
+
+  expect(rewriteChildPid).not.toHaveBeenCalled();
+  expect(currentPid).toBe(4);
+  expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
+});

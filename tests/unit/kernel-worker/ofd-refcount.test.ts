@@ -176,6 +176,76 @@ test("reconcileCanonicalOfdRefcounts counts duplicate fd aliases as OFD referenc
   expect(canonical.kernel_ofd_refcount(7)).toBe(2);
 });
 
+test("reconcileCanonicalOfdRefcounts counts registered members outside the current sync targets", () => {
+  const canonicalMemory = makeMemory();
+  const parentMemory = makeMemory();
+  const childMemory = makeMemory();
+  const canonical = makeKernelExports(canonicalMemory);
+  const parent = makeKernelExports(parentMemory);
+  const child = makeKernelExports(childMemory);
+  seedRefcount(canonicalMemory, 7, 1);
+  parent.setFdMap(new Map([[7, 7]]));
+  child.setFdMap(new Map([[0, 7]]));
+
+  const primitives = createKernelWorkerOfdPrimitives({
+    getCanonicalExports: () => canonical,
+    getCanonicalProcessVmPtr: (pid) => (pid === 2 ? 0x5678 : 0),
+    processKernels: new Map<number, KernelExports>([
+      [1, parent],
+      [2, child],
+    ]),
+  });
+
+  primitives.reconcileCanonicalOfdRefcounts(
+    [1],
+    new Map([[1, 0x1234]]),
+    [7],
+  );
+
+  expect(canonical.retainOfd).toHaveBeenCalledWith(7);
+  expect(canonical.kernel_ofd_refcount(7)).toBe(2);
+});
+
+test("reconcileCanonicalOfdRefcounts resolves a registered member's live FD authority VM", () => {
+  const canonicalMemory = makeMemory();
+  const parentMemory = makeMemory();
+  const childMemory = makeMemory();
+  const canonical = makeKernelExports(canonicalMemory);
+  const parent = makeKernelExports(parentMemory);
+  const childBase = makeKernelExports(childMemory);
+  const staleVmPtr = 0x5678;
+  const liveVmPtr = 0x9abc;
+  const child = {
+    ...childBase,
+    supervisor_process_fd_authority_vm_ptr: (vmPtr: number, pid: number) => (
+      vmPtr === staleVmPtr && pid === 2 ? liveVmPtr : 0
+    ),
+    supervisor_process_held_ofd_refcount: (vmPtr: number, ofdId: number) => (
+      vmPtr === liveVmPtr && ofdId === 7 ? 1 : 0
+    ),
+  } as KernelExports;
+  seedRefcount(canonicalMemory, 7, 1);
+  parent.setFdMap(new Map([[7, 7]]));
+
+  const primitives = createKernelWorkerOfdPrimitives({
+    getCanonicalExports: () => canonical,
+    getCanonicalProcessVmPtr: (pid) => (pid === 2 ? staleVmPtr : 0),
+    processKernels: new Map<number, KernelExports>([
+      [1, parent],
+      [2, child],
+    ]),
+  });
+
+  primitives.reconcileCanonicalOfdRefcounts(
+    [1],
+    new Map([[1, 0x1234]]),
+    [7],
+  );
+
+  expect(canonical.retainOfd).toHaveBeenCalledWith(7);
+  expect(canonical.kernel_ofd_refcount(7)).toBe(2);
+});
+
 test("reconcileCanonicalOfdRefcounts does not last-close an eventfd while another member still holds it", () => {
   const canonicalMemory = makeMemory();
   const parentMemory = makeMemory();

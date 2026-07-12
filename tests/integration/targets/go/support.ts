@@ -8,6 +8,11 @@ import {
   logSkip,
   readKernelWasm,
 } from "../../../support/runtime-workload.js";
+import {
+  applySnapshotSourcesToRuntime,
+  type SnapshotBuildOptions,
+  type SnapshotSource,
+} from "../../../support/snapshot-sources.js";
 
 export const SAMPLE_MODULE_DIR = "/work/hello";
 export const BUSYBOX_BINARY_PATH = process.env.TIDEMARK_TEST_BUSYBOX_BINARY ?? "";
@@ -186,13 +191,84 @@ export function buildGoRuntimeSnapshot(options: {
   return [...entries.values()];
 }
 
+export function buildGoRuntimeSnapshotSources(options: {
+  includeToolchain?: boolean;
+  includeSampleModule?: boolean;
+} = {}): SnapshotSource[] {
+  const {
+    includeToolchain = true,
+    includeSampleModule = true,
+  } = options;
+
+  const sources: SnapshotSource[] = [
+    { kind: "dir", guestPath: "/usr/local/go/bin" },
+    { kind: "dir", guestPath: "/usr/local/go/pkg/tool/linux_riscv64" },
+  ];
+
+  if (includeToolchain) {
+    if (!GO_TOOLCHAIN_DIR) {
+      throw new Error(GO_TOOLCHAIN_DIR_ERROR ?? "missing Go toolchain dir");
+    }
+    sources.push({ kind: "tree", hostPath: GO_TOOLCHAIN_DIR, guestPath: "/usr/local/go" });
+  } else {
+    sources.push({
+      kind: "file",
+      hostPath: GO_BINARY_PATH,
+      guestPath: "/usr/local/go/bin/go",
+      mode: 0o755,
+    });
+  }
+
+  sources.push({ kind: "inlineFile", guestPath: "/usr/local/go/go.env", data: "GOTOOLCHAIN=local\n" });
+
+  if (BUSYBOX_BINARY_PATH && existsSync(BUSYBOX_BINARY_PATH)) {
+    sources.push({
+      kind: "fileCopies",
+      hostPath: BUSYBOX_BINARY_PATH,
+      guestPaths: ["/bin/busybox", "/bin/sh"],
+      mode: 0o755,
+    });
+  }
+
+  sources.push(
+    { kind: "dir", guestPath: "/root/.config/go/telemetry" },
+    {
+      kind: "inlineFile",
+      guestPath: "/root/.config/go/telemetry/mode",
+      data: "off 2000-01-01\n",
+    },
+    { kind: "dir", guestPath: "/tmp/gopath" },
+    { kind: "dir", guestPath: "/tmp/gocache" },
+  );
+
+  if (includeSampleModule) {
+    sources.push(
+      { kind: "dir", guestPath: SAMPLE_MODULE_DIR },
+      {
+        kind: "inlineFile",
+        guestPath: `${SAMPLE_MODULE_DIR}/main.go`,
+        data: 'package main\nfunc main() { println("Hello from Go!") }\n',
+      },
+      {
+        kind: "inlineFile",
+        guestPath: `${SAMPLE_MODULE_DIR}/go.mod`,
+        data: "module hello\ngo 1.21\n",
+      },
+    );
+  }
+
+  return sources;
+}
+
 export async function prepareGoRuntime(options: {
   includeToolchain?: boolean;
   includeSampleModule?: boolean;
+  hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
 } = {}): Promise<{ runtime: RuntimeInstance; goBytes: Uint8Array } | null> {
   const {
     includeToolchain = true,
     includeSampleModule = true,
+    hostFileBackingMode = "host-file",
   } = options;
   const wasmBytes = readKernelWasm();
   if (!wasmBytes) {
@@ -211,10 +287,26 @@ export async function prepareGoRuntime(options: {
     maxProcessMemoryPages: GO_RUNTIME_HEADROOM_MEMORY_PAGES,
     maxForkMemoryPages: GO_RUNTIME_HEADROOM_MEMORY_PAGES,
   });
-  await runtime.applyFsSnapshot(buildGoRuntimeSnapshot({
-    includeToolchain,
-    includeSampleModule,
-  }));
+  try {
+    const snapshot = await applySnapshotSourcesToRuntime(
+      runtime,
+      buildGoRuntimeSnapshotSources({
+        includeToolchain,
+        includeSampleModule,
+      }),
+      {
+        missingLabel: "Go runtime snapshot",
+        hostFileBackingMode,
+      },
+    );
+    if (snapshot.skipReason) {
+      runtime.destroy();
+      return logSkip(snapshot.skipReason);
+    }
+  } catch (error) {
+    runtime.destroy();
+    throw error;
+  }
 
   return {
     runtime,

@@ -28,26 +28,17 @@ function runtimeSource(path: string): string {
   return readFileSync(join(RUNTIME_ROOT, path), "utf8");
 }
 
-test("kernel-rpc and sync do not import each other directly", () => {
+test("kernel-rpc internals do not depend on host-boundary composition", () => {
   const kernelRpcViolations = tsFiles(join(RUNTIME_SRC, "kernel-rpc"))
+    .filter((path) => relativeWorkerPath(path) !== "kernel-rpc/index.ts")
     .flatMap((path) => {
       const source = readFileSync(path, "utf8");
       const matches = [...source.matchAll(/from\s+["']([^"']+)["']/g)]
         .map((match) => match[1])
-        .filter((specifier) => specifier === "../sync.js" || specifier.startsWith("../sync/"));
+        .filter((specifier) => specifier === "../host-boundary.js" || specifier.startsWith("../host-boundary/"));
       return matches.map((specifier) => `${relativeWorkerPath(path)} -> ${specifier}`);
     });
-
-  const syncViolations = tsFiles(join(RUNTIME_SRC, "sync"))
-    .flatMap((path) => {
-      const source = readFileSync(path, "utf8");
-      const matches = [...source.matchAll(/from\s+["']([^"']+)["']/g)]
-        .map((match) => match[1])
-        .filter((specifier) => specifier === "../kernel-rpc.js" || specifier.startsWith("../kernel-rpc/"));
-      return matches.map((specifier) => `${relativeWorkerPath(path)} -> ${specifier}`);
-    });
-
-  expect([...kernelRpcViolations, ...syncViolations]).toEqual([]);
+  expect(kernelRpcViolations).toEqual([]);
 });
 
 test("process creation requires the supervisor ABI before runtime ownership starts", () => {

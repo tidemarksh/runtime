@@ -46,6 +46,7 @@ export interface WorkerMessageHandlerDeps extends Partial<WorkerMessageHandlerSy
   requestEpollStateSync(handle: ProcessHandle, retryWaiters?: boolean): Promise<void>;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   requestSocketStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
+  requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint>;
   resumeConnectViaKernelWorker(
     handle: ProcessHandle,

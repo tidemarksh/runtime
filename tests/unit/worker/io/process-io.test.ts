@@ -665,7 +665,7 @@ test("process exit releases host stdio through kernel-worker when available", as
   }
   await new Promise((resolve) => setTimeout(resolve, 0));
 
-  expect(requests.some((msg) => msg.type === "sync-socket-state")).toBe(true);
+  expect(requests.some((msg) => msg.type === "sync-socket-state")).toBe(false);
   expect(requests.some((msg) => msg.type === "release-host-stdio")).toBe(true);
   expect(releaseHostStdio).not.toHaveBeenCalled();
 });

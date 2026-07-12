@@ -458,6 +458,10 @@ function makeKernel(
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
     thread_process_ptr: () => 0x1000,
     process_state_bytes: () => 256,
+    process_current_pid: () => 1,
+    process_current_ppid: () => 0,
+    process_next_pid: () => 3,
+    process_restore_current_identity: vi.fn(),
     process_stdin_pipe: () => 0,
     process_stdout_pipe: () => 0,
     process_stderr_pipe: () => 0,
@@ -948,6 +952,48 @@ test("fork-shared sync preserves epoll watched fd ownership and local epoll stat
   expect(child.kernel.process_fd_ofd_id(child.vmPtr, 4)).toBe(10);
   expect(child.kernel.process_fd_ofd_id(child.vmPtr, 11)).toBe(12);
   expect(child.kernelState.epollTablePtr).toBe(originalEpollTablePtr);
+});
+
+test("fork-shared sync restores the source process identity after kernel-worker adoption", async () => {
+  const child = makeHandle(7, new Map([[5, 8]]));
+  const parent = makeHandle(3, new Map([[4, 7]]));
+  addKernelShareMember(child, parent);
+  setProcessKernelShareGroup(parent, processKernelShareGroup(child));
+  addKernelShareSharedOfdId(child, 8);
+
+  seedOfd(child.memory, child.kernelState, 8, FD_TYPE_PIPE, 6, -11);
+  seedOfd(parent.memory, parent.kernelState, 7, FD_TYPE_PIPE, 6, 10);
+  seedPipeSlot(child.memory, child.kernelState, 6, 1, 1);
+  seedPipeSlot(parent.memory, parent.kernelState, 6, 1, 1);
+  let currentPid = 7;
+  let currentPpid = 3;
+  const restoreIdentity = vi.fn((_: number, pid: number, ppid: number) => {
+    currentPid = pid;
+    currentPpid = ppid;
+  });
+  child.kernel.process_current_pid = () => currentPid;
+  child.kernel.process_current_ppid = () => currentPpid;
+  child.kernel.process_next_pid = () => 8;
+  child.kernel.process_restore_current_identity = restoreIdentity;
+  setProcessKernelWorkerRequest(child, vi.fn(async (msg) => {
+    currentPid = 0;
+    currentPpid = 0;
+    return {
+      type: "fork-shared-state-synced",
+      requestId: msg.requestId,
+      kernelState: msg.kernelState,
+    };
+  }));
+
+  await syncForkSharedStateViaKernelWorker(child, [parent], {
+    cause: { kind: "syscall", nr: -1n, name: "test-source-process-state-preservation" },
+    includeMemfs: false,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(restoreIdentity).toHaveBeenCalledWith(child.vmPtr, 7, 3, 8);
+  expect(currentPid).toBe(7);
+  expect(currentPpid).toBe(3);
 });
 
 test("pipe-control reconciliation preserves live writer when slot counters are stale closed", () => {

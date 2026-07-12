@@ -6,7 +6,9 @@ import {
   OFD_TYPE_OFFSET,
 } from "../../../src/layout/ofd.js";
 import { applyThreadWorkerInboundState } from "../../../src/thread-worker/inbound-state.js";
-import { postThreadWorkerStatus } from "../../../src/thread-worker/status.js";
+import {
+  postThreadWorkerStatus,
+} from "../../../src/thread-worker/status.js";
 
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "postMessage");
@@ -114,7 +116,7 @@ function makeKernelExports(): KernelExports {
     thread_a7: () => 0n,
     thread_spawn_kind: () => 0,
     thread_guest_memory_policy_limit: () => 0,
-    thread_process_ptr: () => 0,
+    thread_process_ptr: () => 0x2200,
     thread_status: () => 0,
     thread_step: () => 0,
     thread_init: () => {},
@@ -166,6 +168,8 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     status: 0,
     waitInWorker: true,
     vmPtr: 0x1234,
+    processPtr: 0x2200,
+    processPid: 1,
     syncEffects: 0,
   }));
   expect(lastResumeBlockedDebug).toBeUndefined();
@@ -251,6 +255,40 @@ test("postThreadWorkerStatus treats completed pipe slots as pipe sync evidence",
   expect([...(msg.pipeSlots?.[0]?.slot ?? [])]).toEqual(
     Array.from({ length: 32 }, (_, index) => 0x40 + index),
   );
+});
+
+test("postThreadWorkerStatus transports completed pipe endpoint control changes", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  Object.assign(kernelExports, {
+    thread_take_completed_pipe_sync_slots: () => 0n,
+    thread_take_completed_pipe_sync_read_slots: () => 0n,
+    thread_take_completed_pipe_sync_write_slots: () => 0n,
+    thread_take_completed_pipe_sync_control_slots: () => 1n << 2n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 10,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 0, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    pipeSlots?: Array<{ pipeSlot: number; mode?: number; controlChanged?: boolean }>;
+  };
+  expect(msg.pipeSlots).toHaveLength(1);
+  expect(msg.pipeSlots?.[0]).toMatchObject({ pipeSlot: 2, mode: 0, controlChanged: true });
 });
 
 test("postThreadWorkerStatus snapshots traced pipe writes after fd table closes", () => {
@@ -432,4 +470,72 @@ test("postThreadWorkerStatus includes futex and inbound guest-write diagnostics"
   expect(msg.debug).toContain("futex-wait-debug:test");
   expect(msg.debug).toContain("thread_inbound_guest_writes=[thread-inbound-guest-write:slot=2:ptr=0x24:len=3:overlap=0x25..0x26:sample=bb]");
   expect(lastFutexWaitDebug).toBeUndefined();
+});
+
+test("postThreadWorkerStatus snapshots completed regular-file read guest writes", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const bytes = Uint8Array.from([0x69, 0x6d, 0x70, 0x6f, 0x72, 0x74]);
+  new Uint8Array(kernelExports.memory.buffer).set(bytes, 0x500);
+  Object.assign(kernelExports, {
+    thread_completed_pipe_read_guest_ptr: () => 0x500n,
+    thread_take_completed_pipe_read_len: () => bytes.length,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 10,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 0, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    guestMemoryWrites?: Array<{ guestPtr: number; bytes: Uint8Array }>;
+  };
+  expect(msg.guestMemoryWrites).toEqual([{ guestPtr: 0x500, bytes }]);
+});
+
+test("postThreadWorkerStatus carries Kernel blocked syscall state for supervisor adoption", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  Object.assign(kernelExports, {
+    thread_blocked_fd: () => 12,
+    thread_blocked_ofd_id: () => 23,
+    thread_blocked_syscall_nr: () => 63n,
+    thread_blocked_syscall_arg: (_vmPtr: number, index: number) => [12n, 0x4000n, 80n, 0n, 0n, 0n][index] ?? 0n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 11,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 21, false, 0);
+
+  expect(postMessage.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+    blockedFd: 12,
+    blockedHasOfdPin: true,
+    blockedSyscallNr: 63n,
+    blockedSyscallArgs: [12n, 0x4000n, 80n, 0n, 0n, 0n],
+  }));
 });

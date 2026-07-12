@@ -13,6 +13,7 @@ export const phpScriptRuntimeEntry: ScriptRuntimeEntry = {
   env: [],
   timeoutMs: 10_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/php"), guestPath: "/usr/lib/php" },

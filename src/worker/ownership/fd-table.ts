@@ -1,4 +1,5 @@
 import type { KernelWorkerFdEntrySnapshot } from "../../messages.js";
+import { readRuntimeFdAuthorityEpoch } from "../../bridge/runtime-state.js";
 import type { ProcessHandle } from "../types.js";
 import { networkClosedFds } from "../network-socket-state.js";
 import {
@@ -8,12 +9,26 @@ import {
 
 interface ApplyThreadFdEntriesOptions {
   appendStatusSocketDebug?: (handle: ProcessHandle, event: string) => void;
+  ignoreSnapshotGeneration?: boolean;
+  preserveClosedDescriptorsFromStaleSnapshots?: boolean;
+  preserveLiveDescriptorsFromStaleCloseSnapshots?: boolean;
   preserveLiveEpollDependentDescriptors?: boolean;
   preserveLiveRegularFileDescriptors?: boolean;
   syscallNr?: bigint;
 }
 
 const SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
+const FD_APPLY_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FD_APPLY_DEBUG ?? "") === "1";
+const FD_APPLY_DEBUG_FDS = new Set(
+  (((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_FD_APPLY_DEBUG_FDS ?? "3,4,5")
+    .split(",")
+    .map((value) => Number.parseInt(value, 10))
+    .filter(Number.isSafeInteger)),
+);
 
 function requireSupervisorFdEntryRestoreAction(
   handle: ProcessHandle,
@@ -55,6 +70,106 @@ function requireSupervisorProcessFdFlagsForFd(handle: ProcessHandle): (vmPtr: nu
     throw new Error("kernel supervisor ABI missing supervisor_process_fd_flags_for_fd");
   }
   return processFdFlagsForFd.bind(handle.kernel);
+}
+
+function processFdGeneration(handle: ProcessHandle, vmPtr: number, fd: number): number | undefined {
+  const generation = handle.kernel.process_fd_generation?.(vmPtr, fd);
+  return typeof generation === "number" && Number.isSafeInteger(generation)
+    ? generation
+    : undefined;
+}
+
+function fdEntryMatchesState(
+  entry: KernelWorkerFdEntrySnapshot,
+  currentOfdId: number,
+  currentFdFlags: number,
+): boolean {
+  return currentOfdId === entry.ofdId && currentFdFlags === entry.fdFlags;
+}
+
+function fdEntrySnapshotIsOlderThanGeneration(
+  entry: KernelWorkerFdEntrySnapshot,
+  currentGeneration: number | undefined,
+): boolean {
+  if (entry.generation === undefined) {
+    return false;
+  }
+  return currentGeneration !== undefined && currentGeneration > entry.generation;
+}
+
+function syscallMayCreateFdEntries(handle: ProcessHandle, syscallNr: bigint): boolean {
+  const maybeFdCreatingSyscalls = [
+    handle.kernel.abi_sys_openat?.(),
+    handle.kernel.abi_sys_pipe2?.(),
+    handle.kernel.abi_sys_epoll_create1?.(),
+    handle.kernel.abi_sys_dup?.(),
+    handle.kernel.abi_sys_dup3?.(),
+    handle.kernel.abi_sys_fcntl?.(),
+    handle.kernel.abi_sys_socket?.(),
+    handle.kernel.abi_sys_socketpair?.(),
+    handle.kernel.abi_sys_accept4?.(),
+    handle.kernel.abi_sys_eventfd2?.(),
+  ];
+  return maybeFdCreatingSyscalls.some((candidate) => {
+    if (candidate === undefined) {
+      return false;
+    }
+    return (typeof candidate === "bigint" ? candidate : BigInt(candidate)) === syscallNr;
+  });
+}
+
+function ofdIsKnownDescriptor(handle: ProcessHandle, ofdId: number): boolean {
+  if (ofdId <= 0 || ofdId >= handle.kernel.abi_max_fds()) {
+    return false;
+  }
+  return handle.kernel.kernel_ofd_fd_type(ofdId) > 0;
+}
+
+function staleSnapshotWouldReopenClosedFd(
+  handle: ProcessHandle,
+  entry: KernelWorkerFdEntrySnapshot,
+  currentOfdId: number,
+  currentGeneration: number | undefined,
+  restoreSyscallNr: bigint,
+): boolean {
+  return fdEntrySnapshotIsOlderThanGeneration(entry, currentGeneration)
+    && currentOfdId === 0
+    && entry.ofdId !== 0
+    && ofdIsKnownDescriptor(handle, entry.ofdId)
+    && !syscallMayCreateFdEntries(handle, restoreSyscallNr);
+}
+
+function staleSnapshotWouldCloseLiveFd(
+  entry: KernelWorkerFdEntrySnapshot,
+  currentOfdId: number,
+  currentGeneration: number | undefined,
+): boolean {
+  return fdEntrySnapshotIsOlderThanGeneration(entry, currentGeneration)
+    && currentOfdId !== 0
+    && entry.ofdId === 0;
+}
+
+function debugFdEntryApply(
+  reason: string,
+  vmPtr: number,
+  entry: KernelWorkerFdEntrySnapshot,
+  currentOfdId: number,
+  currentFdFlags: number,
+  currentGeneration: number | undefined,
+  restoreSyscallNr: bigint,
+): void {
+  if (!FD_APPLY_DEBUG_ENABLED || !FD_APPLY_DEBUG_FDS.has(entry.fd)) {
+    return;
+  }
+  console.error(
+    "[tidemark-fd-apply] "
+      + `reason=${reason}:vm=0x${vmPtr.toString(16)}:fd=${entry.fd}`
+      + `:snapshot_ofd=${entry.ofdId}:snapshot_flags=${entry.fdFlags}`
+      + `:snapshot_gen=${entry.generation ?? "n/a"}`
+      + `:current_ofd=${currentOfdId}:current_flags=${currentFdFlags}`
+      + `:current_gen=${currentGeneration ?? "n/a"}`
+      + `:syscall=${restoreSyscallNr.toString()}`,
+  );
 }
 
 export function supervisorProcessOfdForFd(handle: ProcessHandle, vmPtr: number, fd: number): number {
@@ -150,6 +265,9 @@ export function snapshotProcessFdEntriesForThread(
     return undefined;
   }
   const sourceVmPtr = canonicalFdTableVmPtrForThread(handle, vmPtr);
+  const sourceProcessPtr = handle.kernel.thread_process_ptr?.(sourceVmPtr) ?? 0;
+  const targetProcessPtr = handle.kernel.thread_process_ptr?.(vmPtr) ?? 0;
+  const monotonicGeneration = sourceProcessPtr !== 0 && sourceProcessPtr === targetProcessPtr;
   const maxFds = handle.kernel.abi_max_fds();
   const fdEntries: KernelWorkerFdEntrySnapshot[] = [];
   for (let fd = 0; fd < maxFds; fd += 1) {
@@ -158,10 +276,24 @@ export function snapshotProcessFdEntriesForThread(
       fd,
       ofdId,
       fdFlags: supervisorProcessFdFlagsForFd(handle, sourceVmPtr, fd),
+      authorityEpoch: readRuntimeFdAuthorityEpoch(handle.runtimeBridge, fd),
       generation: handle.kernel.process_fd_generation?.(sourceVmPtr, fd),
+      ...(monotonicGeneration ? { monotonicGeneration: true } : {}),
     });
   }
   return fdEntries.length > 0 ? fdEntries : undefined;
+}
+
+export function snapshotAuthoritativeProcessFdEntriesForThread(
+  handle: ProcessHandle,
+  vmPtr: number,
+): KernelWorkerFdEntrySnapshot[] | undefined {
+  return snapshotProcessFdEntriesForThread(handle, vmPtr)?.map((entry) => ({
+    fd: entry.fd,
+    ofdId: entry.ofdId,
+    fdFlags: entry.fdFlags,
+    authorityEpoch: entry.authorityEpoch,
+  }));
 }
 
 export function restoreProcessFdEntries(
@@ -210,12 +342,48 @@ export function applyThreadFdEntries(
     ) {
       continue;
     }
+    const currentOfdId = supervisorProcessOfdForFd(handle, vmPtr, entry.fd);
+    const currentFdFlags = supervisorProcessFdFlagsForFd(handle, vmPtr, entry.fd);
+    const currentGeneration = processFdGeneration(handle, vmPtr, entry.fd);
+    if (fdEntryMatchesState(entry, currentOfdId, currentFdFlags)) {
+      debugFdEntryApply("skip-current", vmPtr, entry, currentOfdId, currentFdFlags, currentGeneration, restoreSyscallNr);
+      continue;
+    }
+    if (
+      options.ignoreSnapshotGeneration !== true
+      && fdEntrySnapshotIsOlderThanGeneration(entry, currentGeneration)
+    ) {
+      debugFdEntryApply("skip-stale-generation", vmPtr, entry, currentOfdId, currentFdFlags, currentGeneration, restoreSyscallNr);
+      continue;
+    }
+    if (
+      options.preserveClosedDescriptorsFromStaleSnapshots === true
+      && staleSnapshotWouldReopenClosedFd(
+        handle,
+        entry,
+        currentOfdId,
+        currentGeneration,
+        restoreSyscallNr,
+      )
+    ) {
+      debugFdEntryApply("skip-stale-closed-fd", vmPtr, entry, currentOfdId, currentFdFlags, currentGeneration, restoreSyscallNr);
+      continue;
+    }
+    if (
+      options.preserveLiveDescriptorsFromStaleCloseSnapshots === true
+      && staleSnapshotWouldCloseLiveFd(entry, currentOfdId, currentGeneration)
+    ) {
+      debugFdEntryApply("skip-stale-live-fd", vmPtr, entry, currentOfdId, currentFdFlags, currentGeneration, restoreSyscallNr);
+      continue;
+    }
     if (
       restoreAction
       && restoreAction(vmPtr, entry.fd, entry.ofdId, restoreSyscallNr, restoreFlags) === restoreActionSkip
     ) {
+      debugFdEntryApply("skip-restore-action", vmPtr, entry, currentOfdId, currentFdFlags, currentGeneration, restoreSyscallNr);
       continue;
     }
+    debugFdEntryApply("apply", vmPtr, entry, currentOfdId, currentFdFlags, currentGeneration, restoreSyscallNr);
     handle.kernel.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
   }
 }

@@ -112,6 +112,14 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
         if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
           continue;
         }
+        const currentGeneration = processExports.process_fd_generation?.(sourceVmPtr, entry.fd);
+        if (
+          entry.generation !== undefined
+          && currentGeneration !== undefined
+          && currentGeneration > entry.generation
+        ) {
+          continue;
+        }
         processExports.process_set_fd_entry(sourceVmPtr, entry.fd, entry.ofdId, entry.fdFlags);
       }
     }

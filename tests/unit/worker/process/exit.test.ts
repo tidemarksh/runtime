@@ -1,10 +1,12 @@
 import { hostExecutionState } from "../../../../src/worker/host-execution-state.js";
 import {
   processHostStdio,
+  setProcessInheritedParentOutput,
 } from "../../../../src/worker/process-stdio-state.js";
 import { afterEach, expect, test, vi } from "vite-plus/test";
 import { createWorkerExitHelpers } from "../../../../src/worker/exit.js";
 import {
+  beginBlockedRpc,
   getBlockedRpcGeneration,
   isBlockedRpcPending,
   setBlockedRpcGeneration,
@@ -126,6 +128,7 @@ function makeHandle(
       const ofdId = this.supervisor_process_pipe_ofd_for_fd?.(vmPtr, fd) ?? 0;
       return ofdId > 0 ? this.kernel_ofd_host_fd(ofdId) : -1;
     },
+    abi_status_epoll_wait: () => 22,
     supervisor_blocked_status_is_pipe_wait: (status: number) => status === 21 ? 1 : 0,
     supervisor_blocked_status_is_wait4: (status: number) => status === 31 ? 1 : 0,
     supervisor_blocked_status_is_socket_wait: (status: number) =>
@@ -135,6 +138,9 @@ function makeHandle(
     supervisor_wait4_child_exit_blocked_parent_action_clear_pipe_sync_before_retry: () => 2,
     supervisor_wait4_child_exit_blocked_parent_action(status: number) {
       if (status === 31) {
+        return 1;
+      }
+      if (status === 22) {
         return 1;
       }
       if (status === 21) {
@@ -1427,7 +1433,7 @@ test("completeProcessExit gives up on live inherited child before releasing visi
   expect(processHandles.has(3)).toBe(true);
 });
 
-test("recordExitOnParent skips child-side drain when stdio is owned by the parent", async () => {
+test("completeProcessExit wakes inherited-output parent after child stdio release", async () => {
   const order: string[] = [];
   const parent = makeHandle({
     pid: 1,
@@ -1487,11 +1493,26 @@ test("recordExitOnParent skips child-side drain when stdio is owned by the paren
   expect(order).not.toContain("hidden-drain:3");
   expect(order.filter((entry) => entry === "pipe-sync:3:sync")).toHaveLength(2);
   expect(order.filter((entry) => entry === "pipe-sync:1:sync")).toHaveLength(0);
+  expect(order.filter((entry) => entry === "pipe-sync:1:wake")).toHaveLength(2);
   expect(order).toContain("record:1");
+  const recordIndex = order.indexOf("record:1");
+  const parentWakeIndex = order.findIndex((entry, index) => index > recordIndex && entry === "pipe-sync:1:wake");
+  const parentDrainIndex = order.findIndex((entry, index) => index > parentWakeIndex && entry === "drain:1");
+  const postRecordProgressIndex = order.findIndex((entry, index) => index > parentDrainIndex && entry === "progress:1");
+  expect(parentWakeIndex).toBeGreaterThan(recordIndex);
+  expect(parentDrainIndex).toBeGreaterThan(parentWakeIndex);
+  expect(postRecordProgressIndex).toBeGreaterThan(parentDrainIndex);
   expect(order).toContain("release:3");
   expect(order).toContain("unregister:3");
   expect(order).toContain("destroy:3");
-  expect(order).not.toContain("drain:1");
+  const releaseIndex = order.indexOf("release:3");
+  const destroyIndex = order.indexOf("destroy:3");
+  const postReleaseWakeIndex = order.findIndex((entry, index) => index > destroyIndex && entry === "pipe-sync:1:wake");
+  const postReleaseDrainIndex = order.findIndex((entry, index) => index > postReleaseWakeIndex && entry === "drain:1");
+  expect(releaseIndex).toBeGreaterThan(postRecordProgressIndex);
+  expect(destroyIndex).toBeGreaterThan(releaseIndex);
+  expect(postReleaseWakeIndex).toBeGreaterThan(destroyIndex);
+  expect(postReleaseDrainIndex).toBeGreaterThan(postReleaseWakeIndex);
   expect(order.at(-1)).toBe("progress:1");
 });
 
@@ -1509,6 +1530,7 @@ test("completeProcessExit treats duped child stdio pipes as internal protocol pi
       kernel_ofd_fd_type: (ofdId: number) => ofdId === 4 || ofdId === 5 ? 6 : 0,
       abi_fd_type_pipe: () => 6,
       kernel_ofd_ino: (ofdId: number) => ofdId === 4 ? 9 : ofdId === 5 ? 10 : 0,
+      supervisor_process_pipe_slot_for_fd: () => 0,
     } as never,
   });
   const processHandles = new Map<number, ProcessHandle>([
@@ -1573,6 +1595,7 @@ test("recordExitOnParent reports parent progress after kernel child-exit record 
     [3, child],
   ]);
   const progressNotifications: number[] = [];
+  const pumpNotifications: number[] = [];
   const recordedParentPids: number[] = [];
 
   const helpers = createWorkerExitHelpers({
@@ -1587,6 +1610,9 @@ test("recordExitOnParent reports parent progress after kernel child-exit record 
     formatAllLiveThreadDebug: () => "threads",
     notifyProcessExitProgress(handle) {
       progressNotifications.push(handle.pid);
+    },
+    pumpProcess(handle) {
+      pumpNotifications.push(handle.pid);
     },
     publishRuntimeFsState: () => 1,
     recordChildExitViaKernelWorker: async (parentHandle) => {
@@ -1603,6 +1629,7 @@ test("recordExitOnParent reports parent progress after kernel child-exit record 
 
   expect(recordedParentPids).toEqual([1]);
   expect(progressNotifications).toEqual([1, 1]);
+  expect(pumpNotifications).toEqual([1, 1]);
 });
 
 test("completeProcessExit clears parent pipe-wait RPC after normal child exit publication", async () => {
@@ -1665,6 +1692,75 @@ test("completeProcessExit clears parent pipe-wait RPC after normal child exit pu
   expect(parent.kernel.supervisor_blocked_pipe_sync_before_retry_clear).toHaveBeenCalled();
   expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=21");
   expect(progressNotifications).toContain("1:clear");
+});
+
+test("completeProcessExit clears a rearmed parent epoll-wait RPC after child cleanup", async () => {
+  const blockedWorker = {} as Worker;
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernel: {
+      ...makeHandle().kernel,
+      abi_status_epoll_wait: () => 22,
+      abi_status_pipe_wait: () => 21,
+      abi_status_wait4: () => 31,
+    } as never,
+  });
+  const blockedState = {
+    status: 22,
+  };
+  seedBlockedRpcState(blockedState, true, 1);
+  hostExecutionState(parent).hostBlockedWorkers.set(blockedWorker, blockedState as never);
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+  });
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+  const lifecycle: string[] = [];
+  const progressNotifications: string[] = [];
+  const recordChildExitViaKernelWorker = vi.fn(async () => {
+    expect(isBlockedRpcPending(blockedState as never)).toBe(false);
+    expect(getBlockedRpcGeneration(blockedState as never)).toBe(2);
+    expect(beginBlockedRpc(blockedState as never)).toBe(3);
+  });
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: (handle) => {
+      processHandles.delete(handle.pid);
+    },
+    formatAllLiveThreadDebug: () => "threads",
+    notifyProcessExitProgress(handle) {
+      progressNotifications.push(`${handle.pid}:${isBlockedRpcPending(blockedState as never) ? "pending" : "clear"}`);
+    },
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker,
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+    snapshotProcessFs: () => [],
+  });
+
+  await helpers.completeProcessExit(child, 0, 0);
+
+  expect(recordChildExitViaKernelWorker).toHaveBeenCalledWith(parent, 3, 0);
+  expect(isBlockedRpcPending(blockedState as never)).toBe(false);
+  expect(getBlockedRpcGeneration(blockedState as never)).toBe(4);
+  expect(parent.kernel.supervisor_blocked_pipe_sync_before_retry_clear).not.toHaveBeenCalled();
+  expect(lifecycle).toContain("exit-parent-clear-blocked-rpc:1:3:status=22");
+  expect(progressNotifications.at(-1)).toBe("1:clear");
 });
 
 test("completeProcessExit still destroys the handle when cleanup fails", async () => {
@@ -1993,4 +2089,59 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(lastDebug(parent)).toContain("deliver_sig=11");
   expect(lastDebug(parent)).toContain("deliver_frame=0x12000");
   expect(lastDebug(parent)).toContain("deliver_pc=0x7788");
+});
+
+test("completeProcessExit does not treat redirected child pipes as inherited parent output", async () => {
+  const lifecycle: string[] = [];
+  const syncs: string[] = [];
+  const parent = makeHandle({
+    pid: 1,
+    parentPid: null,
+    kernel: {
+      ...makeHandle().kernel,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 1 ? 12 : fd === 2 ? 14 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 12 || ofdId === 14 ? 6 : 0,
+      kernel_ofd_ino: (ofdId: number) => ofdId === 12 ? 4 : ofdId === 14 ? 5 : 0,
+    } as never,
+  });
+  const child = makeHandle({
+    pid: 3,
+    parentPid: 1,
+    stdioOwner: parent,
+  });
+  setProcessInheritedParentOutput(child, false);
+  const processHandles = new Map<number, ProcessHandle>([
+    [1, parent],
+    [3, child],
+  ]);
+
+  const helpers = createWorkerExitHelpers({
+    processHandles,
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycle.push(event);
+    },
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles: () => "pid=1,pid=3",
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug: () => "threads",
+    notifyProcessExitProgress: () => {},
+    publishRuntimeFsState: () => 1,
+    recordChildExitViaKernelWorker: async () => {},
+    replaceRuntimeFsSnapshot: () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async (handle, wakeWaiters = false) => {
+      syncs.push(`${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
+    },
+    snapshotProcessFs: () => [],
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(child, 0, 0);
+
+  expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
+  expect(lifecycle).not.toContain("child-parent-pipe-refresh:1:3");
+  expect(syncs).toContain("3:wake");
 });

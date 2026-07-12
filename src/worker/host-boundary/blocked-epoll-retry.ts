@@ -9,6 +9,16 @@ import {
   type SupervisorBlockedRetryAction,
   type SupervisorBlockedRetryActionFlag,
 } from "../../supervisor-blocked-resume.js";
+import {
+  getEpollDeferredRetryWakeGeneration,
+  getEpollDeferredRetrySignature,
+  getEpollWakeRetryGeneration,
+  isBlockedRpcPending,
+  isEpollWakeRetryPending,
+  setEpollDeferredRetrySignature,
+  setEpollPassiveUntilWake,
+  setEpollWakeRetryPending,
+} from "../host-blocked-state.js";
 import type {
   HostBlockedWorkerState,
   ProcessHandle,
@@ -36,7 +46,12 @@ interface BlockedEpollRetryDeps {
   armBlockedSupervisorTimerForBlocked(handle: ProcessHandle, blocked: HostBlockedWorkerState): boolean;
   clearStaleRunningWorker(handle: ProcessHandle, worker: Worker): void;
   scheduleSupervisorBlockedRetry(handle: ProcessHandle, worker: Worker): void;
-  resumeEpollWait(handle: ProcessHandle, worker: Worker, blocked: HostBlockedWorkerState): void;
+  resumeEpollWait(
+    handle: ProcessHandle,
+    worker: Worker,
+    blocked: HostBlockedWorkerState,
+    consumedWakeGeneration?: number,
+  ): void;
   formatBlockedEpollEntries(handle: ProcessHandle, vmPtr: number): string;
   formatRunningRetryBlocker(handle: ProcessHandle, runningThread: ThreadWorkerState | undefined): string;
 }
@@ -107,6 +122,7 @@ function deferPostSyncRetry(
   deps: BlockedEpollRetryDeps,
   handle: ProcessHandle,
   worker: Worker,
+  blocked: HostBlockedWorkerState,
   reason: string,
 ): void {
   const runningWorker = hostExecutionState(handle).runningWorker;
@@ -121,10 +137,50 @@ function deferPostSyncRetry(
     `epoll-retry-skip:${handle.pid}:running=${runningWorker !== null ? 1 : 0}:reason=${reason}`
       + `:${deps.formatRunningRetryBlocker(handle, runningThread)}`,
   );
+  if (
+    reason === "running-worker"
+    && supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr) < 0
+  ) {
+    setEpollDeferredRetrySignature(blocked, deps.formatBlockedEpollEntries(handle, blocked.vmPtr));
+    if (isEpollWakeRetryPending(blocked)) {
+      setEpollPassiveUntilWake(blocked, false);
+      return;
+    }
+    setEpollPassiveUntilWake(blocked, true);
+    return;
+  }
   deps.scheduleSupervisorBlockedRetry(
     handle,
     worker,
   );
+}
+
+function deferRetryEntryForRunningWorker(
+  deps: BlockedEpollRetryDeps,
+  handle: ProcessHandle,
+  blocked: HostBlockedWorkerState,
+): boolean {
+  const runningWorker = hostExecutionState(handle).runningWorker;
+  if (
+    runningWorker === null
+    || supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr) >= 0
+  ) {
+    return false;
+  }
+  wakeRuntimeBridge(handle.runtimeBridge);
+  const runningThread = deps.threadWorkerStates.get(runningWorker);
+  deps.appendRuntimeLifecycleEvent(
+    handle.runtimeId,
+    `epoll-retry-entry-defer-running:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`
+      + `:pending=${isEpollWakeRetryPending(blocked) ? 1 : 0}`
+      + `:${deps.formatRunningRetryBlocker(handle, runningThread)}`,
+  );
+  if (isEpollWakeRetryPending(blocked)) {
+    setEpollPassiveUntilWake(blocked, false);
+    return true;
+  }
+  setEpollPassiveUntilWake(blocked, true);
+  return true;
 }
 
 export function executeKernelWorkerBlockedEpollRetry(
@@ -133,12 +189,41 @@ export function executeKernelWorkerBlockedEpollRetry(
   worker: Worker,
   blocked: HostBlockedWorkerState,
 ): void {
-  const rpcGeneration = deps.beginBlockedRpc(blocked);
   const epollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr);
+  const wakeGenerationAtRetryStart = getEpollWakeRetryGeneration(blocked);
+  const epollRetrySignature = epollRetryTimeoutMs < 0
+    ? deps.formatBlockedEpollEntries(handle, blocked.vmPtr)
+    : null;
+  if (
+    epollRetrySignature !== null
+    && !isEpollWakeRetryPending(blocked)
+    && getEpollDeferredRetrySignature(blocked) === epollRetrySignature
+    && getEpollDeferredRetryWakeGeneration(blocked) === getEpollWakeRetryGeneration(blocked)
+  ) {
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `epoll-retry-skip-unchanged:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
+    );
+    if (isEpollWakeRetryPending(blocked)) {
+      setEpollWakeRetryPending(blocked, false);
+    }
+    setEpollPassiveUntilWake(blocked, true);
+    return;
+  }
+  if (getEpollDeferredRetrySignature(blocked) !== null) {
+    setEpollDeferredRetrySignature(blocked, null);
+  }
+  if (deferRetryEntryForRunningWorker(deps, handle, blocked)) {
+    return;
+  }
+  setEpollPassiveUntilWake(blocked, false);
+  const rpcGeneration = deps.beginBlockedRpc(blocked);
+  const dependentOfdIds = collectBlockedEpollDependentSyncOfdIds(handle, blocked.vmPtr);
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `epoll-retry-rpc:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`
       + `:timeout=${epollRetryTimeoutMs}`
+      + `:depOfds=${dependentOfdIds.join(",") || "none"}`
       + `:epoll=${deps.formatBlockedEpollEntries(handle, blocked.vmPtr)}`,
   );
   void (blockedEpollWatchesPipe(handle, blocked.vmPtr)
@@ -147,24 +232,42 @@ export function executeKernelWorkerBlockedEpollRetry(
     .then(() => deps.requestEpollStateSync(handle, false))
     .then(() => deps.requestEpollDependentOfdStateSync(
       handle,
-      collectBlockedEpollDependentSyncOfdIds(handle, blocked.vmPtr),
-      { mode: "pull" },
+      dependentOfdIds,
     ))
     .then(() => {
       const latestBlocked = deps.finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);
       if (!latestBlocked) {
         deps.appendRuntimeLifecycleEvent(handle.runtimeId, `epoll-retry-stale:${handle.pid}`);
+        const currentBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
+        if (
+          currentBlocked?.vmPtr === blocked.vmPtr
+          && isEpollWakeRetryPending(currentBlocked)
+          && !isBlockedRpcPending(currentBlocked)
+        ) {
+          setEpollPassiveUntilWake(currentBlocked, false);
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `epoll-retry-stale-wake-retry:${handle.pid}:vm=0x${blocked.vmPtr.toString(16)}`,
+          );
+          deps.scheduleSupervisorBlockedRetry(handle, worker);
+        }
         return;
       }
       const latestEpollRetryTimeoutMs = supervisorBlockedEpollWaitTimeoutMs(handle.kernel, latestBlocked.vmPtr);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `epoll-retry-post-sync:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
+          + `:timeout=${latestEpollRetryTimeoutMs}`
+          + `:epoll=${deps.formatBlockedEpollEntries(handle, latestBlocked.vmPtr)}`,
+      );
+      if (deps.armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
+        deps.appendRuntimeLifecycleEvent(
+          handle.runtimeId,
+          `epoll-retry-timer:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`,
+        );
+        return;
+      }
       if (latestEpollRetryTimeoutMs < 0) {
-        if (deps.armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `epoll-retry-timer:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`,
-          );
-          return;
-        }
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `epoll-retry-no-deadline:${handle.pid}:vm=0x${latestBlocked.vmPtr.toString(16)}`
@@ -177,10 +280,10 @@ export function executeKernelWorkerBlockedEpollRetry(
         case null:
           return;
         case "defer-running-worker":
-          deferPostSyncRetry(deps, handle, worker, "running-worker");
+          deferPostSyncRetry(deps, handle, worker, latestBlocked, "running-worker");
           return;
         case "defer-process-gate":
-          deferPostSyncRetry(deps, handle, worker, "process-gate");
+          deferPostSyncRetry(deps, handle, worker, latestBlocked, "process-gate");
           return;
         case "arm-wait-timer":
           if (deps.armBlockedSupervisorTimerForBlocked(handle, latestBlocked)) {
@@ -205,7 +308,7 @@ export function executeKernelWorkerBlockedEpollRetry(
           return;
         }
       }
-      deps.resumeEpollWait(handle, worker, latestBlocked);
+      deps.resumeEpollWait(handle, worker, latestBlocked, wakeGenerationAtRetryStart);
     })
     .catch((error) => {
       deps.finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);

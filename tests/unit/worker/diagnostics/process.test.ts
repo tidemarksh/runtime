@@ -10,6 +10,7 @@ import { getThreadActivityState } from "../../../../src/worker/thread-activity-s
 import {
   setThreadHostIdentity,
   setThreadInitialized,
+  setThreadOwnerAsyncStatus,
   setThreadReinitCount,
   setThreadRunningGeneration,
 } from "../../../../src/worker/thread-host-state.js";
@@ -195,6 +196,181 @@ test("debugRuntimeProcessHandles includes running worker scheduler timing detail
   expect(snapshot).toContain("lastStatusAgeMs=4000");
   expect(snapshot).toContain("activeStepVm=0x2000");
   expect(snapshot).toContain("activeStepSelf=1");
+});
+
+test("debugRuntimeProcessHandles includes owner async phase and age", () => {
+  vi.setSystemTime(new Date(20_000));
+  const worker = {} as Worker;
+  const thread = { vmPtr: 0x2000 } as ThreadWorkerState;
+  setThreadHostIdentity(thread, 1, 3);
+  setThreadInitialized(thread, true);
+  vi.setSystemTime(new Date(17_500));
+  setThreadOwnerAsyncStatus(thread, 0, "ok-sync:lifecycle");
+  vi.setSystemTime(new Date(20_000));
+  const handle = {
+    pid: 1,
+    runtimeId: 7,
+    parentPid: null,
+    vmPtr: 0x2000,
+    workers: new Set([worker]),
+    runningWorker: null,
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    workerDebugLog: [],
+    runtimeBridge: { notifySab: new SharedArrayBuffer(16), stateSab: new SharedArrayBuffer(16) },
+    kernelShare: { sharedOfdIds: new Set() },
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    stdoutPipe: 1,
+    stderrPipe: 2,
+    kernelState: { netBufBase: 0 },
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    kernel: makeDiagnosticsKernel({
+      thread_process_ptr: () => 0x3000,
+      process_current_pid: () => 1,
+      thread_tid: () => 1,
+      thread_status: () => 0,
+    }),
+  } as ProcessHandle;
+  seedProcessHandleStateFixture(handle);
+
+  const snapshot = debugRuntimeProcessHandles(
+    7,
+    new Map([[1, handle]]),
+    new WeakMap([[worker, thread]]),
+    new Map(),
+    () => "",
+  );
+
+  expect(snapshot).toContain("owner=async:0:ok-sync:lifecycle");
+  expect(snapshot).toContain("asyncDetail=ok-sync:lifecycle");
+  expect(snapshot).toContain("asyncAgeMs=2500");
+});
+
+test("debugRuntimeProcessHandles decodes fixed-length path syscall trace entries", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  new Uint8Array(memory.buffer).set(new TextEncoder().encode("/proc/self/exe"), 0x1200);
+  const handle = {
+    pid: 1,
+    runtimeId: 7,
+    parentPid: null,
+    vmPtr: 0x2000,
+    workers: new Set<Worker>(),
+    runningWorker: null,
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    workerDebugLog: [],
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(16),
+    },
+    kernelShare: {
+      sharedOfdIds: new Set(),
+    },
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    stdoutPipe: 1,
+    stderrPipe: 2,
+    kernelState: {
+      netBufBase: 0,
+    },
+    guestBase: 0,
+    memory,
+    kernel: makeDiagnosticsKernel({
+      thread_process_ptr: () => 0x3000,
+      process_current_pid: () => 1,
+      process_stdin_pipe: () => 0,
+      process_stdout_pipe: () => 1,
+      process_stderr_pipe: () => 2,
+      debug_path_syscall_trace_len: () => 1,
+      debug_path_syscall_trace_vm_ptr: () => 0x2000,
+      debug_path_syscall_trace_nr: () => 78n,
+      debug_path_syscall_trace_dirfd: () => -100n,
+      debug_path_syscall_trace_status: () => 0,
+      debug_path_syscall_trace_result: () => -22n,
+      debug_path_syscall_trace_path_ptr: () => 0x1200,
+      debug_path_syscall_trace_path_len: () => "/proc/self/exe".length,
+    }),
+  } as ProcessHandle;
+  setProcessDebugCommand(handle, "/usr/bin/ruby3.3");
+  setProcessLastDebugMessage(handle, null);
+  seedProcessHandleStateFixture(handle);
+
+  const snapshot = debugRuntimeProcessHandles(
+    7,
+    new Map([[1, handle]]),
+    new WeakMap(),
+    new Map(),
+    () => "",
+  );
+
+  expect(snapshot).toContain("path_syscalls=[");
+  expect(snapshot).toContain("nr=78");
+  expect(snapshot).toContain("path_len=14");
+  expect(snapshot).toContain('path="/proc/self/exe"');
+});
+
+test("debugRuntimeProcessHandles decodes fd trace path arguments", () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  new Uint8Array(memory.buffer).set(new TextEncoder().encode("/usr/lib/ruby/site_ruby\0"), 0x1300);
+  const handle = {
+    pid: 1,
+    runtimeId: 7,
+    parentPid: null,
+    vmPtr: 0x2000,
+    workers: new Set<Worker>(),
+    runningWorker: null,
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    workerDebugLog: [],
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(16),
+      stateSab: new SharedArrayBuffer(16),
+    },
+    kernelShare: {
+      sharedOfdIds: new Set(),
+    },
+    vforkSnapshot: null,
+    stdinPipe: 0,
+    stdoutPipe: 1,
+    stderrPipe: 2,
+    kernelState: {
+      netBufBase: 0,
+    },
+    guestBase: 0,
+    memory,
+    kernel: makeDiagnosticsKernel({
+      thread_process_ptr: () => 0x3000,
+      process_current_pid: () => 1,
+      process_stdin_pipe: () => 0,
+      process_stdout_pipe: () => 1,
+      process_stderr_pipe: () => 2,
+      debug_fd_syscall_trace_len: () => 1,
+      debug_fd_syscall_trace_vm_ptr: () => 0x2000,
+      debug_fd_syscall_trace_nr: () => 79n,
+      debug_fd_syscall_trace_arg0: () => -100n,
+      debug_fd_syscall_trace_arg1: () => 0x1300n,
+      debug_fd_syscall_trace_arg2: () => 0x4000n,
+      debug_fd_syscall_trace_arg3: () => 0n,
+      debug_fd_syscall_trace_result: () => -2n,
+      debug_fd_syscall_trace_status: () => 0,
+    }),
+  } as ProcessHandle;
+  setProcessDebugCommand(handle, "/usr/bin/ruby3.3");
+  setProcessLastDebugMessage(handle, null);
+  seedProcessHandleStateFixture(handle);
+
+  const snapshot = debugRuntimeProcessHandles(
+    7,
+    new Map([[1, handle]]),
+    new WeakMap(),
+    new Map(),
+    () => "",
+  );
+
+  expect(snapshot).toContain("fd_syscalls=[");
+  expect(snapshot).toContain("nr=79");
+  expect(snapshot).toContain('path="/usr/lib/ruby/site_ruby"');
 });
 
 test("formatAllLiveThreadDebug keeps execve summary without investigation traces", () => {

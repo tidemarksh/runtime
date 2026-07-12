@@ -8,6 +8,7 @@ export interface ProcessStdioState {
   hostStdio: SharedHostStdio;
   stdinClosed: boolean;
   stdioOwner: ProcessHandle | null;
+  inheritedParentOutput: boolean | null;
 }
 
 const processStdioStates = new WeakMap<ProcessHandle, ProcessStdioState>();
@@ -43,6 +44,7 @@ export function processStdioState(handle: ProcessHandle): ProcessStdioState {
     },
     stdinClosed: false,
     stdioOwner: null,
+    inheritedParentOutput: null,
   };
   setProcessStdioState(handle, created);
   return created;
@@ -84,6 +86,17 @@ export function processStdinClosed(handle: ProcessHandle): boolean {
 
 export function processStdioOwner(handle: ProcessHandle): ProcessHandle | null {
   return processStdioState(handle).stdioOwner;
+}
+
+export function processInheritedParentOutput(handle: ProcessHandle): boolean | null {
+  return processStdioState(handle).inheritedParentOutput ?? null;
+}
+
+export function setProcessInheritedParentOutput(
+  handle: ProcessHandle,
+  inheritedParentOutput: boolean,
+): void {
+  processStdioState(handle).inheritedParentOutput = inheritedParentOutput;
 }
 
 export function setProcessStdinPipe(handle: ProcessHandle, stdinPipe: number): void {

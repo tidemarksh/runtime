@@ -4,6 +4,7 @@ import type {
   GuestMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
+  KernelWorkerRegularFileFsSnapshot,
   KernelWorkerPidBytesSnapshot,
   KernelWorkerPidStateSnapshot,
   KernelWorkerPipeSlotSnapshot,
@@ -140,6 +141,7 @@ export type KernelWorkerRequest =
       pid: number;
       vmPtr: number;
       kernelState: KernelRuntimeState;
+      regularFileRequest?: KernelWorkerRegularFileFsSnapshot;
       debugProgress?: boolean;
     }
   | {

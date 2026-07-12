@@ -126,6 +126,7 @@ test("message handler forwards fd and OFD snapshots from process-fs responses", 
   const kernelState = makeKernelState();
   const fdEntries = [{ fd: 5, ofdId: 7, fdFlags: 1 }];
   const ofdSlots = [{ ofdId: 7, slot: new Uint8Array([1, 2, 3, 4]) }];
+  const regularFileRequest = { fd: 5, ofdId: 7, ofdSlot: new Uint8Array([9, 8, 7, 6]) };
   deps.processFs.mockReturnValue({
     kernelState,
     result: 5n,
@@ -142,8 +143,10 @@ test("message handler forwards fd and OFD snapshots from process-fs responses", 
     pid: 7,
     vmPtr: 0x1234,
     kernelState,
+    regularFileRequest,
   });
 
+  expect(deps.processFs).toHaveBeenCalledWith(7, 0x1234, kernelState, regularFileRequest, undefined);
   expect(posted).toEqual([
     {
       type: "fs-processed",

@@ -263,8 +263,7 @@ test("syncForkSharedState keeps memfsOnly publication metadata-only", () => {
 
   expect(memfsCopyModes).toEqual([true, false]);
   expect(canonicalFanoutModes).toEqual([true, false]);
-  expect(restoreProcSelfExe).toHaveBeenCalledTimes(2);
-  expect(restoreProcSelfExe).toHaveBeenCalledWith(canonicalExports, null);
+  expect(restoreProcSelfExe).not.toHaveBeenCalled();
 });
 
 test("syncForkSharedState preserves published file data through page-cache restore", () => {
@@ -485,6 +484,69 @@ test("syncForkSharedState filters private fd entries outside tracked OFDs", () =
   expect(sourceExports.process_fd_ofd_id(0x1234, 7)).toBe(0);
 });
 
+test("syncForkSharedState does not reopen an fd from an older snapshot generation", () => {
+  const canonicalExports = makeKernelExports();
+  const sourceExports = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>([[1, sourceExports]]);
+  sourceExports.process_fd_generation = () => 9;
+
+  const sync = createKernelWorkerForkSharedStateSync({
+    getCanonicalExports: () => canonicalExports,
+    getCanonicalProcessVmPtr: () => 0x1234,
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    requireProcessKernel: (pid) => processKernels.get(pid)!,
+    applySelectedOfdSnapshots: () => {},
+    collectProcessHeldOfdRefcounts: () => new Int32Array(32),
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    collectProcessPrivatePipeSourceModes: () => new Map(),
+    collectProcessPipeSlotModes: () => new Map(),
+    collectProcessPrivatePipeSlots: () => new Set(),
+    collectCanonicalManagedPipeSlots: () => [],
+    copySelectedOfdState: () => {},
+    copySelectedEpollState: () => {},
+    clearSelectedOfdState: () => {},
+    copyMemfsState: () => {},
+    clearMemfsState: () => {},
+    reconcileCanonicalOfdRefcounts: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+      managedPipeSlots: [],
+    }),
+    collectPipeSlotsForOfdIds: () => [],
+    copySelectedPipeSlots: () => {},
+    clearSelectedPipeSlots: () => {},
+    mergePipeSlotsFromProcess: () => {},
+    mergePipeSlotsFromCanonical: () => {},
+    applyPipeControlState: () => {},
+    composeProcessPipeUsed: () => 0n,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    copyEpollState: () => {},
+    copySocketState: () => {},
+  });
+
+  sync.syncForkSharedState(
+    1,
+    0x1234,
+    [],
+    [],
+    [20],
+    [],
+    [{ fd: 10, ofdId: 20, fdFlags: 0, generation: 8 }],
+    false,
+    false,
+    false,
+    makeKernelState(),
+  );
+
+  expect(sourceExports.process_fd_ofd_id(0x1234, 10)).toBe(0);
+});
+
 test("rehydrateForkSharedState copies memfs data when includeMemfs is enabled", () => {
   const canonicalExports = makeKernelExports();
   const targetExports = makeKernelExports();
@@ -542,6 +604,71 @@ test("rehydrateForkSharedState copies memfs data when includeMemfs is enabled", 
   );
 
   expect(memfsCopyModes).toEqual([true]);
+});
+
+test("rehydrateForkSharedState restores epoll state only for epoll OFDs held by the target", () => {
+  const canonicalExports = makeKernelExports();
+  const targetExports = makeKernelExports();
+  const processKernels = new Map<number, KernelExports>([[2, targetExports]]);
+  const copySelectedEpollState = vi.fn();
+  const collectProcessHeldEpollOfdIds = vi.fn(() => [9, 12]);
+
+  const sync = createKernelWorkerForkSharedStateSync({
+    getCanonicalExports: () => canonicalExports,
+    getCanonicalProcessVmPtr: () => 0x1234,
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    requireProcessKernel: (pid) => processKernels.get(pid)!,
+    applySelectedOfdSnapshots: () => {},
+    collectProcessHeldOfdRefcounts: () => new Int32Array(32),
+    collectProcessHeldEpollOfdIds,
+    collectProcessHeldPipeSlots: () => new Set(),
+    collectProcessPrivatePipeSourceModes: () => new Map(),
+    collectProcessPipeSlotModes: () => new Map(),
+    collectProcessPrivatePipeSlots: () => new Set(),
+    collectCanonicalManagedPipeSlots: () => [],
+    copySelectedOfdState: () => {},
+    copySelectedEpollState,
+    clearSelectedOfdState: () => {},
+    copyMemfsState: () => {},
+    clearMemfsState: () => {},
+    reconcileCanonicalOfdRefcounts: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+      managedPipeSlots: [],
+    }),
+    collectPipeSlotsForOfdIds: () => [],
+    copySelectedPipeSlots: () => {},
+    clearSelectedPipeSlots: () => {},
+    mergePipeSlotsFromProcess: () => {},
+    mergePipeSlotsFromCanonical: () => {},
+    applyPipeControlState: () => {},
+    composeProcessPipeUsed: () => 0n,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    copyEpollState: () => {},
+    copySocketState: () => {},
+  });
+
+  sync.rehydrateForkSharedState(
+    [2],
+    [{ pid: 2, vmPtr: 0x5678, kernelState: makeKernelState() }],
+    [7, 9],
+    [],
+    false,
+  );
+
+  expect(collectProcessHeldEpollOfdIds).toHaveBeenCalledWith(targetExports, 0x5678);
+  expect(copySelectedEpollState).toHaveBeenCalledWith(
+    canonicalExports,
+    expect.any(Object),
+    targetExports,
+    expect.any(Object),
+    [9],
+  );
 });
 
 test("rehydrateForkSharedState restores proc_self_exe from explicit targets even when memfs rehydrate is disabled", () => {

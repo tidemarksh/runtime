@@ -242,7 +242,7 @@ test("resolveProcessCwdIno accepts directories and rejects missing or non-direct
   expect(fileIno).toBeGreaterThan(1);
 });
 
-test("applyFsEntryToHandle replaces existing file bytes and updates mode", () => {
+test("applyFsEntryToHandle updates file metadata without replacing authoritative backing bytes", () => {
   const kernel = makeMemfsKernel();
   const handle = makeHandle(kernel);
   const workIno = kernel.memfs_ensure_dir(1, (() => {
@@ -270,7 +270,7 @@ test("applyFsEntryToHandle replaces existing file bytes and updates mode", () =>
   });
 
   const updated = kernel.recordsByPath.get("/work/note.txt");
-  expect(updated?.data).toEqual(encoder.encode("hi"));
+  expect(updated?.data).toEqual(encoder.encode("01"));
   expect(updated?.mode).toBe(0o100600);
 });
 

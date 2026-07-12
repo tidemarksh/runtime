@@ -1,6 +1,7 @@
 import { hostExecutionState } from "../host-execution-state.js";
 import { processHasWorker } from "../process-worker-state.js";
 import {
+  supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedInitialAction,
   supervisorBlockedPipeSyncBeforeRetryClear,
   supervisorClearBlockedWaitNetworkPump,
@@ -15,6 +16,12 @@ import {
   drainProcessOutput,
 } from "../stdio.js";
 import { appendWorkerDebugLog } from "./worker-debug-log.js";
+import {
+  snapshotProcessPipeSlotsForThreadStep,
+} from "../ownership/pipe-control.js";
+import {
+  appendPendingPipeSlotsForNextStep,
+} from "../thread-step-payload.js";
 import { createPipePollScheduler } from "./blocked-poll.js";
 import { createPruningScheduler } from "./worker-pruning.js";
 import { createWorkerSchedulerQueueHelpers } from "./thread-worker-queue.js";
@@ -42,8 +49,16 @@ import type {
 } from "./worker-scheduler-types.js";
 import {
   copyHostBlockedEffectState,
+  isEpollPassiveUntilWake,
+  isEpollWakeRetryPending,
   isBlockedRpcPending,
+  setEpollPassiveUntilWake,
 } from "../host-blocked-state.js";
+import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
+
+interface BlockWorkerOptions {
+  deferInitialRetry?: boolean;
+}
 
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
@@ -79,6 +94,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   } = schedulerQueueHelpers;
 
   blockedWaitTimers = createBlockedWaitTimers({
+    threadWorkerStates,
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     appendWorkerDebugLog,
     failProcess: deps.failProcess,
@@ -117,6 +133,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
       }
     }
+    clearSupervisorHostTimer(handle, blocked.vmPtr);
     clearHostBlockedRetryTimer(handle, worker);
     hostExecutionState(handle).hostBlockedWorkers.delete(worker);
   }
@@ -153,8 +170,21 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     }
   }
 
-  function requestThreadWorkerBlockedResume(_handle: ProcessHandle, worker: Worker): void {
+  function requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void {
     threadWorkerBlockedResumeRequests.add(worker);
+    const thread = threadWorkerStates.get(worker);
+    if (thread === undefined) {
+      return;
+    }
+    const pipeSlots = snapshotProcessPipeSlotsForThreadStep(handle, thread.vmPtr);
+    if (pipeSlots.length === 0) {
+      return;
+    }
+    appendPendingPipeSlotsForNextStep(thread, pipeSlots);
+    appendWorkerDebugLog(
+      handle,
+      `blocked-resume-pipe-slots:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}:slots=${pipeSlots.length}`,
+    );
   }
 
   function takeThreadWorkerBlockedResume(_handle: ProcessHandle, worker: Worker): boolean {
@@ -245,7 +275,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     clearBlockedWorker,
   });
 
-  function blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void {
+  function blockWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    status: number,
+    vmPtr: number,
+    options: BlockWorkerOptions = {},
+  ): void {
     if (supervisorSchedulerBlockWorkerAction(handle.kernel, status) === "park-futex") {
       parkSupervisorFutexWait(handle, worker, vmPtr, "block-worker-futex-supervisor-owned");
       return;
@@ -262,6 +298,14 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       vmPtr,
       status,
     };
+    if (status === handle.kernel.abi_status_wait4()) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `wait4-block-register:${handle.pid}:vm=0x${vmPtr.toString(16)}`
+          + `:target=${handle.kernel.thread_blocked_syscall_arg?.(vmPtr, 0)?.toString() ?? "n/a"}`
+          + `:result=${handle.kernel.thread_a0?.(vmPtr)?.toString() ?? "n/a"}`,
+      );
+    }
     if (sameBlockedThread && previousBlocked !== undefined) {
       copyHostBlockedEffectState(blocked, previousBlocked);
     }
@@ -277,7 +321,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (isSupervisorTimerArmed(blocked)) {
       flags.push("supervisor-timer-armed");
     }
-    if (sameBlockedThread && isBlockedRpcPending(blocked)) {
+    if (options.deferInitialRetry || (sameBlockedThread && isBlockedRpcPending(blocked))) {
       flags.push("rpc-pending");
     }
     let initialAction;
@@ -364,6 +408,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     observeForkSharedSyncCompletion,
     clearStaleRunningWorker,
     clearBlockedWorker,
+    requestThreadWorkerBlockedResume,
     scheduleSupervisorBlockedRetry,
     armBlockedSupervisorTimerForBlocked,
     isSupervisorTimerArmed,
@@ -385,8 +430,29 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   });
   retryHostBlockedWorkerImpl = blockedRetryCoordinator.retryHostBlockedWorker;
 
+  function shouldSkipProgressRetry(handle: ProcessHandle, worker: Worker, blocked: HostBlockedWorkerState): boolean {
+    if (
+      blocked.status !== handle.kernel.abi_status_epoll_wait()
+      || supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr) >= 0
+    ) {
+      return false;
+    }
+    clearStaleRunningWorker(handle, worker);
+    if (isEpollPassiveUntilWake(blocked) && !isEpollWakeRetryPending(blocked)) {
+      return true;
+    }
+    if (isEpollWakeRetryPending(blocked) && hostExecutionState(handle).runningWorker !== null) {
+      setEpollPassiveUntilWake(blocked, false);
+      return true;
+    }
+    return false;
+  }
+
   function notifySchedulerProgress(handle: ProcessHandle): void {
-    for (const worker of [...hostExecutionState(handle).hostBlockedWorkers.keys()]) {
+    for (const [worker, blocked] of [...hostExecutionState(handle).hostBlockedWorkers]) {
+      if (shouldSkipProgressRetry(handle, worker, blocked)) {
+        continue;
+      }
       retryHostBlockedWorker(handle, worker);
     }
   }

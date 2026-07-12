@@ -753,6 +753,52 @@ function installSupervisorPipeAuthority(
   exports.supervisor_process_pipe_write_open_count = (_vmPtr: number, pipeSlot: number) => options.writeOpen.get(pipeSlot) ?? 0;
 }
 
+test("kernel-worker pipe rehydrate copies data before applying recomputed control", () => {
+  const sourceMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const targetMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const sourceExports = makeKernelExports(sourceMemory);
+  const targetExports = makeKernelExports(targetMemory);
+  const pipeSlot = 7;
+
+  seedPipeSlot(sourceMemory, pipeSlot, 0xcc, -1, -1);
+  seedPipeSlot(targetMemory, pipeSlot, 0xaa, 3, 4);
+
+  const primitives = createKernelWorkerPrimitives({
+    getCanonicalExports: () => sourceExports,
+    processKernels: new Map(),
+    canonicalProcesses: new Map(),
+    getCanonicalProcessVmPtr: () => 0,
+  });
+
+  primitives.copySelectedPipeSlots(
+    sourceExports,
+    makeKernelState(),
+    targetExports,
+    makeKernelState(),
+    [pipeSlot],
+  );
+
+  expect(pipeMarker(targetMemory, pipeSlot)).toBe(0xcc);
+  expect(pipeReadOpen(targetMemory, pipeSlot)).toBe(3);
+  expect(pipeWriteOpen(targetMemory, pipeSlot)).toBe(4);
+
+  const readOpen = new Int32Array(64);
+  const writeOpen = new Int32Array(64);
+  readOpen[pipeSlot] = 1;
+  writeOpen[pipeSlot] = 2;
+  primitives.applyPipeControlState(
+    targetExports,
+    makeKernelState(),
+    readOpen,
+    writeOpen,
+    1n << BigInt(pipeSlot),
+    [pipeSlot],
+  );
+
+  expect(pipeReadOpen(targetMemory, pipeSlot)).toBe(1);
+  expect(pipeWriteOpen(targetMemory, pipeSlot)).toBe(2);
+});
+
 test("kernel-worker pipe control recompute uses supervisor process endpoint counts", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
@@ -1020,6 +1066,32 @@ test("kernel-worker pipe sync can seed an unpublished child fd table from snapsh
   expect(childExports.fdMap().get(1)).toBe(8);
   expect(pipeWriteOpen(canonicalMemory, 6)).toBe(1);
   expect(pipeWriteOpen(childMemory, 6)).toBe(1);
+});
+
+test("kernel-worker pipe sync does not reopen an fd from an older snapshot generation", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedPipeOfd(childExports, childMemory, 8, 6, -11);
+  childExports.setFdMap(new Map());
+  childExports.process_fd_generation = () => 9;
+
+  sharedStateSync.syncPipeState(
+    2,
+    makeKernelState(),
+    [{ fd: 1, ofdId: 8, fdFlags: 0, generation: 8 }],
+    [{ ofdId: 8, slot: snapshotOfdSlot(childMemory, 8) }],
+    undefined,
+    0x1234,
+    true,
+  );
+
+  expect(childExports.fdMap().has(1)).toBe(false);
 });
 
 test("fork-shared OFD sync preserves parent reader while method child owns writer", () => {

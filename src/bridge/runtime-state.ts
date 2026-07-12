@@ -3,6 +3,8 @@ import {
   RUNTIME_BRIDGE_DEBUG_STAGE_INDEX,
   RUNTIME_BRIDGE_DEBUG_VALUE_INDEX,
   RUNTIME_BRIDGE_EPOCH_INDEX,
+  RUNTIME_BRIDGE_FD_AUTHORITY_BASE_INDEX,
+  RUNTIME_BRIDGE_FD_AUTHORITY_COUNT,
   RUNTIME_BRIDGE_NOTIFY_INDEX,
   RUNTIME_STATE_FIELD_COUNT,
   RUNTIME_STATE_FIELD_OFFSETS,
@@ -17,7 +19,10 @@ export interface RuntimeStateBridge {
 
 export function createRuntimeStateBridge(): RuntimeStateBridge {
   return {
-    notifySab: new SharedArrayBuffer(16),
+    notifySab: new SharedArrayBuffer(
+      (RUNTIME_BRIDGE_FD_AUTHORITY_BASE_INDEX + RUNTIME_BRIDGE_FD_AUTHORITY_COUNT)
+        * Int32Array.BYTES_PER_ELEMENT,
+    ),
     stateSab: new SharedArrayBuffer(RUNTIME_STATE_HEADER_BYTES + RUNTIME_STATE_FIELD_COUNT * 8),
   };
 }
@@ -103,6 +108,43 @@ export function publishRuntimeBridgeEpoch(bridge: RuntimeStateBridge): number {
 
 export function readPublishedRuntimeBridgeEpoch(bridge: RuntimeStateBridge): number {
   return Atomics.load(notifyView(bridge), RUNTIME_BRIDGE_EPOCH_INDEX);
+}
+
+export function publishRuntimeFdAuthorityEpoch(
+  bridge: RuntimeStateBridge,
+  fd: number,
+): number {
+  if (!Number.isInteger(fd) || fd < 0 || fd >= RUNTIME_BRIDGE_FD_AUTHORITY_COUNT) {
+    return 0;
+  }
+  const view = notifyView(bridge);
+  const index = RUNTIME_BRIDGE_FD_AUTHORITY_BASE_INDEX + fd;
+  if (index >= view.length) {
+    return 0;
+  }
+  return Atomics.add(
+    view,
+    index,
+    1,
+  ) + 1;
+}
+
+export function readRuntimeFdAuthorityEpoch(
+  bridge: RuntimeStateBridge,
+  fd: number,
+): number {
+  if (!Number.isInteger(fd) || fd < 0 || fd >= RUNTIME_BRIDGE_FD_AUTHORITY_COUNT) {
+    return 0;
+  }
+  const view = notifyView(bridge);
+  const index = RUNTIME_BRIDGE_FD_AUTHORITY_BASE_INDEX + fd;
+  if (index >= view.length) {
+    return 0;
+  }
+  return Atomics.load(
+    view,
+    index,
+  );
 }
 
 export function publishRuntimeBridgeDebugStage(

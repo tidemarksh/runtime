@@ -160,6 +160,9 @@ export function collectFdTraceDebug(
     67n, // pread64
     68n, // pwrite64
     73n, // ppoll
+    19n, // eventfd2
+    20n, // epoll_create1
+    21n, // epoll_ctl
     198n, // socket
     199n, // socketpair
     203n, // connect
@@ -236,7 +239,29 @@ export function collectFdTraceDebug(
   return entries.length === 0 ? undefined : entries.slice(-48).join(",");
 }
 
-function collectFdTraceSummaryForDebug(exports: KernelExports, vmPtr: number): string | null {
+function formatFdTracePathSampleForDebug(
+  exports: KernelExports,
+  guestBase: number,
+  nr: bigint,
+  arg1: bigint,
+): string {
+  if (
+    nr !== 48n // faccessat
+    && nr !== 56n // openat
+    && nr !== 78n // readlinkat
+    && nr !== 79n // newfstatat
+  ) {
+    return "";
+  }
+  const path = readGuestCStringForDebug(exports, guestBase, arg1);
+  return `:path=${JSON.stringify(path ?? "")}`;
+}
+
+function collectFdTraceSummaryForDebug(
+  exports: KernelExports,
+  vmPtr: number,
+  guestBase: number,
+): string | null {
   const len = exports.debug_fd_syscall_trace_len?.() ?? 0;
   if (len <= 0) {
     return null;
@@ -252,6 +277,7 @@ function collectFdTraceSummaryForDebug(exports: KernelExports, vmPtr: number): s
       continue;
     }
     const result = readOptionalTraceI64(exports.debug_fd_syscall_trace_result?.(index));
+    const arg1 = readOptionalTraceU64(exports.debug_fd_syscall_trace_arg1?.(index));
     entries.push([
       `nr=${nr.toString()}`,
       `fd=${readOptionalTraceU64(exports.debug_fd_syscall_trace_arg0?.(index)).toString()}`,
@@ -260,14 +286,14 @@ function collectFdTraceSummaryForDebug(exports: KernelExports, vmPtr: number): s
       `sampleOff=${readOptionalTraceI64(exports.debug_fd_syscall_trace_arg0_ofd_offset?.(index)).toString()}`,
       `sampleHost=${exports.debug_fd_syscall_trace_arg0_ofd_host_fd?.(index) ?? "n/a"}`,
       `pipeGen=${exports.debug_fd_syscall_trace_arg0_pipe_generation?.(index) ?? "n/a"}`,
-      `a1=${readOptionalTraceU64(exports.debug_fd_syscall_trace_arg1?.(index)).toString()}`,
+      `a1=${arg1.toString()}`,
       `a2=${readOptionalTraceU64(exports.debug_fd_syscall_trace_arg2?.(index)).toString()}`,
       `a2ofd=${exports.debug_fd_syscall_trace_arg2_ofd_id?.(index) ?? 0}`,
       `a2ty=${exports.debug_fd_syscall_trace_arg2_ofd_type?.(index) ?? 0}`,
       `ret=${result.toString()}`,
       `st=${exports.debug_fd_syscall_trace_status?.(index) ?? 0}`,
       `pid=${sampleToPid(exports.debug_fd_syscall_trace_pid_sample0?.(index))}`,
-    ].join(":"));
+    ].join(":") + formatFdTracePathSampleForDebug(exports, guestBase, nr, arg1));
   }
   return entries.length === 0 ? null : entries.slice(-64).join(",");
 }
@@ -736,14 +762,6 @@ function readGuestU32(exports: KernelExports, guestBase: number, addr: number): 
   return new DataView(exports.memory.buffer).getUint32(absolute, true);
 }
 
-function readGuestI32(exports: KernelExports, guestBase: number, addr: number): number | null {
-  const absolute = guestBase + addr;
-  if (addr <= 0 || absolute + 4 > exports.memory.buffer.byteLength) {
-    return null;
-  }
-  return new DataView(exports.memory.buffer).getInt32(absolute, true);
-}
-
 function summarizeReservationSlots(
   exports: KernelExports,
   guestBase: number,
@@ -785,6 +803,64 @@ function readGuestInsn(exports: KernelExports, guestBase: number, pc: bigint): s
   }
   const view = new DataView(exports.memory.buffer);
   return `0x${view.getUint32(absolute, true).toString(16)}`;
+}
+
+function formatBytes(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readGuestBytes(
+  exports: KernelExports,
+  guestBase: number,
+  addr: bigint,
+  length: number,
+): Uint8Array | null {
+  const guestAddr = Number(addr);
+  if (!Number.isFinite(guestAddr) || guestAddr < 0 || length <= 0) {
+    return null;
+  }
+  const absolute = guestBase + guestAddr;
+  if (absolute < 0 || absolute + length > exports.memory.buffer.byteLength) {
+    return null;
+  }
+  return copyBytes(new Uint8Array(exports.memory.buffer, absolute, length));
+}
+
+function formatVmaAddressByteSample(
+  exports: KernelExports,
+  guestBase: number,
+  vmaIndex: number,
+  addr: bigint,
+): string | null {
+  const fd = exports.debug_memory_vma_fd?.(vmaIndex) ?? -1;
+  if (fd < 0 || typeof exports.memfs_read_file_to !== "function") {
+    return null;
+  }
+  const start = BigInt(exports.debug_memory_vma_start?.(vmaIndex) ?? 0);
+  const end = BigInt(exports.debug_memory_vma_end?.(vmaIndex) ?? 0);
+  const vmaOffset = BigInt(exports.debug_memory_vma_offset?.(vmaIndex) ?? 0);
+  if (addr < start || addr >= end) {
+    return null;
+  }
+  const guestOffset = addr - start;
+  const fileOffset = vmaOffset + guestOffset;
+  const sampleLen = 16;
+  const guest = readGuestBytes(exports, guestBase, addr, sampleLen);
+  const scratchPtr = debugScratchBase(exports) + 0x28000;
+  let file = "unreadable";
+  const read = Number(exports.memfs_read_file_to(fd, fileOffset, scratchPtr, sampleLen));
+  if (read > 0 && scratchPtr + read <= exports.memory.buffer.byteLength) {
+    file = formatBytes(new Uint8Array(exports.memory.buffer, scratchPtr, read));
+  }
+  return [
+    `idx=${vmaIndex}`,
+    `fd=${fd}`,
+    `guestOff=0x${guestOffset.toString(16)}`,
+    `fileOff=0x${fileOffset.toString(16)}`,
+    `guest=${guest === null ? "unreadable" : formatBytes(guest)}`,
+    `file=${file}`,
+    `read=${read}`,
+  ].join(":");
 }
 
 function readGuestU64ForDebug(
@@ -901,6 +977,24 @@ function findContainingMemoryVma(
     const end = BigInt(exports.debug_memory_vma_end?.(i) ?? 0);
     if (start <= addr && addr < end) {
       return formatMemoryVma(exports, i);
+    }
+  }
+  return null;
+}
+
+function findContainingMemoryVmaIndex(
+  exports: KernelExports,
+  vmaLen: number,
+  addr: bigint,
+): number | null {
+  if (addr === 0n) {
+    return null;
+  }
+  for (let i = 0; i < vmaLen; i += 1) {
+    const start = BigInt(exports.debug_memory_vma_start?.(i) ?? 0);
+    const end = BigInt(exports.debug_memory_vma_end?.(i) ?? 0);
+    if (start <= addr && addr < end) {
+      return i;
     }
   }
   return null;
@@ -1230,7 +1324,7 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     debugParts.push(`memory_syscalls=${memorySyscallTrace}`);
   }
   try {
-    const fdSyscallTrace = collectFdTraceSummaryForDebug(exports, vmPtr);
+    const fdSyscallTrace = collectFdTraceSummaryForDebug(exports, vmPtr, guestBase);
     if (fdSyscallTrace !== null) {
       debugParts.push(`fd_syscalls=${fdSyscallTrace}`);
     }
@@ -1246,6 +1340,13 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
     const currentVma = findContainingMemoryVma(exports, vmaLen, currentPc);
     if (currentPc !== 0n) {
       debugParts.push(`pc_vma=${currentVma ?? "none"}`);
+      const currentVmaIndex = findContainingMemoryVmaIndex(exports, vmaLen, currentPc);
+      const sample = currentVmaIndex === null
+        ? null
+        : formatVmaAddressByteSample(exports, guestBase, currentVmaIndex, currentPc);
+      if (sample !== null) {
+        debugParts.push(`pc_vma_sample=${sample}`);
+      }
       if (currentVma === null) {
         const adjacent = findAdjacentMemoryVmas(exports, vmaLen, currentPc);
         debugParts.push(`pc_vma_prev=${adjacent.prev ?? "none"}`);
@@ -1264,19 +1365,17 @@ export function collectDebugParts(exports: KernelExports, vmPtr: number, guestBa
   }
   const processPtr = exports.thread_process_ptr?.(vmPtr) ?? 0;
   if (guestBase > 0 && processPtr > 0) {
-    const fdTableBytes = exports.abi_max_fds() * 8;
-    const threadCountAddr = processPtr + fdTableBytes;
+    const fdStateBytes = exports.abi_max_fds() * 12;
+    const threadCountAddr = processPtr + fdStateBytes;
     const reservationGenAddr = threadCountAddr + 4;
     const reservationLockAddr = reservationGenAddr + 64 * 4;
-    const pidAddr = reservationLockAddr + 64 * 4;
-    const ppidAddr = pidAddr + 4;
     debugParts.push(`process_ptr=0x${processPtr.toString(16)}`);
-    debugParts.push(`process_thread_count=${readGuestU32(exports, guestBase, threadCountAddr) ?? "n/a"}`);
+    debugParts.push(`process_thread_count=${exports.thread_process_thread_count(vmPtr)}`);
     if (RESERVATION_DEBUG_ENABLED) {
       debugParts.push(`reservation=${summarizeReservationSlots(exports, guestBase, reservationGenAddr, reservationLockAddr)}`);
     }
-    debugParts.push(`process_pid_field=${readGuestI32(exports, guestBase, pidAddr) ?? "n/a"}`);
-    debugParts.push(`process_ppid_field=${readGuestI32(exports, guestBase, ppidAddr) ?? "n/a"}`);
+    debugParts.push(`process_pid_field=${exports.process_current_pid(vmPtr)}`);
+    debugParts.push(`process_ppid_field=${exports.process_current_ppid(vmPtr)}`);
   }
   const signalDeliverySig = exports.debug_signal_delivery_for_vm_sig?.(vmPtr)
     ?? exports.debug_signal_delivery_sig?.();

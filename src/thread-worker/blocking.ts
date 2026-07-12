@@ -65,6 +65,11 @@ export function resumeBlockedSyscallStep(
   }
 
   ctx.applyGuestMemoryWrites();
+  if (ctx.exports.thread_status(ctx.vmPtr) === ctx.exports.abi_status_futex_wait()) {
+    completeSupervisorFutexWaitByExports(ctx.exports, ctx.vmPtr, "woken");
+    return createThreadWorkerStatusOutcome(ctx.exports.thread_status(ctx.vmPtr));
+  }
+
   const resumeFd = ctx.exports.thread_a0(ctx.vmPtr);
   const resumeBuf = ctx.exports.thread_a1(ctx.vmPtr);
   const resumeCount = ctx.exports.thread_reg?.(ctx.vmPtr, 12) ?? 0n;
@@ -105,7 +110,8 @@ export function handleFutexWait(
 
   if (initialBlockedAddr === 0n) {
     completeSupervisorFutexWait(ctx, "woken");
-    return true;
+    ctx.postStatus(createThreadWorkerStatusOutcome(ctx.exports.thread_status(ctx.vmPtr)));
+    return false;
   }
 
   ctx.postStatus(createThreadWorkerStatusOutcome(status, true));
@@ -169,15 +175,23 @@ function completeSupervisorFutexWait(
   ctx: ThreadWorkerBlockingContext,
   completion: SupervisorFutexWaitCompletion,
 ): void {
-  const complete = ctx.exports.supervisor_complete_futex_wait;
+  completeSupervisorFutexWaitByExports(ctx.exports, ctx.vmPtr, completion);
+}
+
+function completeSupervisorFutexWaitByExports(
+  exports: KernelExports,
+  vmPtr: number,
+  completion: SupervisorFutexWaitCompletion,
+): void {
+  const complete = exports.supervisor_complete_futex_wait;
   if (complete === undefined) {
     throw new Error("kernel supervisor ABI missing supervisor_complete_futex_wait");
   }
 
   complete.call(
-    ctx.exports,
-    ctx.vmPtr,
-    supervisorFutexWaitCompletionCode(ctx.exports, completion),
+    exports,
+    vmPtr,
+    supervisorFutexWaitCompletionCode(exports, completion),
   );
 }
 

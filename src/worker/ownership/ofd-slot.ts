@@ -1,5 +1,9 @@
 import type { ProcessHandle } from "../types.js";
-import { recordRegularFileOfdOffsetSnapshot } from "../regular-file-ofd-offset-state.js";
+import {
+  deleteRegularFileOfdOffsetSnapshot,
+  recordRegularFileOfdOffsetSnapshot,
+  writeRegularFileOfdOffsetState,
+} from "../regular-file-ofd-offset-state.js";
 import {
   FD_ENTRY_BYTES,
   FD_ENTRY_OFD_ID_OFFSET,
@@ -8,6 +12,7 @@ import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
+  OFD_STATUS_FLAGS_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../../layout/ofd.js";
 import {
@@ -34,16 +39,23 @@ interface StatusMessageLike {
   fdTraceArg0OfdId?: number;
   fdTraceArg0OfdType?: number;
   fdTraceArg0OfdOffset?: bigint;
+  fdTraceArg1?: bigint;
   fdTraceResult?: bigint;
   trustRegularFileOfdOffsets?: boolean;
+  trustRegularFileOffsetOfdIds?: ReadonlySet<number>;
   recordRegularFileOfdOffsets?: boolean;
+  allowRegularFileIdentityReplacement?: boolean;
 }
 
 const SUPERVISOR_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
+const SYS_FCNTL = 25n;
+const SYS_IOCTL = 29n;
 const SYS_READ = 63n;
 const SYS_WRITE = 64n;
 const SYS_READV = 65n;
 const SYS_WRITEV = 66n;
+const F_SETFL = 4n;
+const OPEN_ACCESS_MODE_MASK = 0x3;
 
 interface OfdSlotCandidate {
   type: number;
@@ -175,6 +187,7 @@ function ofdSnapshotWouldClobberExistingSlot(
   slotBytes: number,
   decide: ReturnType<typeof requireSupervisorOfdSlotRestoreAction>,
   skipAction: number,
+  allowRegularFileIdentityReplacement: boolean,
   trustRegularFileOfdOffsets: boolean,
   syscallNr: bigint | number,
 ): boolean {
@@ -183,9 +196,11 @@ function ofdSnapshotWouldClobberExistingSlot(
     return true;
   }
   const candidate = readOfdSlotCandidate(snapshot.slot);
+  const referencedByFdEntry = allowRegularFileIdentityReplacement
+    && ofdSnapshotReferencedByFdEntry(fdEntries, snapshot.ofdId);
   const flags = supervisorOfdSlotRestoreFlags(
     handle,
-    ofdSnapshotReferencedByFdEntry(fdEntries, snapshot.ofdId),
+    referencedByFdEntry,
     trustRegularFileOfdOffsets,
   );
   return decide(
@@ -321,6 +336,7 @@ function recordRegularFileOfdOffsets(
   handle: ProcessHandle,
   msg: StatusMessageLike,
   slotBytes: number,
+  appliedOfdIds: ReadonlySet<number>,
 ): void {
   const fileType = handle.kernel.abi_fd_type_file?.();
   if (fileType === undefined || !msg.ofdSlots || msg.ofdSlots.length === 0) {
@@ -331,6 +347,7 @@ function recordRegularFileOfdOffsets(
       snapshot.ofdId <= 0
       || snapshot.ofdId >= handle.kernel.abi_max_fds()
       || snapshot.slot.length !== slotBytes
+      || !appliedOfdIds.has(snapshot.ofdId)
     ) {
       continue;
     }
@@ -344,6 +361,19 @@ function recordRegularFileOfdOffsets(
       offset: view.getBigInt64(OFD_OFFSET_OFFSET, true),
     });
   }
+}
+
+function regularFileOfdIdFromAppliedSlot(
+  handle: ProcessHandle,
+  snapshot: OfdSlotSnapshotLike,
+  slot: Uint8Array,
+): number | null {
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  if (fileType === undefined) {
+    return null;
+  }
+  const candidate = readOfdSlotCandidate(slot);
+  return candidate.type === fileType ? snapshot.ofdId : null;
 }
 
 function applyEventfdTraceOffset(
@@ -384,6 +414,109 @@ function applyEventfdTraceOffset(
   return true;
 }
 
+function isLiveEpollDependentOfdType(handle: ProcessHandle, type: number): boolean {
+  return type === handle.kernel.abi_fd_type_epoll?.()
+    || type === handle.kernel.abi_fd_type_eventfd?.()
+    || type === handle.kernel.abi_fd_type_timerfd?.();
+}
+
+function statusMessageCanChangeOfdStatusFlags(
+  msg: StatusMessageLike,
+  ofdId: number,
+): boolean {
+  if (
+    msg.fdTraceArg0OfdId !== ofdId
+    || msg.fdTraceResult === undefined
+    || msg.fdTraceResult < 0n
+  ) {
+    return false;
+  }
+  if (msg.fdTraceSyscallNr === SYS_FCNTL && msg.fdTraceArg1 === F_SETFL) {
+    return true;
+  }
+  return msg.fdTraceSyscallNr === SYS_IOCTL;
+}
+
+function preserveLiveEpollDependentStatusFlags(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  snapshot: OfdSlotSnapshotLike,
+  slotBytes: number,
+): Uint8Array {
+  const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
+  if (targetOffset < 0 || targetOffset + slotBytes > handle.memory.buffer.byteLength) {
+    return snapshot.slot;
+  }
+  const currentView = new DataView(handle.memory.buffer, targetOffset, slotBytes);
+  const snapshotView = new DataView(
+    snapshot.slot.buffer,
+    snapshot.slot.byteOffset,
+    snapshot.slot.byteLength,
+  );
+  const currentType = currentView.getInt32(OFD_TYPE_OFFSET, true);
+  const snapshotType = snapshotView.getInt32(OFD_TYPE_OFFSET, true);
+  if (
+    currentType !== snapshotType
+    || !isLiveEpollDependentOfdType(handle, currentType)
+    || statusMessageCanChangeOfdStatusFlags(msg, snapshot.ofdId)
+  ) {
+    return snapshot.slot;
+  }
+  const currentFlags = currentView.getInt32(OFD_STATUS_FLAGS_OFFSET, true);
+  const snapshotFlags = snapshotView.getInt32(OFD_STATUS_FLAGS_OFFSET, true);
+  if (currentFlags === snapshotFlags) {
+    return snapshot.slot;
+  }
+  const merged = snapshot.slot.slice();
+  new DataView(merged.buffer, merged.byteOffset, merged.byteLength)
+    .setInt32(OFD_STATUS_FLAGS_OFFSET, currentFlags, true);
+  return merged;
+}
+
+function preserveFcntlSetflAccessMode(
+  handle: ProcessHandle,
+  msg: StatusMessageLike,
+  snapshot: OfdSlotSnapshotLike,
+  slotBytes: number,
+): Uint8Array {
+  if (
+    msg.fdTraceSyscallNr !== SYS_FCNTL
+    || msg.fdTraceArg1 !== F_SETFL
+    || msg.fdTraceArg0OfdId !== snapshot.ofdId
+    || msg.fdTraceResult === undefined
+    || msg.fdTraceResult < 0n
+  ) {
+    return snapshot.slot;
+  }
+  const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
+  if (targetOffset < 0 || targetOffset + slotBytes > handle.memory.buffer.byteLength) {
+    return snapshot.slot;
+  }
+  const currentView = new DataView(handle.memory.buffer, targetOffset, slotBytes);
+  const snapshotView = new DataView(
+    snapshot.slot.buffer,
+    snapshot.slot.byteOffset,
+    snapshot.slot.byteLength,
+  );
+  if (currentView.getInt32(OFD_TYPE_OFFSET, true) !== snapshotView.getInt32(OFD_TYPE_OFFSET, true)) {
+    return snapshot.slot;
+  }
+  const currentFlags = currentView.getInt32(OFD_STATUS_FLAGS_OFFSET, true);
+  const snapshotFlags = snapshotView.getInt32(OFD_STATUS_FLAGS_OFFSET, true);
+  const currentAccessMode = currentFlags & OPEN_ACCESS_MODE_MASK;
+  if ((snapshotFlags & OPEN_ACCESS_MODE_MASK) === currentAccessMode) {
+    return snapshot.slot;
+  }
+  const merged = snapshot.slot.slice();
+  new DataView(merged.buffer, merged.byteOffset, merged.byteLength)
+    .setInt32(
+      OFD_STATUS_FLAGS_OFFSET,
+      (snapshotFlags & ~OPEN_ACCESS_MODE_MASK) | currentAccessMode,
+      true,
+    );
+  return merged;
+}
+
 export function applyThreadEventfdTraceOffset(
   handle: ProcessHandle,
   msg: StatusMessageLike,
@@ -416,6 +549,8 @@ export function applyThreadOfdSlots(
     const skipAction = requireSupervisorRestoreActionSkip(handle);
     const syscallNr = msg.syscallNr ?? SUPERVISOR_RESTORE_SYSCALL_NONE;
     const trustRegularFileOfdOffsets = msg.trustRegularFileOfdOffsets === true;
+    const allowRegularFileIdentityReplacement = msg.allowRegularFileIdentityReplacement === true;
+    const appliedRegularFileOfdIds: number[] = [];
     for (const snapshot of msg.ofdSlots) {
       if (
         snapshot.ofdId <= 0
@@ -435,16 +570,40 @@ export function applyThreadOfdSlots(
           slotBytes,
           decide,
           skipAction,
-          trustRegularFileOfdOffsets,
+          allowRegularFileIdentityReplacement,
+          trustRegularFileOfdOffsets
+            || msg.trustRegularFileOffsetOfdIds?.has(snapshot.ofdId) === true,
           syscallNr,
         )
       ) {
         continue;
       }
-      memory.set(snapshot.slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
+      const statusMergedSlot = preserveFcntlSetflAccessMode(handle, msg, snapshot, slotBytes);
+      const slot = preserveLiveEpollDependentStatusFlags(
+        handle,
+        msg,
+        { ...snapshot, slot: statusMergedSlot },
+        slotBytes,
+      );
+      memory.set(slot, handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
+      const regularFileOfdId = regularFileOfdIdFromAppliedSlot(handle, snapshot, slot);
+      if (regularFileOfdId !== null) {
+        writeRegularFileOfdOffsetState(
+          handle,
+          regularFileOfdId,
+          slotBytes,
+          new DataView(slot.buffer, slot.byteOffset, slot.byteLength)
+            .getBigInt64(OFD_OFFSET_OFFSET, true),
+        );
+        appliedRegularFileOfdIds.push(regularFileOfdId);
+      }
     }
     if (msg.recordRegularFileOfdOffsets !== false) {
-      recordRegularFileOfdOffsets(handle, msg, slotBytes);
+      recordRegularFileOfdOffsets(handle, msg, slotBytes, new Set(appliedRegularFileOfdIds));
+    } else {
+      for (const ofdId of appliedRegularFileOfdIds) {
+        deleteRegularFileOfdOffsetSnapshot(handle, ofdId);
+      }
     }
   }
   applyEventfdTraceOffset(handle, msg, slotBytes);

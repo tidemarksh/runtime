@@ -39,6 +39,14 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       if (entry.fd < 0 || entry.fd >= maxFds || entry.ofdId < 0 || entry.ofdId >= maxFds) {
         continue;
       }
+      const currentGeneration = processExports.process_fd_generation?.(vmPtr, entry.fd);
+      if (
+        entry.generation !== undefined
+        && currentGeneration !== undefined
+        && currentGeneration > entry.generation
+      ) {
+        continue;
+      }
       const previousOfdId = supervisorProcessOfdForFd(processExports, vmPtr, entry.fd);
       if (entry.ofdId !== 0 && trackedOfdIds.has(entry.ofdId)) {
         processExports.process_set_fd_entry(vmPtr, entry.fd, entry.ofdId, entry.fdFlags);
@@ -150,11 +158,9 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
     }
     if (includeMemfs) {
       pushMemfsDebug("before-source-to-canonical");
-      const canonicalProcSelfExe = deps.snapshotProcSelfExe(canonicalExports);
       deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
         includeData: !memfsOnly,
       });
-      deps.restoreProcSelfExe(canonicalExports, canonicalProcSelfExe);
       deps.restorePublishedRegularFileDataFromPageCache?.();
       pushMemfsDebug("after-source-to-canonical");
     }
@@ -279,6 +285,7 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       procSelfExeTargetByPid.set(target.pid, target.bytes);
     }
     const sharedPipeSlots = deps.collectPipeSlotsForOfdIds(canonicalExports, ofdIds);
+    const rehydratedOfdIds = new Set(ofdIds);
     const uniqueTargets = new Set(targetPids);
     for (const targetPid of uniqueTargets) {
       const targetExports = deps.requireProcessKernel(targetPid);
@@ -326,7 +333,18 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         ),
         managedPipeSlots,
       );
-      deps.copySelectedEpollState(canonicalExports, canonicalState, targetExports, targetState, ofdIds);
+      const targetVmPtr = targetVmPtrByPid.get(targetPid) ?? 0;
+      const targetHeldEpollOfdIds = targetVmPtr === 0
+        ? []
+        : deps.collectProcessHeldEpollOfdIds(targetExports, targetVmPtr)
+          .filter((ofdId) => rehydratedOfdIds.has(ofdId));
+      deps.copySelectedEpollState(
+        canonicalExports,
+        canonicalState,
+        targetExports,
+        targetState,
+        targetHeldEpollOfdIds,
+      );
       deps.copySocketState(canonicalExports, canonicalState, targetExports, targetState);
     }
   }

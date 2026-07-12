@@ -19,6 +19,16 @@ export interface SupervisorHostOpRecord {
 
 export type SupervisorCloneSpawnHostOp = SupervisorHostOpRecord;
 
+const deferredArmHostTimerHostOps = new WeakMap<ProcessHandle, SupervisorHostOpRecord[]>();
+
+interface ActiveSupervisorHostTimer {
+  token: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const activeSupervisorHostTimers = new WeakMap<ProcessHandle, Map<number, ActiveSupervisorHostTimer>>();
+let nextSupervisorHostTimerToken = 1;
+
 export interface SupervisorProcessMemoryPlan {
   create: SupervisorHostOpRecord;
   copyRanges: Array<{ start: number; end: number }>;
@@ -195,19 +205,40 @@ function decodeSupervisorCloneSpawnHostOp(
 function decodeSupervisorArmHostTimerOp(
   handle: ProcessHandle,
   view: DataView,
-  vmPtr: number,
 ): SupervisorHostOpRecord {
   const record = decodeSupervisorHostOpRecord(handle, view, "supervisor arm host timer HostOp");
   if (record.kind !== supervisorHostOpKindArmHostTimer(handle)) {
     throw new Error(`supervisor arm host timer HostOp bad kind: ${record.kind}`);
   }
-  if (record.parentVmPtr !== vmPtr) {
-    throw new Error(
-      `supervisor arm host timer HostOp vm mismatch: `
-        + `0x${record.parentVmPtr.toString(16)} != 0x${vmPtr.toString(16)}`,
-    );
-  }
   return record;
+}
+
+function takeDeferredArmHostTimerHostOp(
+  handle: ProcessHandle,
+  vmPtr: number,
+): SupervisorHostOpRecord | null {
+  const pending = deferredArmHostTimerHostOps.get(handle);
+  if (pending === undefined) {
+    return null;
+  }
+  const index = pending.findIndex((record) => record.parentVmPtr === vmPtr);
+  if (index < 0) {
+    return null;
+  }
+  const [record] = pending.splice(index, 1);
+  if (pending.length === 0) {
+    deferredArmHostTimerHostOps.delete(handle);
+  }
+  return record ?? null;
+}
+
+function deferArmHostTimerHostOp(handle: ProcessHandle, record: SupervisorHostOpRecord): void {
+  const pending = deferredArmHostTimerHostOps.get(handle);
+  if (pending !== undefined) {
+    pending.push(record);
+    return;
+  }
+  deferredArmHostTimerHostOps.set(handle, [record]);
 }
 
 function decodeSupervisorBlockedRetryHostOp(
@@ -295,26 +326,35 @@ export function drainSupervisorArmHostTimerHostOp(
   const memory = handle.kernel.memory ?? handle.memory;
   const scratch = supervisorHostOpScratchBase(handle);
   ensureMemoryCapacity(memory, scratch + recordBytes);
-  const result = pollSupervisorHostOpKind(
-    handle,
-    supervisorHostOpKindArmHostTimer(handle),
-    recordBytes,
-    scratch,
-  );
-  if (result === undefined) {
-    return undefined;
+  const deferred = takeDeferredArmHostTimerHostOp(handle, vmPtr);
+  if (deferred !== null) {
+    return deferred;
   }
-  if (result === 0) {
-    return null;
+  for (;;) {
+    const result = pollSupervisorHostOpKind(
+      handle,
+      supervisorHostOpKindArmHostTimer(handle),
+      recordBytes,
+      scratch,
+    );
+    if (result === undefined) {
+      return undefined;
+    }
+    if (result === 0) {
+      return null;
+    }
+    if (result < 0 || result > recordBytes) {
+      throw new Error(`supervisor arm host timer HostOp poll failed: ${result}`);
+    }
+    const record = decodeSupervisorArmHostTimerOp(
+      handle,
+      new DataView(memory.buffer, scratch, result),
+    );
+    if (record.parentVmPtr === vmPtr) {
+      return record;
+    }
+    deferArmHostTimerHostOp(handle, record);
   }
-  if (result < 0 || result > recordBytes) {
-    throw new Error(`supervisor arm host timer HostOp poll failed: ${result}`);
-  }
-  return decodeSupervisorArmHostTimerOp(
-    handle,
-    new DataView(memory.buffer, scratch, result),
-    vmPtr,
-  );
 }
 
 export function drainSupervisorBlockedRetryHostOp(
@@ -490,6 +530,47 @@ function submitSupervisorHostOpCompletion(
   return completeHostOp.call(handle.kernel, scratch, recordBytes);
 }
 
+export function completeSupervisorCloneSpawnHostOp(
+  handle: ProcessHandle,
+  record: SupervisorCloneSpawnHostOp,
+): number {
+  const status = submitSupervisorHostOpCompletion(
+    handle,
+    record,
+    supervisorHostCompletionOutcomeSuccess(handle),
+    0,
+  );
+  if (status === undefined) {
+    throw new Error("kernel supervisor ABI missing clone spawn HostCompletion export");
+  }
+  return status;
+}
+
+function activeSupervisorHostTimerMap(handle: ProcessHandle): Map<number, ActiveSupervisorHostTimer> {
+  let timers = activeSupervisorHostTimers.get(handle);
+  if (timers === undefined) {
+    timers = new Map();
+    activeSupervisorHostTimers.set(handle, timers);
+  }
+  return timers;
+}
+
+export function clearSupervisorHostTimer(handle: ProcessHandle, vmPtr: number): void {
+  const timers = activeSupervisorHostTimers.get(handle);
+  if (timers === undefined) {
+    return;
+  }
+  const active = timers.get(vmPtr);
+  if (active === undefined) {
+    return;
+  }
+  clearTimeout(active.timer);
+  timers.delete(vmPtr);
+  if (timers.size === 0) {
+    activeSupervisorHostTimers.delete(handle);
+  }
+}
+
 export function armSupervisorHostTimer(
   handle: ProcessHandle,
   record: SupervisorHostOpRecord,
@@ -503,12 +584,28 @@ export function armSupervisorHostTimer(
       ? 0x7fff_ffffn
       : record.flags,
   );
+  clearSupervisorHostTimer(handle, record.parentVmPtr);
+  const token = nextSupervisorHostTimerToken++;
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
     `supervisor-host-timer-arm:${handle.pid}:vm=0x${record.parentVmPtr.toString(16)}`
       + `:seq=${record.seq.toString()}:delay=${delayMs}`,
   );
-  globalThis.setTimeout(() => {
+  const timer = globalThis.setTimeout(() => {
+    const timers = activeSupervisorHostTimers.get(handle);
+    const active = timers?.get(record.parentVmPtr);
+    if (active?.token !== token) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `supervisor-host-timer-stale:vm=0x${record.parentVmPtr.toString(16)}`
+          + `:seq=${record.seq.toString()}`,
+      );
+      return;
+    }
+    timers?.delete(record.parentVmPtr);
+    if (timers !== undefined && timers.size === 0) {
+      activeSupervisorHostTimers.delete(handle);
+    }
     try {
       const status = submitSupervisorHostOpCompletion(
         handle,
@@ -532,6 +629,7 @@ export function armSupervisorHostTimer(
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     }
   }, delayMs);
+  activeSupervisorHostTimerMap(handle).set(record.parentVmPtr, { token, timer });
 }
 
 export function armSupervisorBlockedRetryTimer(

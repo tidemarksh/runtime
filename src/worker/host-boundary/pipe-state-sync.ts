@@ -75,6 +75,10 @@ export async function syncPipeStateViaKernelWorker(
   cause: SyncCause,
 ): Promise<bigint> {
   const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncPipeStateViaKernelWorker");
+  // Process FD tables are authoritative for pipe endpoint ownership. Publish
+  // their aggregate before taking snapshots so endpoint closure reaches the
+  // canonical kernel and blocked workers in this sync, not the next one.
+  reconcileKernelSharePipeControl(handle);
   const processStateSnapshot = snapshotProcessState(handle);
   const fdEntries = snapshotProcessFdEntries(handle, handle.vmPtr);
   const fdEntryOfdIds = ofdIdsFromFdEntries(handle, fdEntries);
@@ -125,9 +129,7 @@ export async function syncPipeStateViaKernelWorker(
   const networkSocketSnapshots = snapshotNetworkBridgeSocketState(kernelShareMemberList(handle));
   let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   const applyFdEntries = hostExecutionState(handle).runningWorker === null
-    && hostExecutionState(handle).vforkReadyWorkers.length === 0
-    && processWorkerCount(handle) === 0
-    && hostExecutionState(handle).hostBlockedWorkers.size === 0;
+    && hostExecutionState(handle).vforkReadyWorkers.length === 0;
   appendSocketSyncDebug(
     handle,
     [

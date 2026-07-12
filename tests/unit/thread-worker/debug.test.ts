@@ -135,6 +135,33 @@ test("debug collection and error formatting do not invoke repair or resume expor
   }
 });
 
+test("process identity diagnostics use kernel ABI instead of ProcessState layout offsets", () => {
+  const debugExports = makeThreadWorkerDebugExports();
+  const guestBase = 0x1000;
+  const processPtr = 0x2000;
+  const legacyPidOffset = processPtr + (64 * 8) + 4 + (64 * 4 * 2);
+  const view = new DataView(debugExports.memory.buffer);
+  view.setInt32(guestBase + legacyPidOffset, 55, true);
+  view.setInt32(guestBase + legacyPidOffset + 4, 66, true);
+  const parts = collectDebugParts({
+    ...debugExports,
+    thread_process_ptr: () => processPtr,
+    thread_process_thread_count: () => 7,
+    abi_max_fds: () => 64,
+    process_current_pid: () => 1,
+    process_current_ppid: () => 0,
+    debug_fd_syscall_trace_len: () => 0,
+    debug_exec_trace_len: () => 0,
+    debug_thread_step_exec_trace_len_for_vm: () => 0,
+  } as never, 0x1234, guestBase);
+
+  expect(parts).toContain("process_thread_count=7");
+  expect(parts).toContain("process_pid_field=1");
+  expect(parts).toContain("process_ppid_field=0");
+  expect(parts).not.toContain("process_pid_field=55");
+  expect(parts).not.toContain("process_ppid_field=66");
+});
+
 test("formatWorkerError recovers frozen trace when thread state debug faults early", () => {
   const detail = formatWorkerError(
     {

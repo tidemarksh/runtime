@@ -470,18 +470,7 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       const sourceOffset = sourceState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
       const targetOffset = targetState.pipeBase + pipeSlot * PIPE_SLOT_BYTES;
       const sourceSlot = sourceBytes.subarray(sourceOffset, sourceOffset + PIPE_SLOT_BYTES);
-      const sourceView = new DataView(sourceExports.memory.buffer);
-      const sourceReadOpen = sourceView.getInt32(sourceOffset + PIPE_OFF_READ_OPEN, true);
-      const sourceWriteOpen = sourceView.getInt32(sourceOffset + PIPE_OFF_WRITE_OPEN, true);
-      applyPipeSlotSnapshot(
-        targetExports,
-        targetBytes,
-        sourceSlot,
-        targetOffset,
-        pipeSlot,
-        sourceReadOpen,
-        sourceWriteOpen,
-      );
+      copyPipeSlotDataPlane(targetBytes, sourceSlot, targetOffset);
       syncPipeOfdGenerations(targetExports, targetState, pipeSlot);
     }
   }

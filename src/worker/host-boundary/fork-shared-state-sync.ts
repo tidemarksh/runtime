@@ -55,7 +55,9 @@ import {
 } from "../ownership/fd-table.js";
 import { supervisorProcessPipeSlotForFd } from "../ownership/pipe-slot.js";
 import {
+  restoreProcessIdentity,
   restoreProcessStates,
+  snapshotProcessIdentity,
   snapshotProcessStates,
 } from "../ownership/process-state.js";
 import {
@@ -343,6 +345,7 @@ export async function syncForkSharedStateViaKernelWorker(
     pruneUnpeeredRegularFileSharedOfds(handle);
   }
   const sourceVmPtr = options.sourceVmPtr ?? handle.vmPtr;
+  const sourceProcessIdentity = snapshotProcessIdentity(handle, sourceVmPtr);
   const syncableForkSharedOfd = (ofdId: number): boolean => (
     !isProcessHostStdioPipeOfd(handle, ofdId)
     || isInheritedOutputHostStdioPipeOfd(handle, sourceVmPtr, ofdId)
@@ -570,6 +573,7 @@ export async function syncForkSharedStateViaKernelWorker(
   };
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
+  restoreProcessIdentity(handle, sourceVmPtr, sourceProcessIdentity);
   reapplyMemfsDeletedPaths(handle);
   restoreLocalOfdSlots(handle, preservedSourceFdOfdSlots);
   for (const snapshot of preservedRuntimeNetworkKernelStates) {

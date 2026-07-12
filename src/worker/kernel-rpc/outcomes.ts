@@ -1,5 +1,5 @@
 export type KernelRpcResumeOutcome =
-  | { kind: "completed"; status?: number }
+  | { kind: "completed"; status?: number; workerQueued?: true }
   | { kind: "blocked"; status: number }
   | { kind: "queued-in-worker" }
   | { kind: "stale" }
@@ -7,6 +7,14 @@ export type KernelRpcResumeOutcome =
 
 export function completedKernelRpcOutcome(
   status?: number,
+  options: { workerQueued?: boolean } = {},
 ): KernelRpcResumeOutcome {
-  return status === undefined ? { kind: "completed" } : { kind: "completed", status };
+  if (status === undefined) {
+    return options.workerQueued === true
+      ? { kind: "completed", workerQueued: true }
+      : { kind: "completed" };
+  }
+  return options.workerQueued === true
+    ? { kind: "completed", status, workerQueued: true }
+    : { kind: "completed", status };
 }

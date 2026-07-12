@@ -45,3 +45,26 @@ export function readLocalProcessPid(handle: ProcessHandle, vmPtr: number): numbe
     return null;
   }
 }
+
+export function statusProcessBelongsToHandle(
+  handlePid: number,
+  localProcessPid: number | null,
+  observedProcessPid: number | null,
+): boolean {
+  const processPid = localProcessPid ?? observedProcessPid;
+  return processPid === null || processPid === handlePid;
+}
+
+export function statusProcessIncarnationMatches(
+  observedProcessPtr: number | undefined,
+  observedProcessPid: number | undefined,
+  localProcessPtr: number,
+  localProcessPid: number | null,
+): boolean {
+  if (observedProcessPtr !== undefined && observedProcessPtr !== 0) {
+    return observedProcessPtr === localProcessPtr;
+  }
+  return observedProcessPid === undefined
+    || observedProcessPid <= 0
+    || observedProcessPid === localProcessPid;
+}

@@ -644,7 +644,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     if (kernel.abi_status_epoll_wait?.() === status) {
       return rpcPending
-        ? SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_SKIP
+        ? SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_RETRY
         : SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_LOG_EPOLL_AND_RETRY;
     }
     return SUPERVISOR_BLOCKED_WAIT_WAKE_ACTION_RETRY;
@@ -806,7 +806,7 @@ export function installSupervisorBlockedResumeStub<T extends Partial<KernelExpor
     }
     if (runningWorker && epollStateKernelOwns && hasEpollEffect && heldEpollOfd) {
       action |= SUPERVISOR_OWNED_STATE_SYNC_ACTION_SYNC_EPOLL;
-      if (!wroteOrDrainedPipe) {
+      if (!wroteOrDrainedPipe || hasEpollDependentOfdEffect) {
         action |= SUPERVISOR_OWNED_STATE_SYNC_ACTION_RETRY_EPOLL_WAITERS;
       }
     }

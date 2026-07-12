@@ -14,7 +14,11 @@ import type { ProcessHandle } from "../types.js";
 import type { WorkerKernelRpcLifecycleDeps } from "./lifecycle/types.js";
 import { completedKernelRpcOutcome, type KernelRpcResumeOutcome } from "./outcomes.js";
 import { expectKernelWorkerResponse } from "./transport.js";
-import { finishBlockedRpc } from "../host-blocked-state.js";
+import {
+  finishBlockedRpc,
+  getBlockedRpcGeneration,
+  invalidateBlockedRpc,
+} from "../host-blocked-state.js";
 
 export function createWorkerKernelRpcWait4Helpers(
   deps: WorkerKernelRpcLifecycleDeps,
@@ -25,13 +29,17 @@ export function createWorkerKernelRpcWait4Helpers(
     vmPtr: number,
   ): Promise<KernelRpcResumeOutcome> {
     const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "resumeWait4ViaKernelWorker");
+    const initialBlocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
+    const rpcGeneration = initialBlocked?.vmPtr === vmPtr
+      ? getBlockedRpcGeneration(initialBlocked)
+      : null;
 
     try {
       const localStatus = handle.kernel.thread_status(vmPtr);
       if (supervisorWait4RpcLocalStatusAction(handle.kernel, localStatus) !== "start") {
         const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
         if (blocked && blocked.vmPtr === vmPtr) {
-          finishBlockedRpc(blocked, null);
+          finishBlockedRpc(blocked, rpcGeneration);
         }
         deps.appendWorkerDebugLog(
           handle,
@@ -54,7 +62,13 @@ export function createWorkerKernelRpcWait4Helpers(
       if (!blocked || blocked.vmPtr !== vmPtr) {
         return { kind: "stale" };
       }
-      finishBlockedRpc(blocked, null);
+      if (rpcGeneration === null || !finishBlockedRpc(blocked, rpcGeneration)) {
+        const responseStatus = handle.kernel.thread_status(vmPtr);
+        if (supervisorWait4RpcLocalStatusAction(handle.kernel, responseStatus) === "start") {
+          return { kind: "stale" };
+        }
+        invalidateBlockedRpc(blocked);
+      }
 
       if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
         return { kind: "process-gone" };
@@ -81,7 +95,7 @@ export function createWorkerKernelRpcWait4Helpers(
     } catch (error) {
       const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
       if (blocked && blocked.vmPtr === vmPtr) {
-        finishBlockedRpc(blocked, null);
+        finishBlockedRpc(blocked, rpcGeneration);
       }
       if (processHasWorker(handle, worker) && deps.threadWorkerStates.has(worker)) {
         deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));

@@ -694,6 +694,7 @@ export function createWorkerProcessFactory(deps: WorkerCreateProcessDeps) {
       },
       stdinClosed: (options.stdin ?? "pipe") === "closed",
       stdioOwner: null,
+      inheritedParentOutput: null,
     });
     setProcessWorkers(handle, []);
     setProcessMemoryOwnership(handle, memoryOwnership);

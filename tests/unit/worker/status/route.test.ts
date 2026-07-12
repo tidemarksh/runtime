@@ -531,6 +531,7 @@ test("status handler preserves FS ring snapshots during transient process owner 
     },
     kernel: makeKernel(7, {
       thread_fs_ring_base: () => 0x100,
+      process_current_pid: () => 99,
     }),
     kernelState: makeKernelState(),
     onStdout: null,
@@ -560,7 +561,7 @@ test("status handler preserves FS ring snapshots during transient process owner 
   expect(resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
 });
 
-test("status handler trusts STATUS_FS regular file OFD offsets before filesystem resume", () => {
+test("status handler routes STATUS_FS regular file offsets through the rollback guard", () => {
   const worker = {} as Worker;
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
@@ -664,12 +665,12 @@ test("status handler trusts STATUS_FS regular file OFD offsets before filesystem
 
   expect(restoreAction).toHaveBeenCalled();
   for (const call of restoreAction.mock.calls) {
-    expect(call[6] & 2).toBe(2);
+    expect(call[6] & 2).toBe(0);
   }
   expect(resumeFsViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234);
 });
 
-test("status handler trusts running worker regular file OFD offsets at step boundary", () => {
+test("status handler rejects a running worker regular file offset rollback", () => {
   const worker = {} as Worker;
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
   const bytes = new Uint8Array(memory.buffer);
@@ -789,10 +790,10 @@ test("status handler trusts running worker regular file OFD offsets at step boun
 
   expect(restoreAction).toHaveBeenCalled();
   for (const call of restoreAction.mock.calls) {
-    expect(call[6] & 2).toBe(2);
+    expect(call[6] & 2).toBe(0);
   }
   expect(new DataView(memory.buffer, 4 * OFD_SLOT_BYTES, OFD_SLOT_BYTES)
-    .getBigInt64(OFD_OFFSET_OFFSET, true)).toBe(0n);
+    .getBigInt64(OFD_OFFSET_OFFSET, true)).toBe(19n);
   expect(enqueueWorker).toHaveBeenCalledWith(handle, worker);
 });
 
@@ -1492,6 +1493,7 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
   const requestPipeStateSync = vi.fn(async () => {});
   const blockWorker = vi.fn();
   const pumpProcess = vi.fn();
+  const restoreBlockedState = vi.fn(() => 0);
   const worker = {} as Worker;
   const readyWorker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, {
@@ -1531,6 +1533,8 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
       abi_status_clone_spawn: () => 9,
       thread_poll_wait_ready_count: () => 0,
       thread_poll_wait_timeout: () => -1,
+      thread_blocked_syscall_nr: () => 0n,
+      thread_restore_blocked_syscall_state: restoreBlockedState,
     }),
     kernelState: makeKernelState(),
     onStdout: null,
@@ -1588,6 +1592,10 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
       pc: 0x5000n,
       sp: 0x6000n,
       s11: 0x7000n,
+      blockedFd: 12,
+      blockedHasOfdPin: true,
+      blockedSyscallNr: 63n,
+      blockedSyscallArgs: [12n, 0x4000n, 80n, 0n, 0n, 0n],
       kernelState: makeKernelState(),
       debug: "pc=0x5000 sp=0x6000 s11=0x7000 process_thread_count=2",
     },
@@ -1599,6 +1607,18 @@ test("status handler pumps ready siblings after pipe wait sync parks blocked wor
   await new Promise((resolve) => setTimeout(resolve, 0));
 
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, false);
+  expect(restoreBlockedState).toHaveBeenCalledWith(
+    0x1234,
+    12,
+    1,
+    63n,
+    12n,
+    0x4000n,
+    80n,
+    0n,
+    0n,
+    0n,
+  );
   expect(syncBlockedForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
     handle,
     0x1234,
@@ -2983,6 +3003,7 @@ test("status handler preserves pipe slot snapshots from pid-mismatched output st
       kernel_pipe_base: () => kernelState.pipeBase,
       kernel_pipe_region_bytes: () => 64 * PIPE_SLOT_SIZE,
       kernel_attach_runtime_state: attachRuntimeState,
+      process_current_pid: () => 5,
       supervisor_worker_status_sync_action: () => 0,
     }),
     kernelState,
@@ -3018,6 +3039,109 @@ test("status handler preserves pipe slot snapshots from pid-mismatched output st
   expect(appendWorkerDebugLog).toHaveBeenCalledWith(
     handle,
     "status_debug:0x1234:handle_pid=1:process_pid_field=5",
+  );
+});
+
+test("status handler treats zero process pid field as absent for fd ownership state", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeThreadState>>();
+  const thread = makeThreadState({ ownerPid: 1, runningGeneration: 1 });
+  threadWorkerStates.set(worker, thread);
+  const appendWorkerDebugLog = vi.fn();
+  const fdEntries = new Map<number, number>([
+    [3, 6],
+    [4, 0],
+  ]);
+  const setFdEntry = vi.fn((_vmPtr: number, fd: number, ofdId: number) => {
+    fdEntries.set(fd, ofdId);
+  });
+  const handler = createWorkerStatusMessageHandler({
+    threadWorkerStates,
+    appendWorkerDebugLog,
+    clearBlockedWorker: () => {},
+    enqueueWorker: () => {},
+    notifyWorkerStatusProgress: () => {},
+    blockWorker: () => {},
+    pumpProcess: () => {},
+    releaseSharedHostStdio: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    resumeFsViaKernelWorker: async () => {},
+    resumeConnectViaKernelWorker: async () => {},
+    commitNetworkConnect: async () => {},
+    resumeVforkParentViaKernelWorker: async () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    captureVforkSnapshot: () => {
+      throw new Error("unexpected");
+    },
+    syncForkSharedStateViaKernelWorker: async () => {},
+    syncBlockedForkSharedStateViaKernelWorker: async () => {},
+    syncProcessLifecycleViaKernelWorker: async () => {},
+    canonicalizeActiveVforkChildViaKernelWorker: async () => {},
+    attachThreadWorker: () => {},
+    completeProcessExit: async () => {},
+    handleExecveSpawn: async () => {},
+    assertProcessStandardFdIntegrity: () => {},
+    requestEpollDependentOfdStateSync: async () => {},
+    requestPipeStateSync: async () => {},
+    requestEpollStateSync: async () => {},
+    requestSocketStateSync: async () => {},
+    statusOkCompletedSyncEffects: 0,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncEffectEpollState: 4,
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectProcessLifecycle: 16,
+    syncEffectSignalWaiters: 32,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    statusDefersOwnedStateSync: () => false,
+  } as never);
+  const handle = {
+    pid: 1,
+    vmPtr: 0x1234,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    workers: new Set([worker]),
+    vforkReadyWorkers: [],
+    hostBlockedWorkers: new Map(),
+    stdinQueue: [],
+    outputBacklog: [],
+    kernelWorkerRequest: undefined,
+    kernelShare: { members: new Set(), sharedOfdIds: new Set() },
+    runtimeBridge: { notifySab: new SharedArrayBuffer(12), stateSab: new SharedArrayBuffer(176) },
+    kernel: makeKernel(1, {
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: setFdEntry,
+      process_fd_flags: (_vmPtr: number, fd: number) => (fd === 4 ? 0 : 1),
+      process_fd_generation: (_vmPtr: number, fd: number) => (fd === 4 ? 2 : 3),
+      process_current_pid: () => 1,
+    }),
+    kernelState: makeKernelState(),
+    runningWorker: worker,
+  };
+
+  setThreadGeneration(thread as never, 1);
+  handler(handle, worker, {
+    type: "status",
+    status: 0,
+    generation: 1,
+    vmPtr: 0x1234,
+    exitCode: 0,
+    termSignal: 0,
+    pc: 0x2000n,
+    sp: 0x3000n,
+    s11: 0x4000n,
+    kernelState: makeKernelState(),
+    fdEntries: [{ fd: 4, ofdId: 5, fdFlags: 0, generation: 1 }],
+    syncEffects: 0,
+    syscallNr: 20n,
+    debug: "pc=0x2000 sp=0x3000 s11=0x4000 process_pid_field=0",
+  });
+
+  expect(fdEntries.get(4)).toBe(5);
+  expect(setFdEntry).toHaveBeenCalledWith(0x1234, 4, 5, 0);
+  expect(appendWorkerDebugLog).not.toHaveBeenCalledWith(
+    handle,
+    "status_debug:0x1234:handle_pid=1:process_pid_field=0",
   );
 });
 
@@ -3097,6 +3221,7 @@ test("status handler applies eventfd trace offsets during transient pid mismatch
       abi_fd_type_eventfd: () => eventfdType,
       kernel_attach_runtime_state: attachRuntimeState,
       kernel_ofd_table_bytes: () => 64 * OFD_SLOT_BYTES,
+      process_current_pid: () => 5,
       supervisor_worker_status_sync_action: () => 0,
     }),
     kernelState,

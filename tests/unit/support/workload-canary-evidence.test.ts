@@ -584,6 +584,54 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     canaryReason: "Toolchain exec is representative external toolchain canary evidence; generic process, exec, stdio, and filesystem contracts are runtime-owned.",
     primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
   },
+  {
+    workload: "c/gcc-compile-only-diagnostic.test.ts",
+    contracts: ["compiler process", "filesystem snapshot", "stdio diagnostics"],
+    canaryReason: "GCC compile-only diagnostics are external toolchain canaries; generic process, filesystem, and stdio contracts are runtime-owned.",
+    primaryRuntimeEvidence: languageToolchainEvidence,
+  },
+  {
+    workload: "c/gcc-compile-host-object-collect2-link-diagnostic.test.ts",
+    contracts: ["compiler subprocess exec", "filesystem snapshot", "stdio diagnostics"],
+    canaryReason: "GCC collect2 linking diagnostics exercise external subprocess composition; generic exec, process, filesystem, and stdio contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
+  {
+    workload: "elixir/dynamic-startup-stdio.test.ts",
+    contracts: ["dynamic startup", "stdio", "process creation"],
+    canaryReason: "Elixir startup stdio is a language-runtime canary; generic startup and stdio contracts are covered by runtime owner tests.",
+    primaryRuntimeEvidence: [...dynamicStartupEvidence, ...shellAndStdioEvidence],
+  },
+  {
+    workload: "fs/browser-opfs-demand-fill.test.ts",
+    contracts: ["browser backing fill", "page cache", "regular file read"],
+    canaryReason: "Browser OPFS demand fill is a host-backing canary; generic backing, page-cache, and file-read behavior is runtime-owned.",
+    primaryRuntimeEvidence: largeFileEvidence,
+  },
+  {
+    workload: "fs/open-unlink-write.test.ts",
+    contracts: ["open file description lifetime", "unlink", "file write"],
+    canaryReason: "Open-unlink-write is a filesystem lifecycle canary; generic OFD and file mutation contracts are covered by runtime fs owner tests.",
+    primaryRuntimeEvidence: fsEvidence,
+  },
+  {
+    workload: "java/dynamic-startup-memory-policy.test.ts",
+    contracts: ["dynamic startup", "guest memory policy", "process creation"],
+    canaryReason: "Java startup memory policy is a language-runtime memory canary; generic startup and process memory contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...dynamicStartupEvidence, "thread-worker/memory.test.ts"],
+  },
+  {
+    workload: "java/dynamic-startup-variant-diagnostic.test.ts",
+    contracts: ["dynamic startup", "process diagnostics"],
+    canaryReason: "Java startup variants are diagnostic workload canaries; generic startup and process diagnostics are covered by runtime owner tests.",
+    primaryRuntimeEvidence: dynamicStartupEvidence,
+  },
+  {
+    workload: "ocaml/toolchain-exec.test.ts",
+    contracts: ["toolchain exec", "process launch", "filesystem snapshot", "stdio"],
+    canaryReason: "OCaml toolchain exec is an external toolchain canary; generic process, exec, filesystem, and stdio contracts are runtime-owned.",
+    primaryRuntimeEvidence: [...languageToolchainEvidence, ...execHandoffEvidence],
+  },
 ];
 
 function listTestFiles(root: string): string[] {

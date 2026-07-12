@@ -28,6 +28,7 @@ import type {
   KernelRpcResumeOutcome,
 } from "../kernel-rpc/outcomes.js";
 import { createWorkerProcessFactory } from "../create-process.js";
+import { publishRuntimeFdAuthorityEpoch } from "../../bridge/runtime-state.js";
 
 const WASM_PAGE_SIZE = 65536;
 const WASM_MAX_PAGES = 131072;
@@ -55,6 +56,7 @@ import {
 } from "../kernel-rpc.js";
 import { createWorkerLifecycleHelpers } from "../lifecycle.js";
 import { createWorkerMessageHandler } from "../message-handler.js";
+import { markStatusFdChangesForNextStep } from "../message-handler/status/fd-entries.js";
 import { createWorkerRuntimeContext } from "../runtime-context.js";
 import { createWorkerScheduler } from "../host-boundary/worker-scheduler.js";
 import { createWorkerOrchestratorFacade } from "./facade.js";
@@ -210,6 +212,16 @@ const workerForkHandlers = createWorkerForkHandlers({
   enqueueWorker,
   failProcess,
   initializeProcessLifecycleViaKernelWorker,
+  markCanonicalFdEntriesForNextStep: (handle, entries) => {
+    for (const { fd } of entries) {
+      publishRuntimeFdAuthorityEpoch(handle.runtimeBridge, fd);
+    }
+    markStatusFdChangesForNextStep(
+      handle,
+      threadWorkerStates,
+      entries.map((entry) => entry.fd),
+    );
+  },
   notifyForkProgress: notifySchedulerProgress,
   requestPipeStateSync,
   rehydrateForkSharedStateViaKernelWorker,
@@ -253,6 +265,7 @@ const workerExitHelpers = createWorkerExitHelpers({
   destroyProcessHandle,
   formatAllLiveThreadDebug,
   notifyProcessExitProgress: notifySchedulerProgress,
+  pumpProcess,
   publishRuntimeFsState: publishRuntimeFsStateCtx,
   recordChildExitViaKernelWorker,
   releaseSharedHostStdio,
@@ -329,6 +342,7 @@ handleWorkerMessageImpl = createWorkerMessageHandler({
   requestEpollStateSync,
   requestPipeStateSync,
   requestSocketStateSync,
+  requestThreadWorkerBlockedResume,
   resolveNetworkConnect,
   resumeConnectViaKernelWorker,
   resumeFsViaKernelWorker,

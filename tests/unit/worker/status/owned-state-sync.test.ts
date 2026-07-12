@@ -131,6 +131,7 @@ const supervisorPipeControlKernelStubs = {
   supervisor_owned_state_sync_flag_wrote_or_drained_pipe: () => 256,
   supervisor_owned_state_sync_action(this: {
     abi_status_ok?: () => number;
+    abi_status_fs?: () => number;
     abi_status_vfork_wait?: () => number;
     abi_status_execve_spawn?: () => number;
     abi_status_clone_spawn?: () => number;
@@ -188,13 +189,13 @@ const supervisorPipeControlKernelStubs = {
       runningWorker
       && kernelWorkerAvailable
       && (processMemfsDirty || markProcessMemfsDirty)
-      && (status !== okStatus || hasPipeEffect)
+      && ((status !== okStatus && status !== this.abi_status_fs?.()) || hasPipeEffect)
     ) {
       action |= 32;
     }
     if (runningWorker && epollStateKernelOwns && hasEpollEffect && heldEpollOfd) {
       action |= 64;
-      if (!wroteOrDrainedPipe) {
+      if (!wroteOrDrainedPipe || hasEpollDependentOfdEffect) {
         action |= 128;
       }
     }
@@ -503,6 +504,97 @@ test("socket state sync runs before fork-shared OFD sync when both effects are p
     expect(continueAfterOwnedStateSync).toHaveBeenCalled();
   });
   expect(order).toEqual(["socket", "fork-shared", "continue"]);
+});
+
+test("eventfd epoll effects retry waiters even when pipe output was drained", async () => {
+  const worker = {} as Worker;
+  const thread = {
+    vmPtr: 0x1234,
+    ownerPid: 7,
+    generation: 1,
+    waitingInWorkerStatus: null,
+    ownerAsyncStatus: null,
+  };
+  seedThreadIdentity(thread);
+  const threadWorkerStates = new WeakMap<Worker, typeof thread>();
+  threadWorkerStates.set(worker, thread);
+  const order: string[] = [];
+  const handle = {
+    pid: 7,
+    vmPtr: 0x1234,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    workers: new Set([worker]),
+    kernelWorkerRequest: vi.fn(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set(),
+    },
+    kernelState: makeKernelState(),
+    kernel: {
+      ...supervisorPipeControlKernelStubs,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 8,
+      abi_max_pipes: () => 1,
+      abi_max_threads: () => 1,
+      abi_fd_type_epoll: () => 7,
+      abi_fd_type_pipe: () => 6,
+      process_thread_vm_ptr: () => 0,
+      process_fd_ofd_id: () => 0,
+      kernel_ofd_fd_type: () => 0,
+      kernel_ofd_ino: () => 0,
+      kernel_ofd_host_fd: () => 0,
+      kernel_attach_runtime_state: vi.fn(),
+      supervisor_process_epoll_held_ofd: (_vmPtr: number, index: number) => (index === 0 ? 5 : 0),
+    },
+  };
+  addKernelShareMember(handle);
+  const continueAfterOwnedStateSync = vi.fn(() => {
+    order.push("continue");
+  });
+  const deps = {
+    processHandles: new Map([[handle.pid, handle]]),
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    pumpProcess: vi.fn(),
+    requestEpollDependentOfdStateSync: vi.fn(async () => {
+      order.push("epoll-ofd");
+    }),
+    requestEpollStateSync: vi.fn(async (_handle, retryWaiters) => {
+      order.push(`epoll:${retryWaiters ? 1 : 0}`);
+    }),
+    requestSocketStateSync: vi.fn(async () => {
+      order.push("socket");
+    }),
+    statusDefersOwnedStateSync: vi.fn(() => false),
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectEpollState: 4,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    syncEffectSocketState: 2,
+    syncForkSharedStateViaKernelWorker: vi.fn(async () => {
+      order.push("fork-shared");
+    }),
+  };
+  const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
+
+  const handled = maybeHandleOwnedStateSync({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    status: 0,
+    completedSyncEffects: 12,
+    isRunningWorker: true,
+    wroteToPipe: false,
+    drainedPipe: true,
+    continueAfterOwnedStateSync,
+  });
+
+  expect(handled).toBe(true);
+  await vi.waitFor(() => {
+    expect(continueAfterOwnedStateSync).toHaveBeenCalled();
+  });
+  expect(order).toEqual(["epoll-ofd", "epoll:1", "continue"]);
+  expect(deps.requestEpollStateSync).toHaveBeenCalledWith(handle, true);
 });
 
 test("fork-shared OFD sync accepts an owned worker status after running slot is cleared", async () => {
@@ -1521,6 +1613,106 @@ test("dirty process memfs syncs before publishing a pipe-status boundary", async
   expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
   expect(isProcessMemfsDirty(handle as never)).toBe(false);
   expect(order).toEqual(["memfs", "continue"]);
+});
+
+test("dirty process memfs fs status without peers marks local runtime dirty without kernel-worker sync", async () => {
+  const worker = {} as Worker;
+  const thread = {
+    vmPtr: 0x1234,
+    ownerPid: 7,
+    generation: 1,
+    waitingInWorkerStatus: null,
+  };
+  seedThreadIdentity(thread);
+  const threadWorkerStates = new WeakMap<Worker, typeof thread>();
+  threadWorkerStates.set(worker, thread);
+  const handle = {
+    pid: 7,
+    vmPtr: 0x1234,
+    memory: new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }),
+    workers: new Set([worker]),
+    kernelWorkerRequest: vi.fn(),
+    kernelShare: {
+      members: new Set(),
+      sharedOfdIds: new Set(),
+    },
+    kernelState: makeKernelState(),
+    kernel: {
+      ...supervisorPipeControlKernelStubs,
+      abi_status_fs: () => 6,
+      abi_status_ok: () => 0,
+      abi_max_fds: () => 1,
+      abi_max_pipes: () => 1,
+      abi_max_threads: () => 1,
+      abi_fd_type_epoll: () => 7,
+      abi_fd_type_pipe: () => 6,
+      process_thread_vm_ptr: () => 0,
+      process_fd_ofd_id: () => 0,
+      kernel_ofd_fd_type: () => 0,
+      kernel_ofd_ino: () => 0,
+      kernel_ofd_host_fd: () => 0,
+      kernel_attach_runtime_state: vi.fn(),
+    },
+  };
+  setProcessMemfsDirty(handle as never, true);
+  addKernelShareMember(handle);
+  const continueAfterOwnedStateSync = vi.fn();
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const markRuntimeFsDirty = vi.fn();
+  const deps = {
+    threadWorkerStates,
+    appendRuntimeLifecycleEvent: vi.fn(),
+    pumpProcess: vi.fn(),
+    requestPipeStateSync: vi.fn(async () => {}),
+    requestEpollDependentOfdStateSync: vi.fn(async () => {}),
+    requestEpollStateSync: vi.fn(async () => {}),
+    requestSocketStateSync: vi.fn(async () => {}),
+    statusDefersOwnedStateSync: vi.fn(() => false),
+    syncEffectEpollDependentOfdState: 8,
+    syncEffectEpollState: 4,
+    syncEffectForkSharedOfdState: 64,
+    syncEffectProcessMemfs: 128,
+    syncEffectPipeState: 1,
+    syncEffectSocketState: 2,
+    syncForkSharedStateViaKernelWorker,
+    markRuntimeFsDirty,
+  };
+  const maybeHandleOwnedStateSync = createWorkerOwnedStateSyncHandler(deps as never);
+
+  const handled = maybeHandleOwnedStateSync({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    status: 6,
+    completedSyncEffects: 0,
+    isRunningWorker: true,
+    wroteToPipe: false,
+    drainedPipe: false,
+    continueAfterOwnedStateSync,
+  });
+
+  expect(handled).toBe(false);
+  expect(continueAfterOwnedStateSync).not.toHaveBeenCalled();
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(markRuntimeFsDirty).toHaveBeenCalledWith(handle);
+  expect(isProcessMemfsDirty(handle as never)).toBe(false);
+
+  const peer = { ...handle, pid: 8, vmPtr: 0x5678 };
+  addKernelShareMember(handle, peer);
+  setProcessMemfsDirty(handle as never, true);
+  expect(maybeHandleOwnedStateSync({
+    handle: handle as never,
+    worker,
+    thread: thread as never,
+    status: 6,
+    completedSyncEffects: 0,
+    isRunningWorker: true,
+    wroteToPipe: false,
+    drainedPipe: false,
+    continueAfterOwnedStateSync,
+  })).toBe(false);
+  expect(markRuntimeFsDirty).toHaveBeenCalledTimes(1);
+  expect(isProcessMemfsDirty(handle as never)).toBe(true);
 });
 
 test("dirty process memfs is deferred on a successful process-memfs-only effect", async () => {

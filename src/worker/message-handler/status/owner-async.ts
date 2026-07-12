@@ -4,7 +4,11 @@ import type {
   ThreadWorkerStatusMessage,
   WorkerMessageHandlerDeps,
 } from "../types.js";
-import { applyStatusFdEntries } from "./fd-entries.js";
+import type { KernelWorkerFdEntrySnapshot } from "../../../messages.js";
+import {
+  applyStatusFdEntries,
+  markStatusFdChangesForNextStep,
+} from "./fd-entries.js";
 import { pruneStatusNetworkConnectionsFromFdEntries } from "./network-recv.js";
 import { applyStatusOfdSlots } from "./ofd-slots.js";
 import {
@@ -103,6 +107,10 @@ export function handleOwnerAsyncStatusReturn(args: {
   thread: ThreadWorkerState;
   msg: ThreadWorkerStatusMessage;
   statusBelongsToHandle: boolean;
+  authoritativeFds?: ReadonlySet<number>;
+  postedFdEntries?: ReadonlyMap<number, KernelWorkerFdEntrySnapshot>;
+  authoritativeOfdIds?: ReadonlySet<number>;
+  postedOfdSlots?: ReadonlyMap<number, Uint8Array>;
   deps: WorkerMessageHandlerDeps;
 }): boolean {
   const {
@@ -111,6 +119,10 @@ export function handleOwnerAsyncStatusReturn(args: {
     thread,
     msg,
     statusBelongsToHandle,
+    authoritativeFds,
+    postedFdEntries,
+    authoritativeOfdIds,
+    postedOfdSlots,
     deps,
   } = args;
   const ownerAsyncStatus = getThreadOwnerAsyncStatus(thread);
@@ -190,8 +202,19 @@ export function handleOwnerAsyncStatusReturn(args: {
       { skipFsRingWrites: msg.status === handle.kernel.abi_status_fs() },
     );
     applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-    applyStatusOfdSlots(handle, msg);
-    applyStatusFdEntries(handle, msg);
+    const changedRegularFileOfdFds = applyStatusOfdSlots(handle, msg, {
+      authoritativeOfdIds,
+      postedFdEntries,
+      postedOfdSlots,
+    });
+    markStatusFdChangesForNextStep(
+      handle,
+      deps.threadWorkerStates,
+      [...new Set([
+        ...changedRegularFileOfdFds,
+        ...applyStatusFdEntries(handle, msg, authoritativeFds, postedFdEntries, postedOfdSlots),
+      ])],
+    );
     pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
   }
   deps.appendWorkerDebugLog(

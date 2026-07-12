@@ -361,15 +361,21 @@ ${debug}`));
     if (!processHasWorker(handle, worker) || !deps.threadWorkerStates.has(worker)) {
       return { kind: "process-gone" };
     }
-    if (!hostExecutionState(handle).hostBlockedWorkers.has(worker)) {
-      return { kind: "queued-in-worker" };
-    }
     if (collectedRetryResult.status !== undefined) {
       return completedKernelRpcOutcome(collectedRetryResult.status);
     }
     const status = handle.kernel.thread_status?.(vmPtr);
     if (status === undefined) {
       return { kind: "stale" };
+    }
+    if (!hostExecutionState(handle).hostBlockedWorkers.has(worker)) {
+      if (
+        status === handle.kernel.abi_status_ok()
+        || status === handle.kernel.abi_status_fault?.()
+      ) {
+        return completedKernelRpcOutcome(status);
+      }
+      return { kind: "queued-in-worker" };
     }
     return { kind: "blocked", status };
   }

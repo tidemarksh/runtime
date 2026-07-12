@@ -22,6 +22,7 @@ import { copyMemoryRange } from "../common.js";
 
 interface KernelWorkerPrimitivesDeps {
   getCanonicalExports(): KernelExports;
+  getCanonicalProcessVmPtr?(pid: number): number;
   processKernels: Map<number, KernelExports>;
 }
 
@@ -236,7 +237,7 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     const expectedRefcounts = new Int32Array(maxFds);
     const refcountPids = new Set([...memberPids, ...deps.processKernels.keys()]);
     for (const pid of refcountPids) {
-      const vmPtr = memberVmPtrs.get(pid) ?? 0;
+      const vmPtr = memberVmPtrs.get(pid) ?? deps.getCanonicalProcessVmPtr?.(pid) ?? 0;
       if (vmPtr === 0) {
         continue;
       }
@@ -244,7 +245,11 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
       if (!processExports) {
         continue;
       }
-      const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, vmPtr);
+      const authorityVmPtr = processExports.supervisor_process_fd_authority_vm_ptr?.(vmPtr, pid) ?? vmPtr;
+      if (authorityVmPtr === 0) {
+        continue;
+      }
+      const heldRefcounts = collectProcessHeldOfdRefcounts(processExports, authorityVmPtr);
       for (const ofdId of trackedOfdIds) {
         expectedRefcounts[ofdId] += heldRefcounts[ofdId] ?? 0;
       }

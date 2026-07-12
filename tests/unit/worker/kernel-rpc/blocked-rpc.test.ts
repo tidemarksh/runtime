@@ -356,6 +356,38 @@ test("blocked-rpc generic resume returns a typed completed outcome", async () =>
   });
 });
 
+test("blocked-rpc stale post-resume sync reports current OK completion", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  kernel.setStatus(21);
+  kernel.thread_resume_blocked_syscall = vi.fn(() => {
+    kernel.setStatus(kernel.abi_status_ok());
+    return 0n;
+  });
+  const handle = makeHandle(kernel, worker, {
+    kernelWorkerRequest: vi.fn(async () => ({ type: "noop" } as never)),
+    hostBlockedWorkers: new Map([[worker, {
+      vmPtr,
+      status: 21,
+    }]]),
+  });
+  const { deps, helpers } = makeHelpers(handle, worker, {
+    syncBlockedForkSharedStateViaKernelWorker: vi.fn(async () => {
+      hostExecutionState(handle).hostBlockedWorkers.delete(worker);
+    }),
+  });
+
+  await expect(
+    helpers.executeHostBlockedSyscallResumeOutcome(handle, worker, vmPtr, 21),
+  ).resolves.toMatchObject({
+    kind: "completed",
+    status: kernel.abi_status_ok(),
+  });
+  expect(kernel.thread_resume_blocked_syscall).toHaveBeenCalledWith(vmPtr);
+  expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "blocked-rpc-stale:1:21");
+});
+
 test("blocked-rpc socket recv keeps host read writeback and socket sync", async () => {
   const kernel = makeKernel();
   const worker = {} as Worker;

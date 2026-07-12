@@ -101,6 +101,15 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const shouldSyncProcessMemfs = ownedStateSyncActions.syncProcessMemfs;
     const shouldSyncEpollState = ownedStateSyncActions.syncEpollState;
     if (
+      !shouldSyncProcessMemfs
+      && status === handle.kernel.abi_status_fs?.()
+      && isProcessMemfsDirty(handle)
+      && kernelShareOtherMembers(handle).length === 0
+    ) {
+      deps.markRuntimeFsDirty(handle);
+      setProcessMemfsDirty(handle, false);
+    }
+    if (
       !shouldSyncForkSharedState
       && !shouldSyncEpollDependentOfds
       && !shouldSyncSocketState
@@ -125,25 +134,37 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
     const syncSocketState = (): Promise<void> => shouldSyncSocketState
       ? deps.requestSocketStateSync(handle, shouldWakeSocketWaiters)
       : Promise.resolve();
-    const syncProcessMemfs = (): Promise<void> => shouldSyncProcessMemfs
-      ? deps.syncForkSharedStateViaKernelWorker(
-          handle,
-          kernelShareOtherMembers(handle),
-          {
-            cause: { kind: "syscall", nr: -1n, name: "owned-state-process-memfs-sync" },
-            includeMemfs: true,
-            memfsOnly: true,
-            trackHeldOfds: false,
-            sourceVmPtr: thread.vmPtr,
-          },
-        ).then(() => {
-          deps.markRuntimeFsDirty(handle);
-          for (const member of kernelShareOtherMembers(handle)) {
-            deps.markRuntimeFsDirty(member);
-          }
-          setProcessMemfsDirty(handle, false);
-        })
-      : Promise.resolve();
+    const syncProcessMemfs = (): Promise<void> => {
+      if (!shouldSyncProcessMemfs) {
+        return Promise.resolve();
+      }
+      const processMemfsTargets = kernelShareOtherMembers(handle);
+      if (
+        processMemfsTargets.length === 0
+        && status === handle.kernel.abi_status_fs?.()
+      ) {
+        deps.markRuntimeFsDirty(handle);
+        setProcessMemfsDirty(handle, false);
+        return Promise.resolve();
+      }
+      return deps.syncForkSharedStateViaKernelWorker(
+        handle,
+        processMemfsTargets,
+        {
+          cause: { kind: "syscall", nr: -1n, name: "owned-state-process-memfs-sync" },
+          includeMemfs: true,
+          memfsOnly: true,
+          trackHeldOfds: false,
+          sourceVmPtr: thread.vmPtr,
+        },
+      ).then(() => {
+        deps.markRuntimeFsDirty(handle);
+        for (const member of processMemfsTargets) {
+          deps.markRuntimeFsDirty(member);
+        }
+        setProcessMemfsDirty(handle, false);
+      });
+    };
     setThreadOwnerAsyncStatus(thread, status);
     void syncSocketState()
       .then(() => syncForkSharedState())

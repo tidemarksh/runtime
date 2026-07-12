@@ -173,6 +173,63 @@ test("completeProcessExit syncs pipe state before draining output when kernel-wo
   expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
 });
 
+test("completeProcessExit uses the exiting vmPtr for owned fd state when the handle vmPtr is stale", async () => {
+  const { handle } = makeHandle({
+    kernelWorkerRequest: vi.fn(async () => ({ type: "pipe-state-synced" } as never)),
+  });
+  const staleVmPtr = handle.vmPtr;
+  const exitVmPtr = 0xbeef;
+  handle.kernel.supervisor_process_owner_matches = (vmPtr, pid) =>
+    vmPtr === exitVmPtr && pid === handle.pid ? 1 : 0;
+  handle.kernel.supervisor_process_held_ofd_refcount = (vmPtr, ofdId) =>
+    vmPtr === exitVmPtr && ofdId === 9 ? 1 : 0;
+  handle.kernel.process_fd_ofd_id = (vmPtr, fd) =>
+    vmPtr === exitVmPtr && fd === 1 ? 9 : 0;
+  handle.kernel.process_fd_flags = () => 0;
+  handle.kernel.kernel_ofd_fd_type = (ofdId) => ofdId === 9 ? 6 : 0;
+  handle.kernel.kernel_ofd_ino = (ofdId) => ofdId === 9 ? 2 : 0;
+  handle.kernel.kernel_ofd_host_fd = (ofdId) => ofdId === 9 ? -3 : -1;
+
+  const events: string[] = [];
+  const requestPipeStateSync = vi.fn(async () => {});
+  const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const lifecycle = createWorkerLifecycleHelpers({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      events.push(event);
+    },
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => true,
+    enqueueWorker: () => {},
+    getProcessByPid: () => undefined,
+    notifyLifecycleProgress: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    requestEpollStateSync: async () => {},
+    requestPipeStateSync,
+    requestSocketStateSync: async () => {},
+    resumeVforkParentViaKernelWorker: async () => {},
+    syncForkSharedStateViaKernelWorker,
+    workerExitCompleteProcessExit: async () => {},
+    workerExitFailProcess: () => {},
+  });
+
+  await lifecycle.completeProcessExit(handle, 0, 0, exitVmPtr);
+
+  expect(staleVmPtr).not.toBe(exitVmPtr);
+  expect(handle.vmPtr).toBe(exitVmPtr);
+  expect(events).toContain(`exit-vm-adopt:${handle.pid}:from=0x${staleVmPtr.toString(16)}:to=0x${exitVmPtr.toString(16)}`);
+  expect(events.find((event) => event.startsWith("exit-begin:"))).toContain("held=[9]");
+  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    [],
+    expect.objectContaining({
+      sourceVmPtr: exitVmPtr,
+      trackHeldOfds: true,
+    }),
+  );
+  expect(requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+});
+
 test("completeProcessExit publishes inherited output before fork-shared sync when stdio is owned by the parent", async () => {
   const parent = makeHandle({
     pid: 7,

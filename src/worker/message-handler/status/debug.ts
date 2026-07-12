@@ -13,6 +13,9 @@ import {
 
 export const STATUS_SOCKET_DEBUG_LOG_ENABLED = ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
   || ((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.TIDEMARK_WORKER_DEBUG_NETWORK ?? "") === "1";
+const STATUS_FD_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_LIFECYCLE_DEBUG ?? "") === "1";
 
 export function appendStatusSocketDebug(handle: ProcessHandle, event: string): void {
   if (!STATUS_SOCKET_DEBUG_LOG_ENABLED) {
@@ -81,6 +84,9 @@ export function shouldRecordStatusFdLifecycle(
   status: number,
   msg: ThreadWorkerStatusMessage,
 ): boolean {
+  if (!STATUS_FD_LIFECYCLE_DEBUG_ENABLED) {
+    return false;
+  }
   if (!msg.fdEntries || msg.fdEntries.length === 0) {
     return false;
   }

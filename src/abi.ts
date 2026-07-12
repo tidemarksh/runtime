@@ -446,6 +446,7 @@ export interface KernelExports {
   supervisor_process_owner_mismatch?(vmPtr: number, runtimePid: number): number;
   supervisor_process_owner_absent?(vmPtr: number): number;
   supervisor_process_owner_live_matches?(vmPtr: number, runtimePid: number): number;
+  supervisor_process_fd_authority_vm_ptr?(vmPtr: number, runtimePid: number): number;
   supervisor_process_owner_missing_or_invalid?(vmPtr: number): number;
   supervisor_process_identity_matches?(vmPtr: number, runtimePid: number, processPtr: number): number;
   supervisor_fault_exit_decision?(vmPtr: number, outPtr: number, outLen: number): number;
@@ -661,6 +662,7 @@ export interface KernelExports {
   supervisor_blocked_stale_retry_result_action_none?(): number;
   supervisor_blocked_stale_retry_result_action_handle_current_result?(): number;
   supervisor_blocked_stale_retry_result_action_handle_current_result_wait4?(): number;
+  supervisor_blocked_stale_retry_result_action_resume_wait4?(): number;
   supervisor_blocked_rpc_pipe_sync_action?(vmPtr: number, blockedStatus: number): number;
   supervisor_blocked_rpc_pipe_sync_action_not_pipe?(): number;
   supervisor_blocked_rpc_pipe_sync_action_none?(): number;
@@ -1145,12 +1147,25 @@ export interface KernelExports {
   thread_blocked_ofd_id(vm_ptr: number): number;
   thread_blocked_syscall_nr?(vm_ptr: number): bigint;
   thread_blocked_syscall_arg?(vm_ptr: number, index: number): bigint;
+  thread_restore_blocked_syscall_state?(
+    vm_ptr: number,
+    blockedFd: number,
+    hasOfdPin: number,
+    syscallNr: bigint,
+    a0: bigint,
+    a1: bigint,
+    a2: bigint,
+    a3: bigint,
+    a4: bigint,
+    a5: bigint,
+  ): number;
   // FS handling
   thread_pending_fs_effects(vm_ptr: number): number;
   thread_take_completed_sync_effects?(vm_ptr: number): number;
   thread_take_completed_pipe_sync_slots?(vm_ptr: number): bigint | number;
   thread_take_completed_pipe_sync_read_slots?(vm_ptr: number): bigint | number;
   thread_take_completed_pipe_sync_write_slots?(vm_ptr: number): bigint | number;
+  thread_take_completed_pipe_sync_control_slots?(vm_ptr: number): bigint | number;
   thread_take_completed_pipe_fresh_slots?(vm_ptr: number): bigint | number;
   thread_completed_pipe_read_guest_ptr?(vm_ptr: number): bigint | number;
   thread_take_completed_pipe_read_len?(vm_ptr: number): number;
@@ -1171,6 +1186,7 @@ export interface KernelExports {
   thread_fs_ring_completion_result_at?(vm_ptr: number, pos: number): bigint;
   thread_process_fs(vm_ptr: number): void;
   thread_resume_fs(vm_ptr: number): bigint;
+  thread_resume_fs_result(vm_ptr: number, result: bigint): bigint;
 
   // Blocking state accessors
   thread_futex_wait_addr(vm_ptr: number): bigint;
@@ -1228,6 +1244,9 @@ export interface KernelExports {
   thread_resume_connect_result(vm_ptr: number, result: bigint): void;
   thread_resume_connect_result_for_fd?(vm_ptr: number, fd: number, result: bigint): void;
   thread_vfork_child_pid(): number;
+  thread_vfork_parent_fd_ofd_id?(fd: number): number;
+  thread_vfork_parent_fd_flags?(fd: number): number;
+  thread_vfork_parent_fd_generation?(fd: number): number;
   thread_clone_flags(vm_ptr: number): bigint;
   thread_clone_child_stack?(vm_ptr: number): bigint;
   thread_clone_tls?(vm_ptr: number): bigint;
@@ -1285,6 +1304,12 @@ export interface KernelExports {
   process_current_sid(vm_ptr: number): number;
   process_current_did_exec(vm_ptr: number): number;
   process_rewrite_child_pid(vm_ptr: number, oldPid: number, newPid: number, nextPid: number): void;
+  process_restore_current_identity(
+    vmPtr: number,
+    pid: number,
+    ppid: number,
+    nextPid: number,
+  ): void;
   process_canonicalize_child_pid?(vmPtr: number, provisionalChildPid: number, nextPidFloor: number): number;
   process_reset_lifecycle(
     vm_ptr: number,
@@ -2076,6 +2101,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_owner_matches",
   "supervisor_process_owner_mismatch",
   "supervisor_process_owner_absent",
+  "supervisor_process_fd_authority_vm_ptr",
   "supervisor_process_owner_live_matches",
   "supervisor_process_owner_missing_or_invalid",
   "supervisor_process_identity_matches",
@@ -2220,6 +2246,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_blocked_stale_retry_result_action_none",
   "supervisor_blocked_stale_retry_result_action_handle_current_result",
   "supervisor_blocked_stale_retry_result_action_handle_current_result_wait4",
+  "supervisor_blocked_stale_retry_result_action_resume_wait4",
   "supervisor_blocked_rpc_pipe_sync_action",
   "supervisor_blocked_rpc_pipe_sync_action_not_pipe",
   "supervisor_blocked_rpc_pipe_sync_action_none",

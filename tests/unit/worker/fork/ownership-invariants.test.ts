@@ -51,6 +51,9 @@ function makeHandle(options: {
         }
         return 0;
       },
+      supervisor_ofd_fd_type(ofdId: number) {
+        return this.kernel_ofd_fd_type(ofdId);
+      },
     },
   } as unknown as ProcessHandle;
 }
