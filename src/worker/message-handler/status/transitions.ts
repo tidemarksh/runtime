@@ -550,6 +550,27 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       } else {
         const exitedTid = handle.kernel.thread_tid?.(thread.vmPtr) ?? 0;
         if (exitedTid > 0) {
+          const applyExitedThread = handle.kernel.supervisor_apply_exited_thread_publication;
+          if (applyExitedThread === undefined) {
+            deps.failProcess(
+              handle,
+              new Error("kernel supervisor ABI missing supervisor_apply_exited_thread_publication"),
+            );
+            return;
+          }
+          const applyResult = applyExitedThread.call(
+            handle.kernel,
+            handle.vmPtr,
+            thread.vmPtr,
+            exitedTid,
+          );
+          if (applyResult < 0) {
+            deps.failProcess(
+              handle,
+              new Error(`kernel supervisor exited thread publication failed: ${applyResult}`),
+            );
+            return;
+          }
           for (const remainingWorker of processWorkerList(handle)) {
             if (remainingWorker === worker) {
               continue;

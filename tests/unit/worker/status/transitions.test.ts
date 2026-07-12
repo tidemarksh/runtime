@@ -883,6 +883,7 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
   handle.kernel.process_current_pid = () => 1;
   handle.kernel.thread_process_thread_count = () => 1;
   handle.kernel.thread_tid = () => 2;
+  handle.kernel.supervisor_apply_exited_thread_publication = vi.fn(() => 0);
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   handle.memory = memory;
   const kernel = handle.kernel as typeof handle.kernel & {
@@ -945,6 +946,11 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
   expect(processHasWorker(handle, worker)).toBe(false);
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(handle.kernel.supervisor_apply_exited_thread_publication).toHaveBeenCalledWith(
+    handle.vmPtr,
+    0x1234,
+    2,
+  );
   expect(takePendingExitedThreadsForNextStep(siblingThread as never)).toEqual([
     { vmPtr: 0x1234, tid: 2 },
   ]);
