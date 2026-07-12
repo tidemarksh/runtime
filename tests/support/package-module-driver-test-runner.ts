@@ -8,6 +8,8 @@ import {
   validatePackageModuleDriverOutput,
 } from "./package-module-driver-harness.js";
 
+const PACKAGE_MODULE_DRIVER_PREPARE_HEADROOM_MS = 60_000;
+
 export function registerPackageModuleDriverGate(entry: PackageModuleDriverEntry): void {
   test(`package/module driver local gate: ${entry.id}`, async () => {
     let prepared;
@@ -60,5 +62,5 @@ export function registerPackageModuleDriverGate(entry: PackageModuleDriverEntry)
     } finally {
       runtime.destroy();
     }
-  }, 30_000);
+  }, entry.timeoutMs + PACKAGE_MODULE_DRIVER_PREPARE_HEADROOM_MS);
 }

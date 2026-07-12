@@ -7,6 +7,8 @@ import {
 } from "../../../support/package-module-driver-harness.js";
 import { rubyGemPackageModuleEntry } from "./package-module-driver.js";
 
+const PACKAGE_MODULE_ISOLATION_PREPARE_HEADROOM_MS = 60_000;
+
 const rubyIsolationEntries = [
   {
     ...rubyGemPackageModuleEntry,
@@ -65,5 +67,5 @@ for (const entry of rubyIsolationEntries) {
     } finally {
       runtime.destroy();
     }
-  }, 20_000);
+  }, entry.timeoutMs + PACKAGE_MODULE_ISOLATION_PREPARE_HEADROOM_MS);
 }
