@@ -1118,7 +1118,7 @@ export interface KernelExports {
   thread_exit_code(vm_ptr: number): number;
   thread_term_signal(vm_ptr: number): number;
   thread_pc(vm_ptr: number): bigint;
-  thread_tid?(vm_ptr: number): number;
+  thread_tid(vm_ptr: number): number;
   thread_tp?(vm_ptr: number): bigint;
   thread_gp?(vm_ptr: number): bigint;
   thread_s11?(vm_ptr: number): bigint;
@@ -1855,6 +1855,7 @@ export interface KernelExports {
 }
 
 const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
+  "thread_tid",
   "supervisor_abi_version",
   "supervisor_debug_snapshot_bytes",
   "supervisor_thread_event_record_bytes",

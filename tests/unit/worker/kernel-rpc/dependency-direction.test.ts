@@ -85,7 +85,7 @@ test("process creation requires the supervisor ABI before runtime ownership star
 
 test("supervisor ABI checker fails closed when an authority export is missing", () => {
   expect(() => assertSupervisorRuntimeAbi({} as never)).toThrow(
-    "kernel supervisor ABI missing required export(s): supervisor_abi_version",
+    "kernel supervisor ABI missing required export(s): thread_tid, supervisor_abi_version",
   );
 
   const completeExports = Object.fromEntries(
