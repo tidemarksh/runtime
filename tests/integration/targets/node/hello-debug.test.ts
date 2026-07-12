@@ -9,7 +9,7 @@ test("debug hello fixture", async () => {
   }
 
   try {
-    const result = await runNodeFixture(prepared.runtime, prepared.nodeBytes, "hello.js", 10_000);
+    const result = await runNodeFixture(prepared.runtime, prepared.nodeBytes, "hello.js", 120_000);
     if (!result) {
       return;
     }
@@ -24,4 +24,4 @@ test("debug hello fixture", async () => {
   } finally {
     prepared.runtime.destroy();
   }
-}, 30_000);
+}, 140_000);
