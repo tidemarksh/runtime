@@ -37,7 +37,7 @@ function writeRegularFileSlot(
   return slot;
 }
 
-function makeHandle(memory: WebAssembly.Memory): ProcessHandle {
+function makeHandle(memory: WebAssembly.Memory, heldRefcount = 1): ProcessHandle {
   const offsetFloors = new Map<number, { hostFd: number; ino: number; offset: bigint }>();
   const slotView = (ofdId: number): DataView =>
     new DataView(memory.buffer, ofdTablePtr + ofdId * slotBytes, slotBytes);
@@ -58,6 +58,8 @@ function makeHandle(memory: WebAssembly.Memory): ProcessHandle {
     supervisor_ofd_ino: (ofdId: number) => slotView(ofdId).getUint32(OFD_INO_OFFSET, true),
     supervisor_ofd_refcount: (ofdId: number) => slotView(ofdId).getInt32(OFD_REFCOUNT_OFFSET, true),
     supervisor_ofd_offset: (ofdId: number) => slotView(ofdId).getBigInt64(OFD_OFFSET_OFFSET, true),
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) =>
+      ofdId === 4 ? heldRefcount : 0,
     supervisor_fd_entry_restore_action_apply: () => 1,
     supervisor_fd_entry_restore_action_skip: () => 2,
     supervisor_regular_file_offset_restore_action: (
@@ -162,7 +164,7 @@ function makeHandle(memory: WebAssembly.Memory): ProcessHandle {
 
 test("applyThreadOfdSlots preserves a higher live OFD refcount", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
-  const handle = makeHandle(memory);
+  const handle = makeHandle(memory, 2);
   const candidate = writeRegularFileSlot(memory, 4, 64n);
   const current = new DataView(memory.buffer, ofdTablePtr + 4 * slotBytes, slotBytes);
   current.setInt32(OFD_REFCOUNT_OFFSET, 2, true);
@@ -173,6 +175,21 @@ test("applyThreadOfdSlots preserves a higher live OFD refcount", () => {
   });
 
   expect(current.getInt32(OFD_REFCOUNT_OFFSET, true)).toBe(2);
+});
+
+test("applyThreadOfdSlots replaces a stale high OFD refcount with the canonical refcount", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const handle = makeHandle(memory, 1);
+  const candidate = writeRegularFileSlot(memory, 4, 64n);
+  const current = new DataView(memory.buffer, ofdTablePtr + 4 * slotBytes, slotBytes);
+  current.setInt32(OFD_REFCOUNT_OFFSET, 2, true);
+
+  applyThreadOfdSlots(handle, {
+    vmPtr: 0x1234,
+    ofdSlots: [{ ofdId: 4, slot: candidate }],
+  });
+
+  expect(current.getInt32(OFD_REFCOUNT_OFFSET, true)).toBe(1);
 });
 
 function currentOffset(memory: WebAssembly.Memory): bigint {

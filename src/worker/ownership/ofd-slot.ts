@@ -476,6 +476,7 @@ function preserveLiveEpollDependentStatusFlags(
 
 function preserveLiveOfdRefcount(
   handle: ProcessHandle,
+  msg: StatusMessageLike,
   snapshot: OfdSlotSnapshotLike,
   slotBytes: number,
 ): Uint8Array {
@@ -489,14 +490,18 @@ function preserveLiveOfdRefcount(
   if (currentType === 0 || currentType !== candidate.getInt32(OFD_TYPE_OFFSET, true)) {
     return snapshot.slot;
   }
-  const currentRefcount = current.getInt32(OFD_REFCOUNT_OFFSET, true);
   const candidateRefcount = candidate.getInt32(OFD_REFCOUNT_OFFSET, true);
-  if (currentRefcount <= candidateRefcount) {
+  const processHeldRefcount = handle.kernel.supervisor_process_held_ofd_refcount;
+  if (!processHeldRefcount) {
+    throw new Error("kernel supervisor ABI missing process-held OFD refcount export");
+  }
+  const heldRefcount = Math.max(0, processHeldRefcount.call(handle.kernel, msg.vmPtr, snapshot.ofdId));
+  if (candidateRefcount >= heldRefcount) {
     return snapshot.slot;
   }
   const merged = snapshot.slot.slice();
   new DataView(merged.buffer, merged.byteOffset, merged.byteLength)
-    .setInt32(OFD_REFCOUNT_OFFSET, currentRefcount, true);
+    .setInt32(OFD_REFCOUNT_OFFSET, heldRefcount, true);
   return merged;
 }
 
@@ -605,7 +610,7 @@ export function applyThreadOfdSlots(
       ) {
         continue;
       }
-      const refcountMergedSlot = preserveLiveOfdRefcount(handle, snapshot, slotBytes);
+      const refcountMergedSlot = preserveLiveOfdRefcount(handle, msg, snapshot, slotBytes);
       const statusMergedSlot = preserveFcntlSetflAccessMode(
         handle,
         msg,
