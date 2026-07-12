@@ -24,6 +24,8 @@ const deferredArmHostTimerHostOps = new WeakMap<ProcessHandle, SupervisorHostOpR
 interface ActiveSupervisorHostTimer {
   token: number;
   timer: ReturnType<typeof setTimeout>;
+  deadlineMs: number;
+  record: SupervisorHostOpRecord;
 }
 
 const activeSupervisorHostTimers = new WeakMap<ProcessHandle, Map<number, ActiveSupervisorHostTimer>>();
@@ -584,7 +586,20 @@ export function armSupervisorHostTimer(
       ? 0x7fff_ffffn
       : record.flags,
   );
+  const activeTimers = activeSupervisorHostTimerMap(handle);
+  const activeTimer = activeTimers.get(record.parentVmPtr);
+  const deadlineMs = Date.now() + delayMs;
+  if (activeTimer !== undefined && activeTimer.deadlineMs <= deadlineMs) {
+    activeTimer.record = record;
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `supervisor-host-timer-retain:${handle.pid}:vm=0x${record.parentVmPtr.toString(16)}`
+        + `:seq=${record.seq.toString()}:delay=${delayMs}`,
+    );
+    return;
+  }
   clearSupervisorHostTimer(handle, record.parentVmPtr);
+  const timers = activeSupervisorHostTimerMap(handle);
   const token = nextSupervisorHostTimerToken++;
   deps.appendRuntimeLifecycleEvent(
     handle.runtimeId,
@@ -602,6 +617,7 @@ export function armSupervisorHostTimer(
       );
       return;
     }
+    const completionRecord = active.record;
     timers?.delete(record.parentVmPtr);
     if (timers !== undefined && timers.size === 0) {
       activeSupervisorHostTimers.delete(handle);
@@ -609,27 +625,27 @@ export function armSupervisorHostTimer(
     try {
       const status = submitSupervisorHostOpCompletion(
         handle,
-        record,
+        completionRecord,
         supervisorHostCompletionOutcomeSuccess(handle),
         0,
       ) ?? 0;
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-host-timer-fired:vm=0x${record.parentVmPtr.toString(16)}`
-          + `:seq=${record.seq.toString()}:status=${status}`,
+          + `:seq=${completionRecord.seq.toString()}:status=${status}`,
       );
       deps.pumpProcess(handle);
     } catch (error) {
       submitSupervisorHostOpCompletion(
         handle,
-        record,
+        completionRecord,
         supervisorHostCompletionOutcomeFailure(handle),
         0,
       );
       deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
     }
   }, delayMs);
-  activeSupervisorHostTimerMap(handle).set(record.parentVmPtr, { token, timer });
+  timers.set(record.parentVmPtr, { token, timer, deadlineMs, record });
 }
 
 export function armSupervisorBlockedRetryTimer(

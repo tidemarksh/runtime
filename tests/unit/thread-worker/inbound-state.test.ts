@@ -102,18 +102,25 @@ test("applyThreadWorkerInboundState applies fd, pipe, socket, guest write, and w
   expect(attachCall?.[11]).toBe(3n);
 });
 
-test("applyThreadWorkerInboundState preserves a blocked OFD across an inbound ID collision", () => {
+test("applyThreadWorkerInboundState preserves a live OFD when Kernel rejects an inbound collision", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const bytes = new Uint8Array(memory.buffer);
   const kernelExports = makeKernelExports(memory);
   const kernelState = makeState();
-  const blockedSlot = Uint8Array.from([0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8]);
-  bytes.set(blockedSlot, kernelState.ofdTablePtr + 2 * blockedSlot.length);
-  let blockedOfdId = 2;
+  const slotBytes = 32;
+  const blockedSlot = Uint8Array.from({ length: slotBytes }, (_, index) => 0xa0 + index);
+  bytes.set(blockedSlot, kernelState.ofdTablePtr + 2 * slotBytes);
+  const decideWrite = vi.fn((ofdId: number) => ofdId === 2 ? 1 : 0);
   Object.assign(kernelExports, {
-    thread_blocked_ofd_id: () => blockedOfdId,
+    kernel_ofd_table_bytes: () => slotBytes * kernelExports.abi_max_fds(),
+    supervisor_fd_entry_restore_action_skip: () => 1,
+    supervisor_ofd_slot_write_action: decideWrite,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 4 ? 4 : 0,
   });
+
+  const collidingSlot = new Uint8Array(slotBytes);
+  const acceptedSlot = new Uint8Array(slotBytes);
+  new DataView(acceptedSlot.buffer).setInt32(0, 3, true);
 
   applyThreadWorkerInboundState({
     kernelExports,
@@ -122,8 +129,8 @@ test("applyThreadWorkerInboundState preserves a blocked OFD across an inbound ID
     kernelState,
     targetVmPtr: 0x1234,
     ofdSlots: [
-      { ofdId: 2, slot: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]) },
-      { ofdId: 3, slot: Uint8Array.from([9, 10, 11, 12, 13, 14, 15, 16]) },
+      { ofdId: 2, slot: collidingSlot },
+      { ofdId: 3, slot: acceptedSlot },
     ],
     fdEntries: [
       { fd: 4, ofdId: 0, fdFlags: 0 },
@@ -132,25 +139,82 @@ test("applyThreadWorkerInboundState preserves a blocked OFD across an inbound ID
     ],
   });
 
-  expect([...bytes.slice(0x50, 0x58)]).toEqual([...blockedSlot]);
-  expect([...bytes.slice(0x58, 0x60)]).toEqual([9, 10, 11, 12, 13, 14, 15, 16]);
+  expect([...bytes.slice(
+    kernelState.ofdTablePtr + 2 * slotBytes,
+    kernelState.ofdTablePtr + 3 * slotBytes,
+  )]).toEqual([...blockedSlot]);
+  expect([...bytes.slice(
+    kernelState.ofdTablePtr + 3 * slotBytes,
+    kernelState.ofdTablePtr + 4 * slotBytes,
+  )]).toEqual([...acceptedSlot]);
   expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 4, 0, 0);
-  expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalledWith(0x1234, 5, 2, 0);
+  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 5, 2, 0);
   expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 6, 3, 0);
 
-  blockedOfdId = 0;
+  expect(decideWrite).toHaveBeenCalledTimes(2);
+});
+
+test("applyThreadWorkerInboundState asks Kernel before replacing a live shared OFD slot", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  const kernelExports = makeKernelExports(memory);
+  const kernelState = makeState();
+  const slotBytes = 32;
+  const liveSlot = Uint8Array.from({ length: slotBytes }, (_, index) => 0x80 + index);
+  bytes.set(liveSlot, kernelState.ofdTablePtr + 3 * slotBytes);
+  const decideWrite = vi.fn(() => 1);
+  Object.assign(kernelExports, {
+    kernel_ofd_table_bytes: () => slotBytes * kernelExports.abi_max_fds(),
+    supervisor_fd_entry_restore_action_skip: () => 1,
+    supervisor_ofd_slot_write_action: decideWrite,
+  });
+
   applyThreadWorkerInboundState({
     kernelExports,
     guestBase: 0,
   }, {
     kernelState,
     targetVmPtr: 0x1234,
-    ofdSlots: [{ ofdId: 2, slot: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]) }],
-    fdEntries: [{ fd: 5, ofdId: 2, fdFlags: 0 }],
+    ofdSlots: [{ ofdId: 3, slot: new Uint8Array(slotBytes) }],
   });
 
-  expect([...bytes.slice(0x50, 0x58)]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-  expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 5, 2, 0);
+  expect(decideWrite).toHaveBeenCalledWith(3, 0, 0, 0, 0n);
+  expect([...bytes.slice(
+    kernelState.ofdTablePtr + 3 * slotBytes,
+    kernelState.ofdTablePtr + 4 * slotBytes,
+  )]).toEqual([...liveSlot]);
+});
+
+test("applyThreadWorkerInboundState preserves a higher live OFD refcount", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const kernelState = makeState();
+  const slotBytes = 32;
+  Object.assign(kernelExports, {
+    kernel_ofd_table_bytes: () => slotBytes * kernelExports.abi_max_fds(),
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_write_action: () => 1,
+    supervisor_ofd_fd_type: (ofdId: number) => new DataView(
+      memory.buffer,
+      kernelState.ofdTablePtr + ofdId * slotBytes,
+      slotBytes,
+    ).getInt32(0, true),
+  });
+  const current = new DataView(memory.buffer, kernelState.ofdTablePtr + 3 * slotBytes, slotBytes);
+  current.setInt32(0, 7, true);
+  current.setInt32(12, 2, true);
+  const candidate = new Uint8Array(slotBytes);
+  const candidateView = new DataView(candidate.buffer);
+  candidateView.setInt32(0, 7, true);
+  candidateView.setInt32(12, 1, true);
+
+  applyThreadWorkerInboundState({ kernelExports, guestBase: 0 }, {
+    kernelState,
+    targetVmPtr: 0x1234,
+    ofdSlots: [{ ofdId: 3, slot: candidate }],
+  });
+
+  expect(current.getInt32(12, true)).toBe(2);
 });
 
 test("applyThreadWorkerInboundState asks Kernel to restore canonical process identity", () => {
@@ -379,7 +443,7 @@ test("applyThreadWorkerInboundState preserves a newer live pipe fd from an older
   expect(fdState.get(14)).toEqual({ ofdId: 20, fdFlags: 1, generation: 3 });
   expect(kernelExports.process_set_fd_entry).not.toHaveBeenCalled();
   expect(pipeSyncCandidate).toHaveBeenCalledWith(20);
-  expect(restoreAction).not.toHaveBeenCalled();
+  expect(restoreAction).toHaveBeenCalledWith(0x1234, 14, 0, 0xffffffffffffffffn, 3);
 });
 
 test("applyThreadWorkerInboundState does not reopen a same-ProcessState fd from a delayed snapshot", () => {
@@ -438,7 +502,7 @@ test("applyThreadWorkerInboundState applies a newer inbound fd snapshot even whe
   const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
     [3, { ofdId: 4, fdFlags: 0, generation: 1 }],
   ]);
-  const restoreAction = vi.fn(() => 2);
+  const restoreAction = vi.fn(() => 1);
   Object.assign(kernelExports, {
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
@@ -464,7 +528,7 @@ test("applyThreadWorkerInboundState applies a newer inbound fd snapshot even whe
 
   expect(fdState.get(3)?.ofdId).toBe(0);
   expect(kernelExports.process_set_fd_entry).toHaveBeenCalledWith(0x1234, 3, 0, 0);
-  expect(restoreAction).not.toHaveBeenCalled();
+  expect(restoreAction).toHaveBeenCalledWith(0x1234, 3, 0, 0xffffffffffffffffn, 3);
 });
 
 test("applyThreadWorkerInboundState applies a canonical generationless fd over a live worker fd", () => {
@@ -473,7 +537,7 @@ test("applyThreadWorkerInboundState applies a canonical generationless fd over a
   const fdState = new Map<number, { ofdId: number; fdFlags: number; generation: number }>([
     [6, { ofdId: 5, fdFlags: 0, generation: 12 }],
   ]);
-  const restoreAction = vi.fn(() => 2);
+  const restoreAction = vi.fn(() => 1);
   Object.assign(kernelExports, {
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fdState.get(fd)?.ofdId ?? 0,
     process_fd_flags: (_vmPtr: number, fd: number) => fdState.get(fd)?.fdFlags ?? 0,
@@ -498,5 +562,5 @@ test("applyThreadWorkerInboundState applies a canonical generationless fd over a
   });
 
   expect(fdState.get(6)).toEqual({ ofdId: 7, fdFlags: 0, generation: 13 });
-  expect(restoreAction).not.toHaveBeenCalled();
+  expect(restoreAction).toHaveBeenCalledWith(0x1234, 6, 7, 0xffffffffffffffffn, 3);
 });

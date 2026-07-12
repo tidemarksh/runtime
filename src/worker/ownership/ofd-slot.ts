@@ -12,6 +12,7 @@ import {
   OFD_HOST_FD_OFFSET,
   OFD_INO_OFFSET,
   OFD_OFFSET_OFFSET,
+  OFD_REFCOUNT_OFFSET,
   OFD_STATUS_FLAGS_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../../layout/ofd.js";
@@ -473,6 +474,32 @@ function preserveLiveEpollDependentStatusFlags(
   return merged;
 }
 
+function preserveLiveOfdRefcount(
+  handle: ProcessHandle,
+  snapshot: OfdSlotSnapshotLike,
+  slotBytes: number,
+): Uint8Array {
+  const targetOffset = handle.kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
+  if (targetOffset < 0 || targetOffset + slotBytes > handle.memory.buffer.byteLength) {
+    return snapshot.slot;
+  }
+  const current = new DataView(handle.memory.buffer, targetOffset, slotBytes);
+  const candidate = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
+  const currentType = current.getInt32(OFD_TYPE_OFFSET, true);
+  if (currentType === 0 || currentType !== candidate.getInt32(OFD_TYPE_OFFSET, true)) {
+    return snapshot.slot;
+  }
+  const currentRefcount = current.getInt32(OFD_REFCOUNT_OFFSET, true);
+  const candidateRefcount = candidate.getInt32(OFD_REFCOUNT_OFFSET, true);
+  if (currentRefcount <= candidateRefcount) {
+    return snapshot.slot;
+  }
+  const merged = snapshot.slot.slice();
+  new DataView(merged.buffer, merged.byteOffset, merged.byteLength)
+    .setInt32(OFD_REFCOUNT_OFFSET, currentRefcount, true);
+  return merged;
+}
+
 function preserveFcntlSetflAccessMode(
   handle: ProcessHandle,
   msg: StatusMessageLike,
@@ -578,7 +605,13 @@ export function applyThreadOfdSlots(
       ) {
         continue;
       }
-      const statusMergedSlot = preserveFcntlSetflAccessMode(handle, msg, snapshot, slotBytes);
+      const refcountMergedSlot = preserveLiveOfdRefcount(handle, snapshot, slotBytes);
+      const statusMergedSlot = preserveFcntlSetflAccessMode(
+        handle,
+        msg,
+        { ...snapshot, slot: refcountMergedSlot },
+        slotBytes,
+      );
       const slot = preserveLiveEpollDependentStatusFlags(
         handle,
         msg,

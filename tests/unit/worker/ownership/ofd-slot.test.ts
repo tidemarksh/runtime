@@ -160,6 +160,21 @@ function makeHandle(memory: WebAssembly.Memory): ProcessHandle {
   } as unknown as ProcessHandle;
 }
 
+test("applyThreadOfdSlots preserves a higher live OFD refcount", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const handle = makeHandle(memory);
+  const candidate = writeRegularFileSlot(memory, 4, 64n);
+  const current = new DataView(memory.buffer, ofdTablePtr + 4 * slotBytes, slotBytes);
+  current.setInt32(OFD_REFCOUNT_OFFSET, 2, true);
+
+  applyThreadOfdSlots(handle, {
+    vmPtr: 0x1234,
+    ofdSlots: [{ ofdId: 4, slot: candidate }],
+  });
+
+  expect(current.getInt32(OFD_REFCOUNT_OFFSET, true)).toBe(2);
+});
+
 function currentOffset(memory: WebAssembly.Memory): bigint {
   return new DataView(memory.buffer).getBigInt64(
     ofdTablePtr + 4 * slotBytes + OFD_OFFSET_OFFSET,

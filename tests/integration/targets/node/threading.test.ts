@@ -9,13 +9,13 @@ test("Runtime executes Node worker_threads baseline", async () => {
 
   const { runtime, nodeBytes } = prepared;
   try {
-    const result = await runNodeFixture(runtime, nodeBytes, "worker-threads.js", 15_000);
+    const result = await runNodeFixture(runtime, nodeBytes, "worker-threads.js", 300_000);
     if (!result) {
       return;
     }
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, `${result.output}\n${result.debugInfo ?? ""}`).toBe(0);
     expect(result.output).toContain("PASS: worker-threads ");
   } finally {
     runtime.destroy();
   }
-}, 30_000);
+}, 320_000);

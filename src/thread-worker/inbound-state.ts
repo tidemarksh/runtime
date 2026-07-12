@@ -14,6 +14,13 @@ import type {
   KernelWorkerSocketStateSnapshot,
   ThreadWorkerProcessIdentity,
 } from "../messages.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_REFCOUNT_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../layout/ofd.js";
 
 export interface ThreadWorkerInboundStateContext {
   kernelExports: KernelExports;
@@ -234,7 +241,6 @@ function applySocketState(
 function applyOfdSlots(
   kernelExports: KernelExports,
   kernelState: KernelRuntimeState,
-  protectedOfdId: number,
   ofdSlots?: KernelWorkerOfdSlotSnapshot[],
 ): void {
   if (!ofdSlots || ofdSlots.length === 0) {
@@ -247,16 +253,67 @@ function applyOfdSlots(
     return;
   }
   const memory = new Uint8Array(kernelExports.memory.buffer);
+  const decideWrite = kernelExports.supervisor_ofd_slot_write_action;
+  const skipWrite = kernelExports.supervisor_fd_entry_restore_action_skip?.();
   for (const snapshot of ofdSlots) {
     if (
       snapshot.ofdId <= 0
       || snapshot.ofdId >= maxFds
-      || (protectedOfdId > 0 && snapshot.ofdId === protectedOfdId)
       || snapshot.slot.length !== slotBytes
     ) {
       continue;
     }
-    memory.set(snapshot.slot, kernelState.ofdTablePtr + snapshot.ofdId * slotBytes);
+    const currentType = kernelExports.supervisor_ofd_fd_type?.(snapshot.ofdId)
+      ?? kernelExports.kernel_ofd_fd_type?.(snapshot.ofdId)
+      ?? 0;
+    const candidate = snapshot.slot.byteLength >= OFD_OFFSET_OFFSET + BigInt64Array.BYTES_PER_ELEMENT
+      ? new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength)
+      : null;
+    const candidateType = candidate?.getInt32(OFD_TYPE_OFFSET, true) ?? 0;
+    let writeAction: number | undefined;
+    if (
+      decideWrite !== undefined
+      && skipWrite !== undefined
+      && candidate !== null
+    ) {
+      writeAction = decideWrite(
+        snapshot.ofdId,
+        candidateType,
+        candidate.getInt32(OFD_HOST_FD_OFFSET, true),
+        candidate.getUint32(OFD_INO_OFFSET, true),
+        candidate.getBigInt64(OFD_OFFSET_OFFSET, true),
+      );
+      if (writeAction === skipWrite) {
+        if (currentType !== candidateType) {
+          recordInboundGuestWriteDebug(
+            `thread-inbound-ofd:skip:id=${snapshot.ofdId}:current=${currentType}:candidate=${candidateType}`,
+          );
+        }
+        continue;
+      }
+    }
+    let appliedSlot = snapshot.slot;
+    const targetOffset = kernelState.ofdTablePtr + snapshot.ofdId * slotBytes;
+    if (currentType !== 0 && currentType === candidateType) {
+      const currentRefcount = new DataView(memory.buffer, targetOffset, slotBytes)
+        .getInt32(OFD_REFCOUNT_OFFSET, true);
+      const candidateRefcount = candidate?.getInt32(OFD_REFCOUNT_OFFSET, true) ?? 0;
+      if (currentRefcount > candidateRefcount) {
+        appliedSlot = snapshot.slot.slice();
+        new DataView(appliedSlot.buffer, appliedSlot.byteOffset, appliedSlot.byteLength)
+          .setInt32(OFD_REFCOUNT_OFFSET, currentRefcount, true);
+      }
+    }
+    memory.set(appliedSlot, targetOffset);
+    if (currentType !== candidateType) {
+      const afterType = kernelExports.supervisor_ofd_fd_type?.(snapshot.ofdId)
+        ?? kernelExports.kernel_ofd_fd_type?.(snapshot.ofdId)
+        ?? 0;
+      recordInboundGuestWriteDebug(
+        `thread-inbound-ofd:apply:id=${snapshot.ofdId}:current=${currentType}`
+          + `:candidate=${candidateType}:action=${writeAction ?? "none"}:after=${afterType}`,
+      );
+    }
   }
 }
 
@@ -284,7 +341,6 @@ function ofdIsPipeLike(kernelExports: KernelExports, ofdId: number): boolean {
 function applyFdEntries(
   kernelExports: KernelExports,
   targetVmPtr: number,
-  protectedOfdId: number,
   runtimeBridge: RuntimeStateBridge | null | undefined,
   fdEntries?: KernelWorkerFdEntrySnapshot[],
 ): void {
@@ -298,7 +354,6 @@ function applyFdEntries(
       || entry.fd >= maxFds
       || entry.ofdId < 0
       || entry.ofdId >= maxFds
-      || (protectedOfdId > 0 && entry.ofdId === protectedOfdId)
       || (
         entry.authorityEpoch !== undefined
         && runtimeBridge !== null
@@ -315,6 +370,29 @@ function applyFdEntries(
     if (currentOfdId === entry.ofdId && currentFdFlags === entry.fdFlags) {
       continue;
     }
+    const restoreAction = kernelExports.supervisor_fd_entry_restore_action;
+    const restoreSkip = kernelExports.supervisor_fd_entry_restore_action_skip?.();
+    const regularFileFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_regular_file?.() ?? 0;
+    const epollDependentFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent?.() ?? 0;
+    const restoreFlags = regularFileFlag | epollDependentFlag;
+    let restoreDecision: number | undefined;
+    if (
+      restoreAction
+      && restoreSkip !== undefined
+      && restoreFlags !== 0
+      && (restoreDecision = restoreAction(
+        targetVmPtr,
+        entry.fd,
+        entry.ofdId,
+        SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE,
+        restoreFlags,
+      )) === restoreSkip
+    ) {
+      recordInboundGuestWriteDebug(
+        `thread-inbound-fd:skip:fd=${entry.fd}:current=${currentOfdId}:candidate=${entry.ofdId}`,
+      );
+      continue;
+    }
     const currentGeneration = kernelExports.process_fd_generation?.(targetVmPtr, entry.fd);
     if (
       entry.generation !== undefined
@@ -327,27 +405,12 @@ function applyFdEntries(
       if (ofdIsPipeLike(kernelExports, currentOfdId)) {
         continue;
       }
-      const restoreAction = kernelExports.supervisor_fd_entry_restore_action;
-      const restoreSkip = kernelExports.supervisor_fd_entry_restore_action_skip?.();
-      const regularFileFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_regular_file?.() ?? 0;
-      const epollDependentFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent?.() ?? 0;
-      const restoreFlags = regularFileFlag | epollDependentFlag;
-      if (
-        restoreAction
-        && restoreSkip !== undefined
-        && restoreFlags !== 0
-        && restoreAction(
-          targetVmPtr,
-          entry.fd,
-          entry.ofdId,
-          SUPERVISOR_FD_ENTRY_RESTORE_SYSCALL_NONE,
-          restoreFlags,
-        ) === restoreSkip
-      ) {
-        continue;
-      }
     }
     kernelExports.process_set_fd_entry(targetVmPtr, entry.fd, entry.ofdId, entry.fdFlags);
+    recordInboundGuestWriteDebug(
+      `thread-inbound-fd:apply:fd=${entry.fd}:current=${currentOfdId}`
+        + `:candidate=${entry.ofdId}:action=${restoreDecision ?? "none"}`,
+    );
   }
 }
 
@@ -365,19 +428,15 @@ export function applyThreadWorkerInboundState(
   payload: ThreadWorkerInboundStatePayload,
 ): void {
   const { kernelExports } = context;
-  const protectedOfdId = payload.targetVmPtr === 0
-    ? 0
-    : (kernelExports.thread_blocked_ofd_id?.(payload.targetVmPtr) ?? 0);
   if (payload.guestWriteWatchRegions !== undefined) {
     activeGuestWriteWatchRegions = payload.guestWriteWatchRegions;
   }
   applyProcessIdentity(kernelExports, payload.targetVmPtr, payload.processIdentity);
-  applyOfdSlots(kernelExports, payload.kernelState, protectedOfdId, payload.ofdSlots);
+  applyOfdSlots(kernelExports, payload.kernelState, payload.ofdSlots);
   if (fdEntriesTargetCurrentProcess(kernelExports, payload.targetVmPtr, payload.processIdentity)) {
     applyFdEntries(
       kernelExports,
       payload.targetVmPtr,
-      protectedOfdId,
       context.runtimeBridge,
       payload.fdEntries,
     );

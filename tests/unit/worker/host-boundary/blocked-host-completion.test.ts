@@ -225,6 +225,47 @@ test("host boundary replaces active supervisor host timer for the same thread", 
   ]);
 });
 
+test("host boundary retains an earlier deadline while completing the latest timer record", async () => {
+  vi.useFakeTimers();
+  const worker = { postMessage: vi.fn() } as unknown as Worker;
+  const kernel = makeHostBoundaryKernel();
+  const handle = makeHostBoundaryHandle(kernel, worker);
+  const memory = new WebAssembly.Memory({ initial: 6, maximum: 6, shared: true });
+  const completionViews: DataView[] = [];
+  const runtimeEvents: string[] = [];
+  kernel.memory = memory;
+  handle.memory = memory;
+  Object.assign(kernel, {
+    supervisor_host_completion_record_bytes: () => 64,
+    supervisor_host_completion_record_magic: () => 0x4348_5354,
+    supervisor_host_completion_outcome_success: () => 1,
+    supervisor_host_completion_outcome_failure: () => 2,
+    supervisor_complete_host_op: vi.fn((completionPtr: number, completionLen: number) => {
+      completionViews.push(new DataView(memory.buffer, completionPtr, completionLen));
+      return 0;
+    }),
+  });
+  const deps = {
+    appendRuntimeLifecycleEvent: (_runtimeId: number, event: string) => runtimeEvents.push(event),
+    appendWorkerDebugLog: vi.fn(),
+    failProcess: (_handle: typeof handle, error: Error) => { throw error; },
+    pumpProcess: vi.fn(),
+  };
+  const timerRecord = (seq: bigint) => ({
+    kind: 12, seq, parentVmPtr: 0x1234, childVmPtr: 0, tid: 2,
+    processPtr: 0x2000, status: kernel.abi_status_futex_wait(), flags: 20n, childTidPtr: 0n,
+  });
+
+  armSupervisorHostTimer(handle, timerRecord(1n), deps);
+  await vi.advanceTimersByTimeAsync(10);
+  armSupervisorHostTimer(handle, timerRecord(2n), deps);
+  await vi.advanceTimersByTimeAsync(10);
+
+  expect(kernel.supervisor_complete_host_op).toHaveBeenCalledTimes(1);
+  expect(completionViews[0]?.getBigUint64(16, true)).toBe(2n);
+  expect(runtimeEvents.some((event) => event.startsWith("supervisor-host-timer-retain"))).toBe(true);
+});
+
 test("host boundary clears active supervisor host timer before completion", async () => {
   vi.useFakeTimers();
   const worker = { postMessage: vi.fn() } as unknown as Worker;
