@@ -111,6 +111,18 @@ function notifySupervisorFutexWaiter(handle: ProcessHandle, record: SupervisorRe
   Atomics.notify(i32, index, 1);
 }
 
+function completeSupervisorFutexWake(handle: ProcessHandle, record: SupervisorResumeRecord): void {
+  const completionCode = handle.kernel.supervisor_futex_wait_completion_woken;
+  const complete = handle.kernel.supervisor_complete_futex_wait;
+  if (completionCode === undefined || complete === undefined) {
+    throw new Error("kernel supervisor ABI missing futex wake completion exports");
+  }
+  const result = complete.call(handle.kernel, record.vmPtr, completionCode.call(handle.kernel));
+  if (result < 0) {
+    throw new Error(`kernel supervisor futex wake completion failed: ${result}`);
+  }
+}
+
 function supervisorAbiVersion(handle: ProcessHandle): number {
   const exportFn = handle.kernel.supervisor_abi_version;
   if (exportFn === undefined) {
@@ -486,6 +498,7 @@ export function createSupervisorResumeHostBoundary(
   ): void {
     const label = supervisorResumeKindLabel(handle, record.kind);
     if (record.kind === supervisorResumeKindFutexWake(handle)) {
+      completeSupervisorFutexWake(handle, record);
       notifySupervisorFutexWaiter(handle, record);
     }
     clearThreadWaitingInWorkerStatus(thread);

@@ -129,7 +129,10 @@ test("host boundary selects supervisor futex wake records for thread-worker comp
 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(1);
   expect(kernel.supervisor_process_resume).not.toHaveBeenCalled();
-  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
+  expect(kernel.supervisor_complete_futex_wait).toHaveBeenCalledWith(
+    selectedThread.vmPtr,
+    kernel.supervisor_futex_wait_completion_woken(),
+  );
   expect(notify).toHaveBeenCalledWith(expect.any(Int32Array), 0xfee0 / 4, 1);
   expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(unselectedThread as never)).toBeNull();

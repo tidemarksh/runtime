@@ -6484,7 +6484,10 @@ test("pumpProcess selects supervisor futex wake resumes when supervisor queue is
 
   expect(kernel.supervisor_next_resume).toHaveBeenCalledTimes(1);
   expect(kernel.supervisor_process_resume).not.toHaveBeenCalled();
-  expect(kernel.supervisor_complete_futex_wait).not.toHaveBeenCalled();
+  expect(kernel.supervisor_complete_futex_wait).toHaveBeenCalledWith(
+    selectedThread.vmPtr,
+    kernel.supervisor_futex_wait_completion_woken(),
+  );
   expect(getThreadWaitingInWorkerStatus(selectedThread as never)).toBeNull();
   expect(getThreadWaitingInWorkerStatus(unselectedThread as never)).toBeNull();
   expect(hostExecutionState(handle).runningWorker).toBe(selectedWorker);

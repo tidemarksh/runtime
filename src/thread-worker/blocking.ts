@@ -153,6 +153,11 @@ export function handleFutexWait(
       completeSupervisorFutexWait(ctx, "woken");
       break;
     }
+    if (result === "ok") {
+      clearSyscallTrace(ctx.exports);
+      completeSupervisorFutexWait(ctx, "woken");
+      break;
+    }
     if (result === "not-equal") {
       clearSyscallTrace(ctx.exports);
       completeSupervisorFutexWait(ctx, "not-equal");

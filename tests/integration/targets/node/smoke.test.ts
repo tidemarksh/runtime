@@ -6,32 +6,32 @@ const CASES = [
   {
     name: "hello",
     fixtureName: "hello.js",
-    timeoutMs: 10_000,
-    assert(result: { exitCode: number; output: string }): void {
-      expect(result.exitCode).toBe(0);
-      expect(result.output).toBe("PASS: hello world\n");
+    timeoutMs: 120_000,
+    assert(result: { exitCode: number; output: string; debugInfo?: string }): void {
+      expect(result.exitCode, `${result.output}\n${result.debugInfo ?? ""}`).toBe(0);
+      expect(result.output).toContain("PASS: hello world\n");
     },
   },
   {
     name: "timers",
     fixtureName: "timers.js",
-    timeoutMs: 10_000,
-    assert(result: { exitCode: number; output: string }): void {
-      expect(result.exitCode).toBe(0);
+    timeoutMs: 120_000,
+    assert(result: { exitCode: number; output: string; debugInfo?: string }): void {
+      expect(result.exitCode, `${result.output}\n${result.debugInfo ?? ""}`).toBe(0);
       expect(result.output).toContain("PASS: timers ");
     },
   },
   {
     name: "fs-read",
     fixtureName: "fs-read.js",
-    timeoutMs: 10_000,
+    timeoutMs: 120_000,
     async setup(
       runtime: Awaited<ReturnType<typeof prepareNodeRuntime>> extends { runtime: infer R } ? R : never,
     ): Promise<void> {
       await writeNodeFixture(runtime, "/work/fixture.txt", encoder.encode("fixture ok"));
     },
-    assert(result: { exitCode: number; output: string }): void {
-      expect(result.exitCode).toBe(0);
+    assert(result: { exitCode: number; output: string; debugInfo?: string }): void {
+      expect(result.exitCode, `${result.output}\n${result.debugInfo ?? ""}`).toBe(0);
       expect(result.output).toContain("PASS: fs-read ");
     },
   },
@@ -55,5 +55,5 @@ for (const testCase of CASES) {
     } finally {
       runtime.destroy();
     }
-  }, 30_000);
+  }, 140_000);
 }

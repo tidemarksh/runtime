@@ -248,7 +248,6 @@ test("handleFutexWait reports selected wake completion to supervisor when availa
     expect(view.buffer).toBe(memory.buffer);
     expect(index).toBe(waitAddr >>> 2);
     expect(value).toBe(expected);
-    blockedAddr = 0n;
     return "ok";
   });
 
