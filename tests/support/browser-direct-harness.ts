@@ -288,6 +288,7 @@ function fixtureModuleSource(): string {
     "  const runtime = await Runtime.create({ wasmBytes, ...config.runtimeOptions });",
     "  await runtime.applyFsSnapshot(decodeSnapshot(config.snapshot));",
     "  let preparedShell = null;",
+    "  let activeProc = null;",
     "  window.__tidemarkBrowserDirect = {",
     "    async run() {",
     "      if (config.prepareShell && !preparedShell) {",
@@ -309,6 +310,7 @@ function fixtureModuleSource(): string {
     "      }",
     "      const elfBytes = await runtime.readFile(config.run.executablePath);",
     "      const proc = await runtime.spawn(elfBytes, config.run.argv, config.run.env, config.run.cwd ? { cwd: config.run.cwd } : {});",
+    "      activeProc = proc;",
     "      let output = '';",
     "      proc.onStdout((data) => { output += decoder.decode(data); });",
     "      try {",
@@ -320,6 +322,12 @@ function fixtureModuleSource(): string {
     "      }",
     "    },",
     "    failureSnapshot() { return runtime.debugLastFailureSnapshot() ?? null; },",
+    "    debugState() {",
+    "      return {",
+    "        snapshot: runtime.debugSnapshot(),",
+    "        processDebug: activeProc?.debugInfo() ?? null,",
+    "      };",
+    "    },",
     "  };",
     "  window.__tidemarkBrowserDirectReady = true;",
     "  document.getElementById('app').textContent = 'ready';",
@@ -497,6 +505,22 @@ async function waitForFixtureReady(client: CdpClient, timeoutMs: number): Promis
   );
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export async function runBrowserDirectStartupEntry(
   entry: BrowserDirectStartupEntry,
 ): Promise<BrowserDirectStartupResult | null> {
@@ -580,17 +604,25 @@ export async function runBrowserDirectStartupEntry(
       );
     });
     await waitForFixtureReady(client, entry.timeoutMs);
-    const result = await client.eval<BrowserDirectStartupResult>(
-      "window.__tidemarkBrowserDirect.run()",
+    const result = await withTimeout(
+      client.eval<BrowserDirectStartupResult>("window.__tidemarkBrowserDirect.run()"),
+      entry.timeoutMs,
+      `browser direct run timed out after ${entry.timeoutMs}ms`,
     );
     return result;
   } catch (error) {
-    const domText = client
-      ? await client.eval<string | null>("document.body?.innerText ?? null").catch(() => null)
-      : null;
+    const [domText, failureSnapshot, debugState] = client
+      ? await Promise.all([
+          client.eval<string | null>("document.body?.innerText ?? null").catch(() => null),
+          client.eval<unknown>("window.__tidemarkBrowserDirect?.failureSnapshot?.() ?? null").catch(() => null),
+          client.eval<unknown>("window.__tidemarkBrowserDirect?.debugState?.() ?? null").catch(() => null),
+        ])
+      : [null, null, null];
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error([
       detail,
+      `failureSnapshot=${JSON.stringify(failureSnapshot)}`,
+      `debugState=${JSON.stringify(debugState)}`,
       `browserConsole=${JSON.stringify(browserConsole)}`,
       `browserExceptions=${JSON.stringify(browserExceptions)}`,
       `chromeStderr=${JSON.stringify(chromeStderr.trim())}`,
