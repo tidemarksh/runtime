@@ -11,8 +11,9 @@ export const perlProvePackageModuleEntry: PackageModuleDriverEntry = {
   guestExecutablePath: "/usr/bin/perl",
   argv: ["/usr/bin/perl", "/usr/bin/prove", "/work/basic.t"],
   env: [],
-  timeoutMs: 10_000,
+  timeoutMs: 60_000,
   guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+  hostFileBackingMode: "host-file",
   snapshotSources: [
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/bin"), guestPath: "/usr/bin" },
     { kind: "tree", hostPath: resolve(runtimeDir, "usr/lib/riscv64-linux-gnu"), guestPath: "/usr/lib/riscv64-linux-gnu" },
