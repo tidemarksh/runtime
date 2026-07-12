@@ -874,6 +874,10 @@ test("flushStdin writes inherited stdin without breaking the next output drain",
   setPipeEnds(handle.memory, handle.kernelState, processStdinPipe(handle), 1, 1);
   stdinQueue(handle).push(new TextEncoder().encode(stdinText));
   expect(flushStdin(handle)).toBe(true);
+  const pendingStdin = snapshotPendingPipeSlotSnapshots(handle);
+  expect(pendingStdin).toHaveLength(1);
+  expect(pendingStdin[0].pipeSlot).toBe(processStdinPipe(handle));
+  expect(pendingStdin[0].mode).toBe(2);
   expect(decoder.decode(readPipe(handle.memory, handle.kernelState.pipeBase, processStdinPipe(handle)).data)).toBe(stdinText);
 
   seedPipe(handle.memory, handle.kernelState, processStdoutPipe(handle), "stdout-tail\n");
@@ -929,24 +933,38 @@ test("flushStdin supports a second child capture phase after the first inherited
 });
 
 test("flushStdin routes controlling-tty input through process_host_write_stdin", () => {
-  const hostWrite = vi.fn((_vmPtr: number, _srcPtr: number, srcLen: number) => srcLen);
+  let targetHandle: ProcessHandle;
+  const hostWrite = vi.fn((_vmPtr: number, _srcPtr: number, srcLen: number) => {
+    writePipe(targetHandle.memory, targetHandle.kernelState.pipeBase, processStdinPipe(targetHandle), new TextEncoder().encode("ls\n"));
+    writePipe(targetHandle.memory, targetHandle.kernelState.pipeBase, processStdoutPipe(targetHandle), new TextEncoder().encode("ls\r\n"));
+    return srcLen;
+  });
   const { handle } = makeHandle({
     stdinPipe: 3,
     ttyPtySlot: 1,
     kernel: {
       process_release_host_stdio: vi.fn(),
       process_host_write_stdin: hostWrite,
+      abi_max_pipes: () => 64,
+      kernel_pipe_region_bytes: () => 64 * (32 + 65_536),
       kernel_heap_ptr: () => 0x2000,
       memory: new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true }),
     } as unknown as KernelExports,
   });
+  targetHandle = handle;
   handle.memory = (handle.kernel as unknown as KernelExports).memory;
+  setPipeEnds(handle.memory, handle.kernelState, processStdinPipe(handle), 1, 1);
+  setPipeEnds(handle.memory, handle.kernelState, processStdoutPipe(handle), 1, 1);
   stdinQueue(handle).push(new TextEncoder().encode("ls\n"));
 
   expect(flushStdin(handle)).toBe(true);
   expect(hostWrite).toHaveBeenCalledTimes(1);
   expect(hostWrite).toHaveBeenCalledWith(handle.vmPtr, expect.any(Number), 3);
   expect(stdinQueue(handle)).toHaveLength(0);
+  expect(snapshotPendingPipeSlotSnapshots(handle).map(({ pipeSlot, mode }) => ({ pipeSlot, mode }))).toEqual([
+    { pipeSlot: processStdinPipe(handle), mode: 2 },
+    { pipeSlot: processStdoutPipe(handle), mode: 2 },
+  ]);
 });
 
 test("releaseSharedHostStdioViaKernelWorker clears local pipe slots while other shared references remain", async () => {

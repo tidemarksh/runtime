@@ -14,6 +14,7 @@ import {
   PIPE_READ_OPEN_OFFSET,
   PIPE_SLOT_BYTES,
   PIPE_SLOT_MODE_READ,
+  PIPE_SLOT_MODE_WRITE,
   PIPE_TAIL_OFFSET,
   PIPE_WRITE_OPEN_OFFSET,
 } from "../../layout/pipe.js";
@@ -251,6 +252,43 @@ function queueDrainedPipeReadProgress(handle: ProcessHandle, pipeSlot: number): 
   replacePendingPipeSlotSnapshotForSlot(handle, snapshot);
 }
 
+function queueWrittenPipeProgress(handle: ProcessHandle, pipeSlot: number): void {
+  const maxPipes = handle.kernel.abi_max_pipes?.() ?? 0;
+  const pipeRegionBytes = handle.kernel.kernel_pipe_region_bytes?.() ?? 0;
+  const slotBytes = maxPipes > 0 ? pipeRegionBytes / maxPipes : 0;
+  if (
+    pipeSlot <= 0
+    || pipeSlot >= maxPipes
+    || !Number.isInteger(slotBytes)
+    || slotBytes <= PIPE_HEADER_BYTES
+  ) {
+    return;
+  }
+  const offset = handle.kernelState.pipeBase + pipeSlot * slotBytes;
+  const view = new DataView(handle.memory.buffer, offset, slotBytes);
+  if (view.getUint32(PIPE_HEAD_OFFSET, true) === view.getUint32(PIPE_TAIL_OFFSET, true)) {
+    return;
+  }
+  replacePendingPipeSlotSnapshotForSlot(handle, {
+    pipeSlot,
+    slot: new Uint8Array(handle.memory.buffer).slice(offset, offset + slotBytes),
+    mode: PIPE_SLOT_MODE_WRITE,
+  });
+}
+
+function queueStdinHostWriteProgress(handle: ProcessHandle): void {
+  const slots = [
+    processStdinPipe(handle),
+    processStdoutPipe(handle),
+    processStderrPipe(handle),
+  ];
+  for (const pipeSlot of new Set(slots)) {
+    if (pipeSlot > 0) {
+      queueWrittenPipeProgress(handle, pipeSlot);
+    }
+  }
+}
+
 export function stdioPipeSlotForFd(handle: ProcessHandle, fd: number): number {
   return supervisorProcessPipeSlotForFd(handle, handle.vmPtr, fd);
 }
@@ -364,6 +402,7 @@ export function flushStdin(handle: ProcessHandle): boolean {
         break;
       }
       wrote = true;
+      queueStdinHostWriteProgress(handle);
       if (written >= chunk.length) {
         queue.shift();
         continue;
@@ -380,6 +419,7 @@ export function flushStdin(handle: ProcessHandle): boolean {
         break;
       }
       wrote = true;
+      queueStdinHostWriteProgress(handle);
       if (result.written >= chunk.length) {
         queue.shift();
         continue;
