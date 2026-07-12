@@ -170,6 +170,7 @@ export async function runNodeFixture(
   fixtureName: string,
   timeoutMs: number,
   argv: readonly string[] = [],
+  env: readonly string[] = [],
 ): Promise<{ exitCode: number; output: string; debugInfo?: string } | null> {
   const fixture = readNodeFixture(fixtureName);
   if (!fixture) {
@@ -181,7 +182,7 @@ export async function runNodeFixture(
       runtime,
       nodeBytes,
       ["/bin/node", "/test.js", ...argv],
-      [],
+      env,
       timeoutMs,
     );
   } catch (error) {
