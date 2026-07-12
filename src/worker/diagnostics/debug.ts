@@ -1792,11 +1792,13 @@ export function debugRuntimeProcessHandles(
             + `/a0=${a0 === undefined ? "n/a" : `0x${a0.toString(16)}`}`
             + `/a7=${a7 === undefined ? "n/a" : `0x${a7.toString(16)}`}`;
         }).filter(Boolean).join(",");
+        const referencedOfdIds = new Set<number>();
         const fdSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
           const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (ofdId === 0) {
             return null;
           }
+          referencedOfdIds.add(ofdId);
           return [
             `${fd}->${ofdId}`,
             `flags=${supervisorProcessFdFlagsForFd(handle, handle.vmPtr, fd)}`,
@@ -1808,6 +1810,22 @@ export function debugRuntimeProcessHandles(
             `offset=${supervisorOfdOffset(handle, ofdId).toString()}`,
           ].join("/");
         }).filter(Boolean).join(" ");
+        const orphanOfdSummary = Array.from(
+          { length: handle.kernel.abi_max_fds() - 1 },
+          (_, index) => index + 1,
+        ).flatMap((ofdId) => {
+          const refcount = handle.kernel.kernel_ofd_refcount(ofdId);
+          const reserved = handle.kernel.kernel_ofd_reserved?.(ofdId) ?? 0;
+          const held = handle.kernel.supervisor_process_held_ofd_refcount?.(handle.vmPtr, ofdId) ?? 0;
+          if (referencedOfdIds.has(ofdId) || held > 0 || (refcount <= 0 && reserved === 0)) {
+            return [];
+          }
+          return [
+            `${ofdId}/type=${handle.kernel.kernel_ofd_fd_type(ofdId)}`
+              + `/ref=${refcount}/reserved=${reserved}`
+              + `/ino=${handle.kernel.kernel_ofd_ino(ofdId)}`,
+          ];
+        }).slice(0, 32).join(" ");
         const epollSummary = Array.from({ length: handle.kernel.abi_max_fds() }, (_, fd) => {
           const ofdId = supervisorProcessOfdForFd(handle, handle.vmPtr, fd);
           if (
@@ -1925,6 +1943,7 @@ export function debugRuntimeProcessHandles(
             .join(" ")}]`,
           `shared_ofds=[${kernelShareSharedOfdIdList(handle).sort((left, right) => left - right).join(",")}]`,
           `fds=[${fdSummary}]`,
+          `orphan_ofds=[${orphanOfdSummary}]`,
           `epolls=[${epollSummary}]`,
           `worker_net=[${networkLogSummary}]`,
           `network_fds=[${networkFdSummary}]`,
