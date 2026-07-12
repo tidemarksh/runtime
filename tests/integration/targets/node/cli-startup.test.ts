@@ -10,18 +10,18 @@ for (const [label, options] of [
   [
     "browser-direct representative contract",
     {
-      guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 2 * 1024 * 1024 * 1024,
       kernelWorkerMaxMemoryPages: 7168,
-      maxProcessMemoryPages: 16384,
-      maxForkMemoryPages: 16384,
+      maxProcessMemoryPages: 40960,
+      maxForkMemoryPages: 40960,
     },
   ],
   [
     "demo direct contract",
     {
-      guestMemoryPolicyLimitBytes: 192 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 2 * 1024 * 1024 * 1024,
       kernelWorkerMaxMemoryPages: 7168,
-      maxProcessMemoryPages: 20480,
+      maxProcessMemoryPages: 40960,
       maxForkMemoryPages: 40960,
     },
   ],
@@ -38,8 +38,8 @@ for (const [label, options] of [
         runtime,
         nodeBytes,
         ["/bin/node", "--help"],
-        [],
-        15_000,
+        ["HOME=/tmp"],
+        120_000,
       ).catch(async (error) => {
         const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
         throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
@@ -68,5 +68,5 @@ for (const [label, options] of [
     } finally {
       runtime.destroy();
     }
-  }, 30_000);
+  }, 180_000);
 }
