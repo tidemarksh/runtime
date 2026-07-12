@@ -312,6 +312,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           kernelState: msg.kernelState,
           targetVmPtr: msg.vmPtr,
           processIdentity: msg.processIdentity,
+          exitedThreads: msg.exitedThreads,
           ofdSlots: msg.ofdSlots,
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,
@@ -336,6 +337,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           kernelState: msg.kernelState,
           targetVmPtr: vmPtr,
           processIdentity: msg.processIdentity,
+          exitedThreads: msg.exitedThreads,
           ofdSlots: msg.ofdSlots,
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,
@@ -347,6 +349,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           vmPtr,
           guestBase,
           resumeBlockedSyscall: msg.resumeBlockedSyscall === true,
+          resumeBlockedSyscallTimeoutExpired: msg.resumeBlockedSyscallTimeoutExpired === true,
           pipeResumeDebugEnabled: PIPE_RESUME_DEBUG_ENABLED,
           applyGuestMemoryWrites() {
             applyThreadWorkerGuestMemoryWrites({ kernelExports, guestBase }, msg.guestMemoryWrites);

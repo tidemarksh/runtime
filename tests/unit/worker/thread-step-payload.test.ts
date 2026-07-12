@@ -1,5 +1,6 @@
 import { expect, test } from "vite-plus/test";
 import {
+  appendPendingExitedThreadForNextStep,
   appendPendingAuthoritativeFdForNextStep,
   recordPostedFdEntriesForNextStatus,
   recordPostedOfdSlotsForNextStatus,
@@ -7,6 +8,7 @@ import {
   takeChangedFdEntriesWithBaselineSincePosted,
   takeChangedOfdSlotsSincePosted,
   takePendingAuthoritativeFdEntriesForNextStep,
+  takePendingExitedThreadsForNextStep,
 } from "../../../src/worker/thread-step-payload.js";
 import {
   OFD_HOST_FD_OFFSET,
@@ -15,6 +17,19 @@ import {
   OFD_TYPE_OFFSET,
 } from "../../../src/layout/ofd.js";
 import type { ThreadWorkerState } from "../../../src/worker/types.js";
+
+test("exited-thread publications are deduplicated and consumed once", () => {
+  const thread = {} as ThreadWorkerState;
+  appendPendingExitedThreadForNextStep(thread, { vmPtr: 0x1234, tid: 2 });
+  appendPendingExitedThreadForNextStep(thread, { vmPtr: 0x1234, tid: 2 });
+  appendPendingExitedThreadForNextStep(thread, { vmPtr: 0x5678, tid: 3 });
+
+  expect(takePendingExitedThreadsForNextStep(thread)).toEqual([
+    { vmPtr: 0x1234, tid: 2 },
+    { vmPtr: 0x5678, tid: 3 },
+  ]);
+  expect(takePendingExitedThreadsForNextStep(thread)).toEqual([]);
+});
 
 test("posted FD baseline treats generation as descriptor incarnation state", () => {
   const thread = {} as ThreadWorkerState;

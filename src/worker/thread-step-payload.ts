@@ -5,6 +5,7 @@ import type {
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
 } from "../messages.js";
+import type { ThreadWorkerExitedThreadPublication } from "./contracts/thread-worker.js";
 import type { ThreadWorkerState } from "./types.js";
 
 interface ThreadStepPayloadState {
@@ -12,6 +13,7 @@ interface ThreadStepPayloadState {
   pendingAuthoritativeFdsForNextStep: Set<number>;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
   pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
+  pendingExitedThreads: ThreadWorkerExitedThreadPublication[];
   postedFdEntriesForNextStatus?: Map<number, KernelWorkerFdEntrySnapshot>;
   postedOfdSlotsForNextStatus?: Map<number, Uint8Array>;
 }
@@ -35,6 +37,7 @@ function stepPayloadState(thread: ThreadWorkerState): ThreadStepPayloadState {
       pendingAuthoritativeFdsForNextStep: new Set(),
       pendingPipeSlotsForNextStep: [],
       pendingGuestMemoryWrites: [],
+      pendingExitedThreads: [],
     };
     threadStepPayloadStates.set(thread, state);
   }
@@ -47,11 +50,38 @@ function clearIfIdle(thread: ThreadWorkerState, state: ThreadStepPayloadState): 
     && state.pendingAuthoritativeFdsForNextStep.size === 0
     && state.pendingPipeSlotsForNextStep.length === 0
     && state.pendingGuestMemoryWrites.length === 0
+    && state.pendingExitedThreads.length === 0
     && state.postedFdEntriesForNextStatus === undefined
     && state.postedOfdSlotsForNextStatus === undefined
   ) {
     threadStepPayloadStates.delete(thread);
   }
+}
+
+export function appendPendingExitedThreadForNextStep(
+  thread: ThreadWorkerState,
+  publication: ThreadWorkerExitedThreadPublication,
+): void {
+  const pending = stepPayloadState(thread).pendingExitedThreads;
+  if (!pending.some((item) => item.vmPtr === publication.vmPtr && item.tid === publication.tid)) {
+    pending.push(publication);
+  }
+}
+
+export function takePendingExitedThreadsForNextStep(
+  thread: ThreadWorkerState | null | undefined,
+): ThreadWorkerExitedThreadPublication[] {
+  if (thread === null || thread === undefined) {
+    return [];
+  }
+  const state = threadStepPayloadStates.get(thread);
+  if (!state || state.pendingExitedThreads.length === 0) {
+    return [];
+  }
+  const pending = state.pendingExitedThreads;
+  state.pendingExitedThreads = [];
+  clearIfIdle(thread, state);
+  return pending;
 }
 
 export function recordPostedFdEntriesForNextStatus(

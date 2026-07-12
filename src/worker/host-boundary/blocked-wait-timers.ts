@@ -34,6 +34,7 @@ export interface BlockedWaitTimersDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
+  markThreadWorkerBlockedTimeoutExpired(handle: ProcessHandle, vmPtr: number): void;
   pumpProcess(handle: ProcessHandle): void;
 }
 
@@ -301,6 +302,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
       failProcess: deps.failProcess,
       pumpProcess: (processHandle) => {
         supervisorArmedBlockedTimers.delete(blocked);
+        deps.markThreadWorkerBlockedTimeoutExpired(processHandle, blocked.vmPtr);
         deps.pumpProcess(processHandle);
       },
     });

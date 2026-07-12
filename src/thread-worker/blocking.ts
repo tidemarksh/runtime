@@ -52,6 +52,7 @@ export interface ThreadWorkerResumeBlockedSyscallContext {
   vmPtr: number;
   guestBase: number;
   resumeBlockedSyscall: boolean;
+  resumeBlockedSyscallTimeoutExpired: boolean;
   pipeResumeDebugEnabled: boolean;
   applyGuestMemoryWrites(): void;
   recordResumeBlockedDebug(debug: string): void;
@@ -77,7 +78,11 @@ export function resumeBlockedSyscallStep(
   const blockedArg0 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 0) ?? 0n;
   const blockedArg1 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 1) ?? 0n;
   const blockedArg2 = ctx.exports.thread_blocked_syscall_arg?.(ctx.vmPtr, 2) ?? 0n;
-  const resumeResult = resumeBlockedSyscallBySupervisor(ctx.exports, ctx.vmPtr);
+  const resumeResult = resumeBlockedSyscallBySupervisor(
+    ctx.exports,
+    ctx.vmPtr,
+    ctx.resumeBlockedSyscallTimeoutExpired,
+  );
   if (ctx.pipeResumeDebugEnabled) {
     ctx.recordResumeBlockedDebug([
       "thread-resume-blocked",

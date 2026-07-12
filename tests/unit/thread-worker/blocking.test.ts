@@ -29,6 +29,11 @@ test("resumeBlockedSyscallStep applies guest writes and returns a typed status o
   bytes[0x21] = "K".charCodeAt(0);
   const events: string[] = [];
   const recordResumeBlockedDebug = vi.fn();
+  const supervisorResumeBlockedSyscall = vi.fn((_vmPtr: number, flags: number) => {
+    events.push("resume");
+    expect(flags).toBe(8);
+    return 2n;
+  });
 
   const outcome = resumeBlockedSyscallStep({
     exports: {
@@ -38,16 +43,15 @@ test("resumeBlockedSyscallStep applies guest writes and returns a typed status o
       thread_reg: () => 4n,
       thread_blocked_syscall_nr: () => 63n,
       thread_blocked_syscall_arg: (_vmPtr: number, index: number) => [3n, 0x20n, 4n][index] ?? 0n,
-      supervisor_resume_blocked_syscall: () => {
-        events.push("resume");
-        return 2n;
-      },
+      supervisor_resume_flag_timeout_expired: () => 8,
+      supervisor_resume_blocked_syscall: supervisorResumeBlockedSyscall,
       abi_status_futex_wait: () => 20,
       thread_status: () => 0,
     } as never,
     vmPtr: 0x1234,
     guestBase: 0,
     resumeBlockedSyscall: true,
+    resumeBlockedSyscallTimeoutExpired: true,
     pipeResumeDebugEnabled: true,
     applyGuestMemoryWrites() {
       events.push("apply-writes");
@@ -56,6 +60,7 @@ test("resumeBlockedSyscallStep applies guest writes and returns a typed status o
   });
 
   expect(events).toEqual(["apply-writes", "resume"]);
+  expect(supervisorResumeBlockedSyscall).toHaveBeenCalledWith(0x1234, 8);
   expect(outcome).toEqual(createThreadWorkerStatusOutcome(0));
   expect(recordResumeBlockedDebug).toHaveBeenCalledWith(
     'thread-resume-blocked:fd=3:buf=0x20:count=4:saved=63/3/0x20/4:ret=2:status=0:data="OK"',

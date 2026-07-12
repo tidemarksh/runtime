@@ -69,6 +69,7 @@ import {
   recordPostedFdEntriesForNextStatus,
   recordPostedOfdSlotsForNextStatus,
   takePendingGuestMemoryWritesForNextStep,
+  takePendingExitedThreadsForNextStep,
   takePendingAuthoritativeFdEntriesForNextStep,
   takePendingKernelStateForNextStep,
   takePendingPipeSlotsForNextStep,
@@ -177,6 +178,7 @@ interface WorkerSchedulerQueueDeps {
   blockWorker(handle: ProcessHandle, worker: Worker, status: number, vmPtr: number): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
   takeThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): boolean;
+  takeThreadWorkerBlockedTimeoutExpired?(handle: ProcessHandle, worker: Worker): boolean;
   isSupervisorFutexWaiter(handle: ProcessHandle, worker: Worker): boolean;
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
@@ -925,12 +927,21 @@ export function createWorkerSchedulerQueueHelpers(
     if (pendingGuestMemoryWrites.length > 0) {
       stepMessage.guestMemoryWrites = pendingGuestMemoryWrites;
     }
-      if (thread) {
-        const pendingBlockedResume = deps.takeThreadWorkerBlockedResume(handle, next);
-        if (selectedForBlockedResume || pendingBlockedResume) {
-          stepMessage.resumeBlockedSyscall = true;
+    const pendingExitedThreads = takePendingExitedThreadsForNextStep(thread);
+    if (pendingExitedThreads.length > 0) {
+      stepMessage.exitedThreads = pendingExitedThreads;
+    }
+    if (thread) {
+      const pendingBlockedResume = deps.takeThreadWorkerBlockedResume(handle, next);
+      const blockedTimeoutExpired = deps.takeThreadWorkerBlockedTimeoutExpired?.(handle, next)
+        === true;
+      if (selectedForBlockedResume || pendingBlockedResume || blockedTimeoutExpired) {
+        stepMessage.resumeBlockedSyscall = true;
+        if (blockedTimeoutExpired) {
+          stepMessage.resumeBlockedSyscallTimeoutExpired = true;
         }
       }
+    }
     const postStartMs = FS_LIFECYCLE_DEBUG_ENABLED ? Date.now() : 0;
     if (FS_LIFECYCLE_DEBUG_ENABLED) {
       appendSchedulerFsTiming(

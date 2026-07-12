@@ -102,6 +102,25 @@ test("applyThreadWorkerInboundState applies fd, pipe, socket, guest write, and w
   expect(attachCall?.[11]).toBe(3n);
 });
 
+test("applyThreadWorkerInboundState delegates exited-thread publications to Kernel", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const kernelExports = makeKernelExports(memory);
+  const applyPublication = vi.fn(() => 0);
+  kernelExports.supervisor_apply_exited_thread_publication = applyPublication;
+
+  applyThreadWorkerInboundState({ kernelExports, guestBase: 0 }, {
+    kernelState: makeState(),
+    targetVmPtr: 0x1234,
+    exitedThreads: [
+      { vmPtr: 0x2000, tid: 2 },
+      { vmPtr: 0x3000, tid: 3 },
+    ],
+  });
+
+  expect(applyPublication).toHaveBeenNthCalledWith(1, 0x1234, 0x2000, 2);
+  expect(applyPublication).toHaveBeenNthCalledWith(2, 0x1234, 0x3000, 3);
+});
+
 test("applyThreadWorkerInboundState preserves a live OFD when Kernel rejects an inbound collision", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const bytes = new Uint8Array(memory.buffer);

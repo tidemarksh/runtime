@@ -13,6 +13,7 @@ import type {
   KernelWorkerPipeSlotSnapshot,
   KernelWorkerSocketStateSnapshot,
   ThreadWorkerProcessIdentity,
+  ThreadWorkerExitedThreadPublication,
 } from "../messages.js";
 import {
   OFD_HOST_FD_OFFSET,
@@ -32,6 +33,7 @@ export interface ThreadWorkerInboundStatePayload {
   kernelState: KernelRuntimeState;
   targetVmPtr: number;
   processIdentity?: ThreadWorkerProcessIdentity;
+  exitedThreads?: ThreadWorkerExitedThreadPublication[];
   ofdSlots?: KernelWorkerOfdSlotSnapshot[];
   fdEntries?: KernelWorkerFdEntrySnapshot[];
   socketState?: KernelWorkerSocketStateSnapshot;
@@ -80,6 +82,26 @@ function applyProcessIdentity(
     identity.ppid,
     identity.nextPid,
   );
+}
+
+function applyExitedThreads(
+  kernelExports: KernelExports,
+  targetVmPtr: number,
+  publications?: readonly ThreadWorkerExitedThreadPublication[],
+): void {
+  if (publications === undefined || publications.length === 0) {
+    return;
+  }
+  const apply = kernelExports.supervisor_apply_exited_thread_publication;
+  if (apply === undefined) {
+    throw new Error("kernel supervisor ABI missing supervisor_apply_exited_thread_publication");
+  }
+  for (const publication of publications) {
+    const result = apply.call(kernelExports, targetVmPtr, publication.vmPtr, publication.tid);
+    if (result < 0) {
+      throw new Error(`kernel supervisor exited thread publication failed: ${result}`);
+    }
+  }
 }
 
 function toKernelU64(value: number): bigint {
@@ -432,6 +454,7 @@ export function applyThreadWorkerInboundState(
     activeGuestWriteWatchRegions = payload.guestWriteWatchRegions;
   }
   applyProcessIdentity(kernelExports, payload.targetVmPtr, payload.processIdentity);
+  applyExitedThreads(kernelExports, payload.targetVmPtr, payload.exitedThreads);
   applyOfdSlots(kernelExports, payload.kernelState, payload.ofdSlots);
   if (fdEntriesTargetCurrentProcess(kernelExports, payload.targetVmPtr, payload.processIdentity)) {
     applyFdEntries(

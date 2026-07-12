@@ -21,6 +21,7 @@ export type {
 
 export type {
   ThreadWorkerErrorMessage,
+  ThreadWorkerExitedThreadPublication,
   ThreadWorkerInbound,
   ThreadWorkerOutbound,
   ThreadWorkerProcessIdentity,

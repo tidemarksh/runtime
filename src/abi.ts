@@ -972,6 +972,7 @@ export interface KernelExports {
   supervisor_signal_control_record?(outPtr: number, outLen: number): number;
   supervisor_debug_snapshot?(outPtr: number, outLen: number): number;
   supervisor_thread_state_snapshot?(vmPtr: number, outPtr: number, outLen: number): number;
+  supervisor_apply_exited_thread_publication?(vmPtr: number, exitedVmPtr: number, exitedTid: number): number;
   supervisor_futex_wait_completion_woken?(): number;
   supervisor_futex_wait_completion_not_equal?(): number;
   supervisor_futex_wait_completion_invalid_address?(): number;
@@ -2408,6 +2409,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_signal_control_record",
   "supervisor_debug_snapshot",
   "supervisor_thread_state_snapshot",
+  "supervisor_apply_exited_thread_publication",
   "supervisor_futex_wait_completion_woken",
   "supervisor_futex_wait_completion_not_equal",
   "supervisor_futex_wait_completion_invalid_address",

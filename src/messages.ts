@@ -17,6 +17,7 @@ export type {
   KernelWorkerResponse,
   KernelWorkerSocketStateSnapshot,
   ThreadWorkerErrorMessage,
+  ThreadWorkerExitedThreadPublication,
   ThreadWorkerInbound,
   ThreadWorkerMemoryPreserveRange,
   ThreadWorkerOutbound,

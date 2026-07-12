@@ -2331,6 +2331,11 @@ test("epoll kernel-worker retry completes timeout through supervisor timer HostO
   expect(kernel.thread_resume_blocked_syscall).not.toHaveBeenCalled();
   expect(lifecycleEvents).toContain("supervisor-host-timer-arm:1:vm=0x1234:seq=1:delay=0");
   expect(hostExecutionState(handle).hostBlockedWorkers.has(blockedWorker)).toBe(false);
+  expect(blockedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    resumeBlockedSyscall: true,
+    resumeBlockedSyscallTimeoutExpired: true,
+  }));
 });
 
 test("epoll sync timeout zero survives a running-worker retry skip", async () => {

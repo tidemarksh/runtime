@@ -1,5 +1,5 @@
 import { hostExecutionState } from "../host-execution-state.js";
-import { processHasWorker } from "../process-worker-state.js";
+import { processHasWorker, processWorkerList } from "../process-worker-state.js";
 import {
   supervisorBlockedEpollWaitTimeoutMs,
   supervisorBlockedInitialAction,
@@ -63,6 +63,7 @@ interface BlockWorkerOptions {
 export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerScheduler {
   const { threadWorkerStates } = deps;
   const threadWorkerBlockedResumeRequests = new WeakSet<Worker>();
+  const threadWorkerBlockedTimeoutExpired = new WeakSet<Worker>();
   let blockedWaitTimers: BlockedWaitTimers;
   let retryHostBlockedWorkerImpl: ((handle: ProcessHandle, worker: Worker) => void) | null = null;
 
@@ -81,6 +82,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearHostBlockedRetryTimer,
     takeThreadWorkerBlockedResume,
+    takeThreadWorkerBlockedTimeoutExpired,
     isSupervisorFutexWaiter,
     completeProcessExit: deps.completeProcessExit,
     failProcess: deps.failProcess,
@@ -99,6 +101,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendWorkerDebugLog,
     failProcess: deps.failProcess,
     retryHostBlockedWorker,
+    markThreadWorkerBlockedTimeoutExpired,
     pumpProcess,
   });
 
@@ -192,6 +195,26 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
       return false;
     }
     threadWorkerBlockedResumeRequests.delete(worker);
+    return true;
+  }
+
+  function markThreadWorkerBlockedTimeoutExpired(handle: ProcessHandle, vmPtr: number): void {
+    for (const worker of processWorkerList(handle)) {
+      if (threadWorkerStates.get(worker)?.vmPtr === vmPtr) {
+        threadWorkerBlockedTimeoutExpired.add(worker);
+        return;
+      }
+    }
+  }
+
+  function takeThreadWorkerBlockedTimeoutExpired(
+    _handle: ProcessHandle,
+    worker: Worker,
+  ): boolean {
+    if (!threadWorkerBlockedTimeoutExpired.has(worker)) {
+      return false;
+    }
+    threadWorkerBlockedTimeoutExpired.delete(worker);
     return true;
   }
 

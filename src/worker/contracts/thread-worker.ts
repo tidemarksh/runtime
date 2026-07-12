@@ -18,6 +18,11 @@ export interface ThreadWorkerProcessIdentity {
   nextPid: number;
 }
 
+export interface ThreadWorkerExitedThreadPublication {
+  vmPtr: number;
+  tid: number;
+}
+
 export type ThreadWorkerInbound =
   | {
       type: "prepare";
@@ -44,6 +49,7 @@ export type ThreadWorkerInbound =
       preserveMemoryRanges?: ThreadWorkerMemoryPreserveRange[];
       guestWriteWatchRegions?: GuestWriteWatchRegion[];
       processIdentity?: ThreadWorkerProcessIdentity;
+      exitedThreads?: ThreadWorkerExitedThreadPublication[];
       kernelState: KernelRuntimeState;
       pipeSlots?: KernelWorkerPipeSlotSnapshot[];
       socketState?: KernelWorkerSocketStateSnapshot;
@@ -58,6 +64,7 @@ export type ThreadWorkerInbound =
       type: "step";
       budget: number;
       processIdentity?: ThreadWorkerProcessIdentity;
+      exitedThreads?: ThreadWorkerExitedThreadPublication[];
       kernelState: KernelRuntimeState;
       pipeSlots?: KernelWorkerPipeSlotSnapshot[];
       socketState?: KernelWorkerSocketStateSnapshot;
@@ -65,6 +72,7 @@ export type ThreadWorkerInbound =
       ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       guestMemoryWrites?: GuestMemoryWriteSnapshot[];
       resumeBlockedSyscall?: boolean;
+      resumeBlockedSyscallTimeoutExpired?: boolean;
     };
 
 export interface ThreadWorkerPreparedMessage {

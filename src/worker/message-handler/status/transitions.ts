@@ -7,6 +7,7 @@ import {
   deleteProcessWorker,
   processHasWorker,
   processWorkerCount,
+  processWorkerList,
 } from "../../process-worker-state.js";
 import { readKernelRuntimeState } from "../../../abi.js";
 import { publishKernelRuntimeState, wakeRuntimeBridge } from "../../../bridge/runtime-state.js";
@@ -78,7 +79,10 @@ import {
   setThreadOwnerAsyncStatus,
   setThreadWaitingInWorkerStatus,
 } from "../../thread-host-state.js";
-import { appendPendingPipeSlotsForNextStep } from "../../thread-step-payload.js";
+import {
+  appendPendingExitedThreadForNextStep,
+  appendPendingPipeSlotsForNextStep,
+} from "../../thread-step-payload.js";
 import { isBlockedRpcPending } from "../../host-blocked-state.js";
 
 const CLONE_SPAWN_DEBUG_ENABLED = ((globalThis as {
@@ -544,6 +548,21 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {
+        const exitedTid = handle.kernel.thread_tid?.(thread.vmPtr) ?? 0;
+        if (exitedTid > 0) {
+          for (const remainingWorker of processWorkerList(handle)) {
+            if (remainingWorker === worker) {
+              continue;
+            }
+            const remainingThread = deps.threadWorkerStates.get(remainingWorker);
+            if (remainingThread !== undefined) {
+              appendPendingExitedThreadForNextStep(remainingThread, {
+                vmPtr: thread.vmPtr,
+                tid: exitedTid,
+              });
+            }
+          }
+        }
         deps.appendRuntimeLifecycleEvent(
           handle.runtimeId,
           `fault-worker-delete:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`

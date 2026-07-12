@@ -13,6 +13,7 @@ import {
 } from "../process-worker-state.js";
 import { supervisorProcessIdentityMatches } from "../process-identity.js";
 import { supervisorProcessStatusIsLifecycleHandoff } from "../supervisor-status.js";
+import { appendPendingExitedThreadForNextStep } from "../thread-step-payload.js";
 import type {
   ProcessHandle,
   ThreadWorkerState,
@@ -118,6 +119,21 @@ export function createPruningScheduler(deps: PruningSchedulerDeps): PruningSched
         continue;
       }
       deps.clearBlockedWorker(handle, worker);
+      const exitedTid = handle.kernel.thread_tid?.(thread.vmPtr) ?? 0;
+      if (handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_fault() && exitedTid > 0) {
+        for (const remainingWorker of processWorkerList(handle)) {
+          if (remainingWorker === worker) {
+            continue;
+          }
+          const remainingThread = deps.threadWorkerStates.get(remainingWorker);
+          if (remainingThread !== undefined) {
+            appendPendingExitedThreadForNextStep(remainingThread, {
+              vmPtr: thread.vmPtr,
+              tid: exitedTid,
+            });
+          }
+        }
+      }
       removeVforkReadyWorker(handle, worker);
       if (hostExecutionState(handle).runningWorker === worker) {
         hostExecutionState(handle).runningWorker = null;

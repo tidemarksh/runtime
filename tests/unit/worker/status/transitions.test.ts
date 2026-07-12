@@ -28,6 +28,7 @@ import {
   writeSupervisorFaultExitDecisionRecord,
 } from "../support/supervisor-abi.js";
 import { seedProcessHandleStateFixture } from "../support/process-handle-state-fixture.js";
+import { takePendingExitedThreadsForNextStep } from "../../../../src/worker/thread-step-payload.js";
 
 function makeKernelState() {
   return {
@@ -875,11 +876,13 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
 
 test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remaining-thread heuristic", () => {
   const worker = { terminate: vi.fn() } as unknown as Worker;
+  const siblingWorker = { terminate: vi.fn() } as unknown as Worker;
   const handle = makeHandle(worker);
   handle.pid = 1;
   handle.runtimeId = 77;
   handle.kernel.process_current_pid = () => 1;
   handle.kernel.thread_process_thread_count = () => 1;
+  handle.kernel.thread_tid = () => 2;
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   handle.memory = memory;
   const kernel = handle.kernel as typeof handle.kernel & {
@@ -913,6 +916,9 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
     return 88;
   });
   const deps = makeDeps(worker);
+  const siblingThread = { vmPtr: 0x5678 };
+  deps.threadWorkerStates.set(siblingWorker, siblingThread as never);
+  addProcessWorker(handle, siblingWorker);
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -939,6 +945,9 @@ test("STATUS_FAULT uses supervisor thread-exit decision instead of runtime remai
   expect(processHasWorker(handle, worker)).toBe(false);
   expect(deps.notifyWorkerStatusProgress).toHaveBeenCalledWith(handle);
   expect(deps.pumpProcess).toHaveBeenCalledWith(handle);
+  expect(takePendingExitedThreadsForNextStep(siblingThread as never)).toEqual([
+    { vmPtr: 0x1234, tid: 2 },
+  ]);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,
     expect.stringContaining("fault-worker-delete:1:vm=0x1234"),
