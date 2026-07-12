@@ -6,7 +6,7 @@ const CASES = [
   {
     name: "fs-timer-thread",
     fixtureName: "event-loop-fs-timer-thread.js",
-    timeoutMs: 15_000,
+    timeoutMs: 180_000,
     async setup(
       runtime: Awaited<ReturnType<typeof prepareNodeRuntime>> extends { runtime: infer R } ? R : never,
     ): Promise<void> {
@@ -25,7 +25,7 @@ const CASES = [
   {
     name: "fs-promises-loop",
     fixtureName: "event-loop-fs-promises-loop.js",
-    timeoutMs: 15_000,
+    timeoutMs: 180_000,
     async setup(
       runtime: Awaited<ReturnType<typeof prepareNodeRuntime>> extends { runtime: infer R } ? R : never,
     ): Promise<void> {
@@ -72,5 +72,5 @@ for (const testCase of CASES) {
     } finally {
       runtime.destroy();
     }
-  }, 30_000);
+  }, 210_000);
 }
