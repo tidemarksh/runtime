@@ -218,6 +218,13 @@ export interface CpuDebugStats {
   blockMissSampleInterval: string;
   blockMissSampled: string;
   blockMissSamples: Array<{ pc: string; evictedPc: string; cacheIndex: number; count: string }>;
+  hotBlockSamples: Array<{
+    pc: string;
+    signature: string;
+    len: number;
+    loopFlags: number;
+    count: string;
+  }>;
   interpreterOps: string;
   blockBuildOpCounts: Array<{ opId: number; count: string }>;
   blockExecOpCounts: Array<{ opId: number; count: string }>;
@@ -543,7 +550,11 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
         count,
       });
     }
-    samples.sort((left, right) => Number(BigInt(right.count) - BigInt(left.count)));
+    samples.sort((left, right) => {
+      const leftCount = BigInt(left.count);
+      const rightCount = BigInt(right.count);
+      return leftCount === rightCount ? 0 : leftCount > rightCount ? -1 : 1;
+    });
     return samples.slice(0, 16);
   };
   const readMemoryPermitByProt = (): CpuDebugStats["memoryPermitByProt"] => {
@@ -563,6 +574,29 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     }
     return rows;
   };
+  const readHotBlockSamples = (): CpuDebugStats["hotBlockSamples"] => {
+    const sampleCount = handle.kernel.debug_cpu_profile_hot_block_sample_count?.() ?? 0;
+    const samples: CpuDebugStats["hotBlockSamples"] = [];
+    for (let index = 0; index < sampleCount; index += 1) {
+      const count = formatU64Decimal(handle.kernel.debug_cpu_profile_hot_block_sample_count_at?.(index));
+      if (count === "0") {
+        continue;
+      }
+      samples.push({
+        pc: `0x${formatU64(BigInt(handle.kernel.debug_cpu_profile_hot_block_sample_pc?.(index) ?? 0))}`,
+        signature: `0x${formatU64(BigInt(handle.kernel.debug_cpu_profile_hot_block_sample_signature?.(index) ?? 0))}`,
+        len: handle.kernel.debug_cpu_profile_hot_block_sample_len?.(index) ?? 0,
+        loopFlags: handle.kernel.debug_cpu_profile_hot_block_sample_loop_flags?.(index) ?? 0,
+        count,
+      });
+    }
+    samples.sort((left, right) => {
+      const leftCount = BigInt(left.count);
+      const rightCount = BigInt(right.count);
+      return leftCount === rightCount ? 0 : leftCount > rightCount ? -1 : 1;
+    });
+    return samples.slice(0, 16);
+  };
   return {
     blockHits: formatU64Decimal(handle.kernel.debug_cpu_profile_block_hits()),
     blockMisses: formatU64Decimal(handle.kernel.debug_cpu_profile_block_misses?.()),
@@ -579,6 +613,7 @@ function readCpuDebugStats(handle: ProcessHandle): CpuDebugStats | null {
     blockMissSampleInterval: formatU64Decimal(handle.kernel.debug_cpu_profile_block_miss_sample_interval?.()),
     blockMissSampled: formatU64Decimal(handle.kernel.debug_cpu_profile_block_miss_sampled?.()),
     blockMissSamples: readBlockMissSamples(),
+    hotBlockSamples: readHotBlockSamples(),
     interpreterOps: formatU64Decimal(handle.kernel.debug_cpu_profile_interpreter_ops?.()),
     blockBuildOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_build_op_count),
     blockExecOpCounts: readCounts(handle.kernel.debug_cpu_profile_block_exec_op_count),

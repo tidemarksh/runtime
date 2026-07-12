@@ -1392,6 +1392,12 @@ export interface KernelExports {
   debug_cpu_profile_block_miss_sample_evicted_pc?(index: number): bigint | number;
   debug_cpu_profile_block_miss_sample_cache_index?(index: number): number;
   debug_cpu_profile_block_miss_sample_count_at?(index: number): bigint | number;
+  debug_cpu_profile_hot_block_sample_count?(): number;
+  debug_cpu_profile_hot_block_sample_pc?(index: number): bigint | number;
+  debug_cpu_profile_hot_block_sample_signature?(index: number): bigint | number;
+  debug_cpu_profile_hot_block_sample_count_at?(index: number): bigint | number;
+  debug_cpu_profile_hot_block_sample_len?(index: number): number;
+  debug_cpu_profile_hot_block_sample_loop_flags?(index: number): number;
   debug_cpu_profile_interpreter_ops?(): bigint | number;
   debug_cpu_profile_block_build_op_count?(opId: number): bigint | number;
   debug_cpu_profile_block_exec_op_count?(opId: number): bigint | number;
