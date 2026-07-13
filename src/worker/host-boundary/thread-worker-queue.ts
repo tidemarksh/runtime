@@ -26,7 +26,12 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
-import { kernelStackSlotForWorker, releaseWorker } from "../pool.js";
+import {
+  acquireWorker,
+  kernelStackSlotForWorker,
+  releaseWorker,
+  removeWorkerFromPool,
+} from "../pool.js";
 import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
@@ -185,6 +190,8 @@ interface WorkerSchedulerQueueDeps {
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
 }
 
+const RETIRE_SUPERVISOR_FUTEX_WORKERS = typeof window === "undefined";
+
 function appendSchedulerFsTiming(
   deps: WorkerSchedulerQueueDeps,
   handle: ProcessHandle,
@@ -226,6 +233,13 @@ export function createWorkerSchedulerQueueHelpers(
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     clearBlockedWorker: (handle, worker) => clearBlockedWorker(deps, handle, worker),
     removeVforkReadyWorker,
+    ensureWorkerForVm(handle, vmPtr) {
+      const worker = acquireWorker();
+      if (vmPtr === handle.vmPtr) {
+        handle.worker = worker;
+      }
+      attachThreadWorker(handle, { worker, vmPtr });
+    },
   });
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
@@ -494,6 +508,24 @@ export function createWorkerSchedulerQueueHelpers(
         + `:workers=${processWorkerCount(handle)}:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
     );
     worker.postMessage(initMessage);
+  }
+
+  function retireSupervisorFutexWorker(handle: ProcessHandle, worker: Worker): void {
+    if (!RETIRE_SUPERVISOR_FUTEX_WORKERS || processWorkerCount(handle) <= 1) {
+      return;
+    }
+    const thread = deps.threadWorkerStates.get(worker);
+    if (thread === undefined) {
+      return;
+    }
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `supervisor-futex-worker-retire:${handle.pid}:vm=0x${thread.vmPtr.toString(16)}`,
+    );
+    deleteProcessWorker(handle, worker);
+    deps.threadWorkerStates.delete(worker);
+    removeWorkerFromPool(worker);
+    worker.terminate();
   }
 
   function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
@@ -964,6 +996,7 @@ export function createWorkerSchedulerQueueHelpers(
 
   return {
     attachThreadWorker,
+    retireSupervisorFutexWorker,
     enqueueWorker,
     pumpProcess,
   };

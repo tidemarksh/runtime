@@ -10,6 +10,7 @@ import {
   clearThreadWaitingInWorkerStatus,
   getThreadOwnerAsyncDetail,
   getThreadOwnerAsyncStatus,
+  isThreadInitialized,
 } from "../thread-host-state.js";
 import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
 import { supervisorBlockedStatusIsHostWait } from "../../supervisor-blocked-resume.js";
@@ -48,6 +49,7 @@ export interface SupervisorResumeHostBoundaryDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void;
+  ensureWorkerForVm(handle: ProcessHandle, vmPtr: number): void;
 }
 
 export interface SupervisorResumeHostBoundary {
@@ -386,9 +388,18 @@ export function createSupervisorResumeHostBoundary(
       ? undefined
       : deps.threadWorkerStates.get(selectedWorker);
     if (selectedWorker === undefined || selectedThread === undefined) {
+      deps.ensureWorkerForVm(handle, record.vmPtr);
       deps.appendWorkerDebugLog(
         handle,
         `${source}:missing-selected:0x${record.vmPtr.toString(16)}`
+          + `:tid=${record.tid}:seq=${record.seq.toString()}`,
+      );
+      return null;
+    }
+    if (!isThreadInitialized(selectedThread)) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `${source}:await-reattach:0x${record.vmPtr.toString(16)}`
           + `:tid=${record.tid}:seq=${record.seq.toString()}`,
       );
       return null;
