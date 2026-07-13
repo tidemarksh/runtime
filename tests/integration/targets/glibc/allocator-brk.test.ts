@@ -96,6 +96,58 @@ function buildAllocatorBrkProbe(): Uint8Array | null {
   }
 }
 
+function buildPthreadProcessExitProbe(): Uint8Array | null {
+  const tmp = mkdtempSync(join(tmpdir(), "tidemark-glibc-pthread-process-exit-"));
+  const sourcePath = join(tmp, "pthread_process_exit.c");
+  const outputPath = join(tmp, "pthread-process-exit-probe");
+  try {
+    writeFileSync(sourcePath, [
+      "#include <pthread.h>",
+      "#include <stdatomic.h>",
+      "#include <stdio.h>",
+      "#include <unistd.h>",
+      "",
+      "static atomic_int ready;",
+      "static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;",
+      "static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;",
+      "",
+      "static void *wait_forever(void *unused) {",
+      "  (void)unused;",
+      "  pthread_mutex_lock(&lock);",
+      "  atomic_store_explicit(&ready, 1, memory_order_release);",
+      "  pthread_cond_broadcast(&cond);",
+      "  for (;;) pthread_cond_wait(&cond, &lock);",
+      "}",
+      "",
+      "int main(void) {",
+      "  pthread_t thread;",
+      "  setvbuf(stdout, NULL, _IONBF, 0);",
+      "  if (pthread_create(&thread, NULL, wait_forever, NULL) != 0) return 64;",
+      "  pthread_mutex_lock(&lock);",
+      "  while (!atomic_load_explicit(&ready, memory_order_acquire)) pthread_cond_wait(&cond, &lock);",
+      "  pthread_mutex_unlock(&lock);",
+      "  puts(\"pthread-process-exit-ready\");",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    execFileSync(hostRiscvGcc, [
+      "-O2",
+      "-pthread",
+      "-Wl,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1",
+      "-o",
+      outputPath,
+      sourcePath,
+    ], { stdio: "pipe" });
+    return new Uint8Array(readFileSync(outputPath));
+  } catch (error) {
+    const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    return logSkip(`failed to build glibc pthread process-exit probe with ${hostRiscvGcc}: ${detail}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function buildGlibcSnapshot() {
   const ldPath = resolve(glibcSysroot, "usr/lib/riscv64-linux-gnu/ld-linux-riscv64-lp64d.so.1");
   const libcPath = resolve(glibcSysroot, "usr/lib/riscv64-linux-gnu/libc.so.6");
@@ -173,3 +225,36 @@ test("glibc allocator/brk local gate: dynamic ELF malloc/realloc/free progress",
     runtime.destroy();
   }
 }, 45_000);
+
+test("glibc pthread process exit terminates a blocked sibling", async () => {
+  const wasmBytes = readKernelWasm();
+  if (!wasmBytes) return;
+  if (!glibcSysroot || !existsSync(glibcSysroot)) {
+    return logSkip(`missing glibc sysroot: ${glibcSysroot || "set TIDEMARK_TEST_GLIBC_SYSROOT_DIR"}`);
+  }
+  const probeBytes = buildPthreadProcessExitProbe();
+  if (!probeBytes) return;
+  const snapshot = buildGlibcSnapshot();
+  if (snapshot.skipReason) return logSkip(snapshot.skipReason);
+
+  const runtime = await Runtime.create({
+    wasmBytes,
+    guestMemoryPolicyLimitBytes: 128 * 1024 * 1024,
+    maxProcessMemoryPages: 32768,
+  });
+  try {
+    await runtime.applyFsSnapshot(snapshot.entries ?? []);
+    const result = await spawnWithOutputOrDebug(
+      runtime,
+      probeBytes,
+      ["/work/pthread-process-exit-probe"],
+      ["LC_ALL=C", "LANG=C"],
+      10_000,
+      { stdin: "closed" },
+    );
+    expect(result.exitCode, result.debugInfo).toBe(0);
+    expect(result.output).toContain("pthread-process-exit-ready");
+  } finally {
+    runtime.destroy();
+  }
+}, 20_000);
