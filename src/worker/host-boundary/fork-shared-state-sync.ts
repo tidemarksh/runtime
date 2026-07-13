@@ -171,6 +171,13 @@ function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
     if (sourceForkSharedOfdPeerState(handle, ofdId).compatiblePeer) {
       continue;
     }
+    const heldByAnyMember = kernelShareMemberList(handle).some((member) => (
+      collectProcessHeldOfds(member).has(ofdId)
+    ));
+    if (!heldByAnyMember) {
+      pruneStaleKernelShareOfdIds(handle, [ofdId]);
+      continue;
+    }
     for (const member of kernelShareMemberList(handle)) {
       member.kernel.kernel_unreserve_ofd?.(ofdId);
     }

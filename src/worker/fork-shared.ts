@@ -118,6 +118,7 @@ export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
 export function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
   for (const ofdId of staleOfdIds) {
     for (const member of kernelShareMemberList(handle)) {
+      supervisorOfdReconcileRefcount(member, ofdId, 0);
       member.kernel.kernel_unreserve_ofd?.(ofdId);
     }
     deleteKernelShareSharedOfdId(handle, ofdId);

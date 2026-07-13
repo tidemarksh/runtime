@@ -4,7 +4,10 @@ import {
   reconcileInheritedSharedOfdsAfterVforkExecve,
   trackVforkExecveChildSharedOfds,
 } from "../../../../src/worker/fork/shared-ofd.js";
-import { reconcileForkSharedOfdRefcounts } from "../../../../src/worker/fork-shared.js";
+import {
+  pruneStaleKernelShareOfdIds,
+  reconcileForkSharedOfdRefcounts,
+} from "../../../../src/worker/fork-shared.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
 function makeHandle(
@@ -70,4 +73,31 @@ test("vfork execve reconciles an OFD aliased by parent and child descriptors", (
   reconcileForkSharedOfdRefcounts(parent, [8]);
 
   expect(reconciled).toEqual([[8, 2]]);
+});
+
+test("stale shared OFDs are reconciled before their reservations are released", () => {
+  const parent = makeHandle([], [8]);
+  const child = makeHandle([], [8]);
+  const operations: string[] = [];
+  for (const [name, handle] of [["parent", parent], ["child", child]] as const) {
+    handle.kernel.supervisor_ofd_reconcile_refcount = (ofdId: number, refcount: number) => {
+      operations.push(`${name}:reconcile:${ofdId}:${refcount}`);
+      return refcount;
+    };
+    handle.kernel.kernel_unreserve_ofd = (ofdId: number) => {
+      operations.push(`${name}:unreserve:${ofdId}`);
+    };
+  }
+  addKernelShareMember(parent);
+  addKernelShareMember(parent, child);
+
+  pruneStaleKernelShareOfdIds(parent, [8]);
+
+  expect(operations).toEqual([
+    "parent:reconcile:8:0",
+    "parent:unreserve:8",
+    "child:reconcile:8:0",
+    "child:unreserve:8",
+  ]);
+  expect(kernelShareHasSharedOfdId(parent, 8)).toBe(false);
 });
