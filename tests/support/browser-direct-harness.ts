@@ -298,7 +298,7 @@ function fixtureModuleSource(): string {
     "          shellBytes,",
     "          config.prepareShell.argv,",
     "          config.prepareShell.env,",
-    "          config.prepareShell.cwd ? { cwd: config.prepareShell.cwd } : {},",
+    "          { ...(config.prepareShell.cwd ? { cwd: config.prepareShell.cwd } : {}), stdio: 'pty' },",
     "        );",
     "        await waitForOutput(",
     "          preparedShell,",

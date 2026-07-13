@@ -33,10 +33,10 @@ export function prepareNodeBrowserDirectStartupEntry(): BrowserDirectStartupEntr
       cwd: "/work",
     },
     runtimeOptions: {
-      guestMemoryPolicyLimitBytes: 256 * 1024 * 1024,
+      guestMemoryPolicyLimitBytes: 2 * 1024 * 1024 * 1024,
       kernelWorkerMaxMemoryPages: 7168,
-      maxProcessMemoryPages: 16384,
-      maxForkMemoryPages: 16384,
+      maxProcessMemoryPages: 40960,
+      maxForkMemoryPages: 40960,
     },
     expectedExitCode: 0,
     outputPattern: /\bv\d+\.\d+\.\d+\b/,
