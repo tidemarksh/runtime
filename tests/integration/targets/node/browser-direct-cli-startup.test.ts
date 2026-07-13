@@ -70,7 +70,11 @@ test("browser direct startup local gate: node --help", async () => {
     return;
   }
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode, JSON.stringify({
+    output: result.output,
+    error: result.error,
+    failureSnapshot: result.failureSnapshot,
+  })).toBe(0);
   expect(result.output).toContain("Usage: node");
 }, 90_000);
 
@@ -112,7 +116,11 @@ test("browser direct startup local gate: node --help after shell boot", async ()
     return;
   }
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode, JSON.stringify({
+    output: result.output,
+    error: result.error,
+    failureSnapshot: result.failureSnapshot,
+  })).toBe(0);
   expect(result.output).toContain("Usage: node");
 }, 90_000);
 
@@ -156,6 +164,10 @@ test("browser direct startup local gate: node --help after shell boot and live i
     return;
   }
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode, JSON.stringify({
+    output: result.output,
+    error: result.error,
+    failureSnapshot: result.failureSnapshot,
+  })).toBe(0);
   expect(result.output).toContain("Usage: node");
 }, 90_000);
