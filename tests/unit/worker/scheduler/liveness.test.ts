@@ -7087,11 +7087,6 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
 test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   const worker = {
     postMessage: vi.fn(),
-    terminate: vi.fn(),
-  } as unknown as Worker;
-  const anchorWorker = {
-    postMessage: vi.fn(),
-    terminate: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x70bf0d7);
   const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
@@ -7101,8 +7096,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     ? kernel.abi_status_futex_wait()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
-  handle.worker = anchorWorker;
-  addProcessWorker(handle, anchorWorker);
   hostExecutionState(handle).runningWorker = worker;
   hostExecutionState(handle).vforkReadyWorkers = [worker];
   hostExecutionState(handle).hostBlockedWorkers.set(worker, {
@@ -7129,9 +7122,6 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
-  expect(processHasWorker(handle, worker)).toBe(false);
-  expect(worker.terminate).toHaveBeenCalledTimes(1);
-  expect(processHasWorker(handle, anchorWorker)).toBe(true);
   scheduler.enqueueWorker(handle, worker);
   expect(hostExecutionState(handle).vforkReadyWorkers).toEqual([]);
   expect(hostExecutionState(handle).runningWorker).toBeNull();

@@ -69,7 +69,6 @@ export interface WorkerScheduler {
 
 export interface WorkerSchedulerQueueHelpers {
   attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void;
-  retireSupervisorFutexWorker(handle: ProcessHandle, worker: Worker): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;
   pumpProcess(handle: ProcessHandle): void;
 }
