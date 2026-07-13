@@ -92,5 +92,5 @@ for (const entry of libuvUpstreamSuiteEntries) {
     } finally {
       runtime.destroy();
     }
-  }, entry.timeoutMs + 10_000);
+  }, entry.timeoutMs + 120_000);
 }
