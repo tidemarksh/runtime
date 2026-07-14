@@ -123,6 +123,12 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     primaryRuntimeEvidence: networkEvidence,
   },
   {
+    workload: "apt-method-http-support.test.ts",
+    contracts: ["network bridge", "fork and exec", "filesystem snapshot", "stdio pipes"],
+    canaryReason: "The extended APT method support suite combines network, fork/exec, snapshot, and stdio behavior; each generic contract remains owned by focused runtime evidence.",
+    primaryRuntimeEvidence: [...networkEvidence, ...forkPipeEvidence, ...fsEvidence],
+  },
+  {
     workload: "devtools/archive-orchestrator.test.ts",
     contracts: ["process launch", "filesystem snapshot", "stdio drain"],
     canaryReason: "Archive orchestration validates an external archive workflow; generic process, filesystem, and stdio behavior is primary in owner runtime tests.",
@@ -235,6 +241,16 @@ const workloadCanaries: readonly CanaryEvidence[] = [
     contracts: ["fork", "pipe state", "dup2 stdio", "scheduler liveness"],
     canaryReason: "The fork/pipe/dup2 binary is a workload canary for combined process and pipe behavior; primary generic coverage is in fork, pipe, stdio, and scheduler tests.",
     primaryRuntimeEvidence: forkPipeEvidence,
+  },
+  {
+    workload: "fork/cross-process-signal.test.ts",
+    contracts: ["cross-process signal", "blocked pipe resume", "waitpid lifecycle"],
+    canaryReason: "The blocked-child signal probe is an integration canary for Kernel-owned signal delivery across process memories and Runtime transport and wake orchestration.",
+    primaryRuntimeEvidence: [
+      "worker/kernel-share/signal.test.ts",
+      "worker/status/wait-state-sync.test.ts",
+      "worker/process/lifecycle.test.ts",
+    ],
   },
   {
     workload: "glibc/allocator-brk.test.ts",
