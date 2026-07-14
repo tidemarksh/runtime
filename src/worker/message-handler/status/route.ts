@@ -591,6 +591,7 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
           ...applyStatusFdEntries(handle, msg, authoritativeFds, postedFdEntries, postedOfdSlots),
         ])],
       );
+      pruneStatusNetworkConnectionsFromFdEntries(handle, msg, deps);
       applyThreadSocketState(handle, msg);
       appendStatusRouteFdDebug("after-adopt", handle, msg);
       for (const pre of adoptPreSnapshots) {

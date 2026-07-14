@@ -5,7 +5,10 @@ import {
   SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
   SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
 } from "../layout/socket.js";
-import { kernelSocketIndexForFd } from "./ownership/socket-control.js";
+import {
+  kernelSocketIndexForFd,
+  supervisorSocketOfdForFd,
+} from "./ownership/socket-control.js";
 
 function socketSlotBytes(handle: ProcessHandle): number {
   const maxSockets = requireKernelSocketCount(handle.kernel);
@@ -49,7 +52,7 @@ export function snapshotNetworkSocketSlot(
   handle: ProcessHandle,
   vmPtr: number,
   fd: number,
-): { offset: number; data: Uint8Array } | null {
+): { offset: number; data: Uint8Array; ofdId: number; generation?: number } | null {
   const maxSockets = requireKernelSocketCount(handle.kernel);
   const bytes = socketSlotBytes(handle);
   const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
@@ -62,6 +65,8 @@ export function snapshotNetworkSocketSlot(
   return {
     offset,
     data: new Uint8Array(handle.memory.buffer).slice(absolute, absolute + bytes),
+    ofdId: supervisorSocketOfdForFd(handle, vmPtr, fd),
+    generation: handle.kernel.process_fd_generation?.(vmPtr, fd),
   };
 }
 

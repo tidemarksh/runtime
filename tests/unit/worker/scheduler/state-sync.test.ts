@@ -10,6 +10,7 @@ import {
 import { expect, test, vi } from "vite-plus/test";
 import { writePipe } from "../../../../src/bridge/pipe.js";
 import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/host-boundary/state-sync.js";
+import { applySocketStateFromKernelWorker } from "../../../../src/worker/host-boundary/shared-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import {
   isEpollPassiveUntilWake,
@@ -892,6 +893,153 @@ test("requestSocketStateSync preserves network recv payload when restoring a sta
   expect(memory[netBufBase + 16]).toBe(0xab);
   expect(memory[netBufBase + 17]).toBe(0xcd);
   expect(netBufferBytes).toBeGreaterThan(64);
+});
+
+test("kernel worker socket adoption does not restore an unowned old ring head", () => {
+  const handle = makeHandle();
+  handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+  const socketTablePtr = 0x2000;
+  const netBufBase = 0x4000;
+  const memory = new Uint8Array(handle.memory.buffer);
+  const view = new DataView(handle.memory.buffer);
+  handle.kernel.kernel_attach_runtime_state(
+    0,
+    0,
+    0x1000,
+    0,
+    0,
+    0,
+    socketTablePtr,
+    1,
+    0,
+    0n,
+    netBufBase,
+    1n,
+    0,
+    0,
+    0,
+    0,
+  );
+  handle.kernelState = {
+    ...handle.kernelState,
+    ofdTablePtr: 0x1000,
+    socketTablePtr,
+    socketUsed: 1,
+    netBufBase,
+    netBufUsed: 1n,
+  };
+  view.setUint32(netBufBase, 1_000, true);
+  view.setUint32(netBufBase + 4, 1_000, true);
+  memory[netBufBase + 16] = 0xaa;
+
+  const incomingNetBufPool = new Uint8Array(handle.kernel.kernel_net_buf_pool_bytes());
+  applySocketStateFromKernelWorker(handle, {
+    socketTable: new Uint8Array(handle.kernel.kernel_socket_table_bytes()),
+    netBufPool: incomingNetBufPool,
+    socketUsed: 1,
+    netBufUsed: 1n,
+  });
+
+  expect(view.getUint32(netBufBase, true)).toBe(0);
+  expect(view.getUint32(netBufBase + 4, true)).toBe(0);
+  expect(memory[netBufBase + 16]).toBe(0);
+});
+
+test("requestSocketStateSync does not restore a snapshot onto a replacement host connection", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const handle = makeHandle();
+  handle.memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+  const socketTablePtr = 0x2000;
+  const netBufBase = 0x4000;
+  const memory = new Uint8Array(handle.memory.buffer);
+  const view = new DataView(handle.memory.buffer);
+  handle.kernel.kernel_attach_runtime_state(
+    0,
+    0,
+    0x1000,
+    0,
+    0,
+    0,
+    socketTablePtr,
+    1,
+    0,
+    0n,
+    netBufBase,
+    1n,
+    0,
+    0,
+    0,
+    0,
+  );
+  handle.kernelState = {
+    ...handle.kernelState,
+    ofdTablePtr: 0x1000,
+    socketTablePtr,
+    socketUsed: 1,
+    netBufBase,
+    netBufUsed: 1n,
+  };
+  view.setInt32(socketTablePtr + 312, 0, true);
+  view.setUint32(netBufBase, 32, true);
+  view.setUint32(netBufBase + 4, 96, true);
+  memory[netBufBase + 16] = 0xaa;
+  const originalConnection = { read: () => undefined, write: () => {} } as never;
+  const replacementConnection = { read: () => undefined, write: () => {} } as never;
+  networkConnections(handle).set(3, originalConnection);
+  handle.kernel.abi_fd_type_socket = () => 8;
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => (fd === 3 ? 4 : 0);
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => (ofdId === 4 ? 8 : 0);
+  handle.kernel.thread_socket_idx_for_fd = (_vmPtr: number, fd: number) => (fd === 3 ? 0 : -1);
+  handle.kernel.thread_socket_recv_buf_idx = (socketIdx: number) => (socketIdx === 0 ? 0 : -1);
+  handle.kernel.thread_socket_recv_available = () => 64;
+  handle.kernel.thread_socket_read_bytes = () => 32n;
+  handle.kernel.thread_socket_read_count = () => 1;
+  handle.kernel.thread_socket_state = () => 3;
+  handle.kernel.thread_socket_peer_idx = () => -1;
+  handle.kernel.thread_socket_outbound_available = () => 0;
+  setProcessKernelWorkerRequest(handle, vi.fn(async (msg) => {
+    expect(msg.type).toBe("sync-socket-state");
+    networkConnections(handle).set(3, replacementConnection);
+    view.setUint32(netBufBase, 0, true);
+    view.setUint32(netBufBase + 4, 0, true);
+    memory[netBufBase + 16] = 0x44;
+    const staleNetBufPool = new Uint8Array(handle.kernel.kernel_net_buf_pool_bytes());
+    const staleView = new DataView(staleNetBufPool.buffer);
+    staleView.setUint32(0, 32, true);
+    staleView.setUint32(4, 96, true);
+    staleNetBufPool[16] = 0xaa;
+    return {
+      type: "socket-state-synced",
+      requestId: 0,
+      kernelState: {
+        ...msg.kernelState,
+        socketUsed: 1,
+        netBufUsed: 1n,
+      },
+      socketState: {
+        socketTable: new Uint8Array(handle.kernel.kernel_socket_table_bytes()),
+        netBufPool: staleNetBufPool,
+        socketUsed: 1,
+        netBufUsed: 1n,
+      },
+    };
+  }));
+  addKernelShareMember(handle);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestSocketStateSync(handle, false);
+
+  expect(networkConnections(handle).get(3)).toBe(replacementConnection);
+  expect(view.getUint32(netBufBase, true)).toBe(0);
+  expect(view.getUint32(netBufBase + 4, true)).toBe(0);
+  expect(memory[netBufBase + 16]).toBe(0x44);
 });
 
 test("requestSocketStateSync keeps newer incoming network recv payload when tail advances", async () => {

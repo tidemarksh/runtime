@@ -4316,6 +4316,7 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
     return;
   }
   let packageResponseCount = 0;
+  const truncatedPackageLength = Math.max(1, Math.floor(repo.packagesXz.length / 2));
   const packageLastModified = "Thu, 01 Jan 1970 00:00:00 GMT";
   const packageUri =
     `http://deb.debian.org/debian/dists/trixie/main/binary-riscv64/by-hash/SHA256/${repo.packagesXzSha256}`;
@@ -4325,10 +4326,9 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
     if (isPackageIndexTarget(target)) {
       packageResponseCount += 1;
       if (packageResponseCount === 1) {
-        const truncatedLength = Math.max(1, Math.floor(repo.packagesXz.length / 2));
         return {
           statusLine: "HTTP/1.1 200 OK",
-          body: repo.packagesXz.subarray(0, truncatedLength),
+          body: repo.packagesXz.subarray(0, truncatedPackageLength),
           headers: [
             "Date: Fri, 01 May 2026 00:00:00 GMT",
             `Last-Modified: ${packageLastModified}`,
@@ -4454,7 +4454,7 @@ test("apt method http local gate: repeated package fetch delivers ranged retry r
         `debug=${await runtimeDebugSummary(runtime)}`,
       ].join("\n"),
     ).toBeGreaterThanOrEqual(2);
-    expect(packageRequests.at(-1)).toContain("Range: bytes=108-");
+    expect(packageRequests.at(-1)).toContain(`Range: bytes=${truncatedPackageLength}-`);
     expect(
       metrics.packageResponsesCompleted,
       [

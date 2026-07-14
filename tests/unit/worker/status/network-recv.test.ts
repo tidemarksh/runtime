@@ -1,9 +1,12 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
   deriveNetBufUsedFromSocketSlots,
+  preserveNetworkRecvForKernelMemoryWrite,
   pruneStatusNetworkConnectionsFromFdEntries,
 } from "../../../../src/worker/message-handler/status/network-recv.js";
 import {
+  networkClosedFds,
+  networkClosedSocketSlots,
   networkConnectionOfds,
   networkConnections,
   networkRecvHeadWatermarks,
@@ -79,6 +82,86 @@ test("status network recv closes stale runtime network bridges when supervisor r
     handle,
     "net-status-close:7:fd=4:ofd=11->0",
   );
+});
+
+test("status network recv drops closed socket sidecars when an fd is reused", async () => {
+  const close = vi.fn(async () => {});
+  let generation = 8;
+  const handle = makeHandle({
+    kernel: makeKernel({
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 4 ? 11 : 0,
+      process_fd_generation: (_vmPtr: number, fd: number) => fd === 4 ? generation : 0,
+      supervisor_process_socket_ofd_for_fd: (_vmPtr: number, fd: number) => fd === 4 ? 11 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 ? 8 : 0,
+      supervisor_socket_bridge_active_fd: () => -2,
+    }),
+  });
+  seedNetworkSocketState(handle, {
+    connections: [[4, { close }]],
+    connectionOfds: [[4, 11]],
+    closedFds: [4],
+    closedSocketSlots: [[4, { offset: 0, data: new Uint8Array(32), ofdId: 11, generation: 7 }]],
+    recvHeadWatermarks: [[4, 7]],
+    recvTailWatermarks: [[4, 9]],
+  });
+  generation = 8;
+
+  pruneStatusNetworkConnectionsFromFdEntries(
+    handle as never,
+    makeStatusMessage({
+      fdEntries: [{ fd: 4, ofdId: 12, fdFlags: 0 }],
+    }) as never,
+    {
+      appendWorkerDebugLog: vi.fn(),
+      failProcess: (_handle, error) => { throw error; },
+    },
+  );
+  await Promise.resolve();
+
+  expect(networkConnections(handle as never).has(4)).toBe(false);
+  expect(networkConnectionOfds(handle as never).has(4)).toBe(false);
+  expect(networkClosedFds(handle as never).has(4)).toBe(false);
+  expect(networkClosedSocketSlots(handle as never).has(4)).toBe(false);
+  expect(networkRecvHeadWatermarks(handle as never).has(4)).toBe(false);
+  expect(networkRecvTailWatermarks(handle as never).has(4)).toBe(false);
+  expect(close).toHaveBeenCalledTimes(1);
+});
+
+test("status network recv does not preserve an old recv buffer for a newer fd generation", () => {
+  const handle = makeHandle({
+    kernel: makeKernel({
+      kernel_socket_used: () => 1,
+      kernel_net_buf_used: () => 1n,
+      process_fd_generation: (_vmPtr: number, fd: number) => fd === 4 ? 7 : 0,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 4 ? 11 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 11 ? 8 : 0,
+      thread_socket_idx_for_fd: (_vmPtr: number, fd: number) => fd === 4 ? 0 : -1,
+      thread_socket_peer_idx: () => -1,
+      thread_socket_recv_buf_idx: (socketIdx: number) => socketIdx === 0 ? 0 : -1,
+    }),
+  });
+  handle.kernelState.socketUsed = 1;
+  handle.kernelState.netBufUsed = 1n;
+  seedNetworkSocketState(handle, {
+    connections: [[4, {}]],
+    connectionOfds: [[4, 11]],
+  });
+  const memory = new Uint8Array(handle.memory.buffer);
+  const view = new DataView(handle.memory.buffer);
+  view.setUint32(0x4000, 0, true);
+  view.setUint32(0x4004, 16, true);
+  memory[0x4010] = 0xaa;
+
+  const restore = preserveNetworkRecvForKernelMemoryWrite(
+    handle as never,
+    makeStatusMessage({
+      fdEntries: [{ fd: 4, ofdId: 12, fdFlags: 0, generation: 8 }],
+    }) as never,
+    0x4000,
+    64,
+  );
+
+  expect(restore).toBeNull();
 });
 
 test("status network recv rekeys stale runtime network bridges from supervisor active fd", () => {

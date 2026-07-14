@@ -246,6 +246,7 @@ export function preserveNetworkRecvBuffers(
   vmPtr: number,
   netBufPoolBytes: number,
   debug?: NetworkRecvBufferDebugOptions,
+  excludedFds: ReadonlySet<number> = new Set(),
 ): PreservedNetworkRecvBuffer[] {
   const runtimeFds = runtimeNetworkFds(handle);
   if (runtimeFds.size === 0) {
@@ -351,6 +352,9 @@ export function preserveNetworkRecvBuffers(
     });
   };
   for (const fd of runtimeFds) {
+    if (excludedFds.has(fd)) {
+      continue;
+    }
     const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
     if (socketIdx < 0) {
       if (!preserveWatermarkedRecvBuffer(fd)) {
@@ -468,6 +472,7 @@ export function closedSocketRecvBufferIndices(handle: ProcessHandle): number[] {
 export function preserveClosedNetworkRecvBuffers(
   handle: ProcessHandle,
   netBufPoolBytes: number,
+  excludedFds: ReadonlySet<number> = new Set(),
 ): PreservedNetBufferHead[] {
   const maxSockets = requireKernelSocketCount(handle.kernel);
   const netBufferCount = maxSockets * 2;
@@ -477,7 +482,11 @@ export function preserveClosedNetworkRecvBuffers(
   }
   const preserved: PreservedNetBufferHead[] = [];
   const memory = new Uint8Array(handle.memory.buffer);
-  for (const recvBufIdx of closedSocketRecvBufferIndices(handle)) {
+  for (const [fd, slot] of networkClosedSocketSlots(handle)) {
+    if (excludedFds.has(fd)) {
+      continue;
+    }
+    const recvBufIdx = networkSocketSlotRecvBufferIndex(slot);
     if (recvBufIdx < 0 || recvBufIdx >= netBufferCount) {
       continue;
     }

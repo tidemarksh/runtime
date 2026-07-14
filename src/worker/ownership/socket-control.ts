@@ -289,10 +289,34 @@ export function pruneStaleNetworkConnectionsFromFdEntries(
     appendStatusSocketDebug?: SocketStatusDebug;
   },
 ): void {
-  if (!fdEntries || vmPtr === 0 || networkConnections(handle).size === 0) {
+  if (!fdEntries || vmPtr === 0) {
     return;
   }
   const ofds = networkConnectionOfds(handle);
+  for (const [fd, slot] of [...networkClosedSocketSlots(handle)]) {
+    const currentOfd = supervisorSocketOfdForFd(handle, vmPtr, fd);
+    const currentGeneration = handle.kernel.process_fd_generation?.(vmPtr, fd);
+    const reusedGeneration = slot.generation !== undefined
+      && currentGeneration !== undefined
+      && currentGeneration !== slot.generation;
+    const reusedOfd = slot.ofdId !== undefined
+      && currentOfd > 0
+      && currentOfd !== slot.ofdId;
+    if (!reusedGeneration && !reusedOfd) {
+      continue;
+    }
+    networkClosedFds(handle).delete(fd);
+    networkClosedSocketSlots(handle).delete(fd);
+    clearNetworkRecvWatermarks(handle, fd, callbacks.appendStatusSocketDebug);
+    callbacks.appendWorkerDebugLog(
+      handle,
+      `net-status-reused-fd:${handle.pid}:fd=${fd}:ofd=${slot.ofdId ?? "n/a"}->${currentOfd}`
+        + `:gen=${slot.generation ?? "n/a"}->${currentGeneration ?? "n/a"}`,
+    );
+  }
+  if (networkConnections(handle).size === 0) {
+    return;
+  }
   const supervisorBridgeActiveFd = (
     preferredFd: number,
     expectedOfd: number | undefined,

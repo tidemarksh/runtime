@@ -818,6 +818,27 @@ test("adoptKernelStateForHandle preserves local epoll table pointer", () => {
   expect(adopted.pipeUsed).toBe(incoming.pipeUsed | 1n);
 });
 
+test("adoptKernelStateForHandle keeps kernel socket allocation masks authoritative", () => {
+  const handle = makeHandle(7, new Map([[4, 10]]));
+  handle.kernelState.socketUsed = 0b11;
+  handle.kernelState.netBufUsed = 0b101n;
+  networkConnections(handle).set(4, {
+    close: vi.fn(async () => {}),
+    read: vi.fn(),
+    write: vi.fn(),
+  } as never);
+  const incoming = {
+    ...handle.kernelState,
+    socketUsed: 0b10,
+    netBufUsed: 0b100n,
+  };
+
+  const adopted = adoptKernelStateForHandle(handle, incoming);
+
+  expect(adopted.socketUsed).toBe(incoming.socketUsed);
+  expect(adopted.netBufUsed).toBe(incoming.netBufUsed);
+});
+
 test("adoptKernelStateForHandle uses supervisor pipe-used authority when available", () => {
   const handle = makeHandle(7, new Map([[4, 10]]));
   seedOfd(handle.memory, handle.kernelState, 10, FD_TYPE_PIPE, 6, 3);

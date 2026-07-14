@@ -292,6 +292,10 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   if (debugFds.size > 0) {
     const after = [...debugFds].map((fd) => socketDebugEntry(fd, "status-after"));
-    appendStatusSocketDebug(handle, `socket-state-apply:${handle.pid}:socketUsed=0x${msg.socketState.socketUsed.toString(16)}:netBufUsed=0x${msg.socketState.netBufUsed.toString(16)}:derivedNetBufUsed=0x${derivedNetBufUsed.toString(16)}:before=${JSON.stringify(before)}:after=${JSON.stringify(after)}`);
+    const incomingFds = (msg.fdEntries ?? [])
+      .filter((entry) => debugFds.has(entry.fd))
+      .map((entry) => `${entry.fd}/${entry.ofdId}/${entry.generation ?? -1}`)
+      .join(".") || "none";
+    appendStatusSocketDebug(handle, `socket-state-apply:${handle.pid}:socketUsed=0x${msg.socketState.socketUsed.toString(16)}:netBufUsed=0x${msg.socketState.netBufUsed.toString(16)}:derivedNetBufUsed=0x${derivedNetBufUsed.toString(16)}:incomingFds=${incomingFds}:preservedSlots=${preservedSocketSlots.length}:preservedRecv=${preservedRecvBuffers.length}:preservedHeads=${preservedNetBufferHeads.length}:before=${JSON.stringify(before)}:after=${JSON.stringify(after)}`);
   }
 }

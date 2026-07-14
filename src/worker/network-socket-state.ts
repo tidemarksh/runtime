@@ -4,6 +4,8 @@ import type { ProcessHandle } from "./types.js";
 export interface NetworkSocketSlotSnapshot {
   offset: number;
   data: Uint8Array;
+  ofdId?: number;
+  generation?: number;
 }
 
 export interface NetworkRecvPayloadWatermark {
@@ -112,12 +114,16 @@ export function copyNetworkSocketState(target: ProcessHandle, source: ProcessHan
     [...sourceState.closedSocketSlots].map(([fd, slot]) => [fd, {
       offset: slot.offset,
       data: slot.data.slice(),
+      ofdId: slot.ofdId,
+      generation: slot.generation,
     }]),
   );
   targetState.socketSlotWatermarks = new Map(
     [...sourceState.socketSlotWatermarks].map(([fd, slot]) => [fd, {
       offset: slot.offset,
       data: slot.data.slice(),
+      ofdId: slot.ofdId,
+      generation: slot.generation,
     }]),
   );
   targetState.recvHeadWatermarks = new Map(sourceState.recvHeadWatermarks);

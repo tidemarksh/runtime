@@ -2,6 +2,7 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
 } from "../../abi.js";
+import type { RuntimeNetworkConnection } from "../../bridge/network.js";
 import {
   processHostStdio,
 } from "../process-stdio-state.js";
@@ -186,7 +187,10 @@ export function formatPipeSnapshotDebug(
 
 export interface NetworkBridgeSocketStateSnapshot {
   handle: ProcessHandle;
-  connectionFds: number[];
+  connections: Array<{
+    fd: number;
+    connection: RuntimeNetworkConnection;
+  }>;
   pendingConnectFds: number[];
   closedFds: number[];
   fdStats: Array<{
@@ -813,7 +817,9 @@ export function snapshotNetworkBridgeSocketState(
     const netBufferSlotBytes = netBufferSlotBytesForHandle(handle);
     const ofdSlotBytes = Math.floor(handle.kernel.kernel_ofd_table_bytes() / handle.kernel.abi_max_fds());
     const ofdSlots: NetworkBridgeSocketStateSnapshot["ofdSlots"] = [];
-    const connectionFds = [...(networkConnections(handle)?.keys() ?? [])];
+    const connections = [...(networkConnections(handle)?.entries() ?? [])]
+      .map(([fd, connection]) => ({ fd, connection }));
+    const connectionFds = connections.map(({ fd }) => fd);
     const pendingConnectFds = [...(networkPendingConnectFds(handle) ?? [])];
     const closedFds = [...(networkClosedFds(handle) ?? [])];
     const closedSlotFds = [...(networkClosedSocketSlots(handle)?.keys() ?? [])];
@@ -840,7 +846,7 @@ export function snapshotNetworkBridgeSocketState(
     }
     snapshots.push({
       handle,
-      connectionFds,
+      connections,
       pendingConnectFds,
       closedFds,
       fdStats,
@@ -898,8 +904,6 @@ export function applySocketStateFromKernelWorker(
     return;
   }
   const memory = new Uint8Array(handle.memory.buffer);
-  const netBufUsed = currentNetBufUsed(handle) | snapshot.netBufUsed;
-  const socketUsed = currentSocketUsed(handle) | snapshot.socketUsed;
   const preservedSocketSlots = preserveNetworkSocketSlots(
     handle,
     handle.vmPtr,
@@ -914,7 +918,7 @@ export function applySocketStateFromKernelWorker(
     ...preserveUsedNetBufferHeads(
       handle,
       netBufPoolBytes,
-      netBufUsed | preservedSocketNetBufUsed,
+      preservedSocketNetBufUsed,
       preservedSocketRecvBuffers,
     ),
     ...preserveNetworkRecvHeadWatermarks(handle, netBufPoolBytes),
@@ -927,8 +931,8 @@ export function applySocketStateFromKernelWorker(
   closeNetworkClosedFdPeers(handle);
   handle.kernelState = {
     ...handle.kernelState,
-    socketUsed: socketUsed | preservedSocketUsed,
-    netBufUsed: netBufUsed | preservedSocketNetBufUsed,
+    socketUsed: snapshot.socketUsed | preservedSocketUsed,
+    netBufUsed: snapshot.netBufUsed | preservedSocketNetBufUsed,
   };
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }
@@ -938,7 +942,7 @@ export function restoreNetworkBridgeSocketState(
 ): void {
   for (const snapshot of snapshots) {
     const { handle } = snapshot;
-    if (snapshot.connectionFds.some((fd) => !(networkConnections(handle)?.has(fd) ?? false))) {
+    if (snapshot.connections.some(({ fd, connection }) => networkConnections(handle).get(fd) !== connection)) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
       continue;
@@ -1020,7 +1024,8 @@ export function restoreNetworkBridgeSocketState(
 
 export function networkBridgeSocketSnapshotProgressed(snapshot: NetworkBridgeSocketStateSnapshot): boolean {
   const { handle } = snapshot;
-  return snapshot.fdStats.some((stat) => {
+  return snapshot.connections.some(({ fd, connection }) => networkConnections(handle).get(fd) !== connection)
+    || snapshot.fdStats.some((stat) => {
     const current = networkSocketFdStats(handle, stat.fd);
     return current.recvAvailable !== stat.recvAvailable
       || current.readCount !== stat.readCount

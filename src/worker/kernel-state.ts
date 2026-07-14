@@ -1,10 +1,4 @@
 import { attachKernelRuntimeState, readKernelRuntimeState, type KernelRuntimeState } from "../abi.js";
-import {
-  networkClosedFds,
-  networkClosedSocketSlots,
-  networkConnections,
-  networkPendingConnectFds,
-} from "./network-socket-state.js";
 import { liveProcessPipeUsedBits } from "./ownership/pipe-control.js";
 import type { ProcessHandle } from "./types.js";
 
@@ -74,21 +68,8 @@ export function adoptKernelStateForHandle(
   const current = handle.kernelState;
   const adopted = adoptKernelState(current, incoming);
   const pipeUsed = adopted.pipeUsed | liveProcessPipeUsedBits(handle);
-  if (
-    (networkConnections(handle)?.size ?? 0) === 0
-    && networkPendingConnectFds(handle).size === 0
-    && networkClosedFds(handle).size === 0
-    && networkClosedSocketSlots(handle).size === 0
-  ) {
-    return {
-      ...adopted,
-      pipeUsed,
-    };
-  }
   return {
     ...adopted,
     pipeUsed,
-    socketUsed: current.socketUsed | incoming.socketUsed,
-    netBufUsed: current.netBufUsed | incoming.netBufUsed,
   };
 }

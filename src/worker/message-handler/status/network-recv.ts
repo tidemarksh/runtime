@@ -11,6 +11,9 @@ import {
   restoreNetworkRecvBufferProducers,
 } from "../../network-recv-buffer.js";
 import {
+  kernelSocketIndexForFd,
+  kernelSocketPeerIndex,
+  kernelSocketRecvBufferIndex,
   pruneStaleNetworkConnectionsFromFdEntries,
   runtimeNetworkFds,
 } from "../../ownership/socket-control.js";
@@ -70,15 +73,45 @@ export function preserveNetworkRecvForKernelMemoryWrite(
   if (netBufBase <= 0 || netBufPoolBytes <= 0 || ptr >= netBufEnd || ptr + length <= netBufBase) {
     return null;
   }
-  const currentNetBufUsed = handle.kernelState.netBufUsed
+  const replacedFds = new Set<number>();
+  for (const fd of runtimeNetworkFds(handle)) {
+    const incoming = msg.fdEntries?.find((entry) => entry.fd === fd);
+    const currentGeneration = handle.kernel.process_fd_generation?.(msg.vmPtr, fd);
+    if (
+      incoming?.generation !== undefined
+      && currentGeneration !== undefined
+      && incoming.generation > currentGeneration
+    ) {
+      replacedFds.add(fd);
+    }
+  }
+  let currentNetBufUsed = handle.kernelState.netBufUsed
     | handle.kernel.kernel_net_buf_used()
     | deriveNetBufUsedFromSocketSlots(handle, handle.kernelState.socketUsed | handle.kernel.kernel_socket_used());
-  const preservedRecvBuffers = preserveNetworkRecvBuffers(handle, msg.vmPtr, netBufPoolBytes);
+  for (const fd of replacedFds) {
+    const socketIdx = kernelSocketIndexForFd(handle, msg.vmPtr, fd);
+    for (const candidate of [socketIdx, socketIdx >= 0 ? kernelSocketPeerIndex(handle, socketIdx) : -1]) {
+      if (candidate < 0) {
+        continue;
+      }
+      const recvBufIdx = kernelSocketRecvBufferIndex(handle, candidate);
+      if (recvBufIdx >= 0) {
+        currentNetBufUsed &= ~(1n << BigInt(recvBufIdx));
+      }
+    }
+  }
+  const preservedRecvBuffers = preserveNetworkRecvBuffersCommon(
+    handle,
+    msg.vmPtr,
+    netBufPoolBytes,
+    statusNetworkRecvDebug,
+    replacedFds,
+  );
   const preservedNetBufferHeads = preserveUsedNetBufferHeads(
     handle,
     netBufPoolBytes,
     currentNetBufUsed,
-  ).concat(preserveClosedNetworkRecvBuffers(handle, netBufPoolBytes));
+  ).concat(preserveClosedNetworkRecvBuffers(handle, netBufPoolBytes, replacedFds));
   if (preservedRecvBuffers.length === 0 && preservedNetBufferHeads.length === 0) {
     return null;
   }
