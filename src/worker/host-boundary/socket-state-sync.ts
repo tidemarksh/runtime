@@ -83,11 +83,13 @@ export async function syncSocketStateViaKernelWorker(
       kernelState: handle.kernelState,
       socketState: snapshotSocketStateForKernelWorker(handle),
     });
-  } finally {
+  } catch (error) {
     restoreNetworkBridgeSocketState(networkSocketSnapshots);
-    appendSocketSyncDebug(handle, `socket-sync-finally-restore:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+    appendSocketSyncDebug(handle, `socket-sync-error-restore:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+    throw error;
   }
   if (response.type !== "socket-state-synced") {
+    restoreNetworkBridgeSocketState(networkSocketSnapshots);
     throw new Error(`unexpected kernel-worker response for sync-socket-state: ${response.type}`);
   }
   const localNetworkProgress = networkSocketSnapshots.some(networkBridgeSocketSnapshotProgressed);
@@ -103,8 +105,10 @@ export async function syncSocketStateViaKernelWorker(
   } else if (response.socketState) {
     appendSocketSyncDebug(handle, `socket-sync-response-skip-progress:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
   }
-  restoreNetworkBridgeSocketState(networkSocketSnapshots);
-  appendSocketSyncDebug(handle, `socket-sync-restore:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+  if (!localNetworkProgress) {
+    restoreNetworkBridgeSocketState(networkSocketSnapshots);
+    appendSocketSyncDebug(handle, `socket-sync-restore:${handle.pid}:${formatNetworkSocketDebug(handle)}`);
+  }
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   repairHandleVmPidAfterKernelStateAttach(handle, handle.vmPtr, pidBeforeSync);
   return {

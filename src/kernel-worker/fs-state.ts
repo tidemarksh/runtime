@@ -1211,7 +1211,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
           ...backingMetaForInode(ino),
         });
       }
-      const written = writeDirtyResidentFileData(
+      let written = writeDirtyResidentFileData(
         deps.getSabPageCache(),
         ino,
         offset,
@@ -1219,6 +1219,29 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         readBackingFileRangeByInode,
         supervisorDirtyPageAuthority(sourceExports),
       );
+      if (written === -28) {
+        const pressureInodes = [
+          ino,
+          ...[...dirtyResidentInodes].filter((dirtyIno) => dirtyIno !== ino),
+        ];
+        let flushed = false;
+        for (const pressureIno of pressureInodes) {
+          if (!trackedHasDirtyResidentPages(pressureIno)) {
+            continue;
+          }
+          flushed = flushDirtyResidentFileByInode(pressureIno) || flushed;
+        }
+        if (flushed) {
+          written = writeDirtyResidentFileData(
+            deps.getSabPageCache(),
+            ino,
+            offset,
+            data,
+            readBackingFileRangeByInode,
+            supervisorDirtyPageAuthority(sourceExports),
+          );
+        }
+      }
       if (written >= 0) {
         dirtyResidentInodes.add(ino);
         clearSeedBackingExtentForInode(ino);

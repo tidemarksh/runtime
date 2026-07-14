@@ -1476,6 +1476,36 @@ test("kernel-worker sparse dirty resident output writes publish zero holes witho
   expect(new TextDecoder().decode(tailPage!.subarray(16))).toBe("tailtail");
 });
 
+test("kernel-worker writes back dirty pages when sequential output exceeds resident capacity", () => {
+  const pageSize = 4096;
+  const { canonicalExports, fsState, sabPageCache } = makeFsState(pageSize * 2);
+  fsState.mkdir("/work", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/work");
+  const name = encoder.encode("output.bin");
+  const namePtr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, namePtr);
+  const ino = canonicalExports.memfs_create_file(parentIno, namePtr, name.length);
+  expect(Number(canonicalExports.memfs_set_mode(ino, 0o644))).toBe(0);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: 0,
+    parentIno,
+    name,
+    nextSibling: 0,
+  });
+
+  const expected = new Uint8Array(pageSize * 3);
+  for (let page = 0; page < 3; page += 1) {
+    const bytes = new Uint8Array(pageSize).fill(0x31 + page);
+    expected.set(bytes, page * pageSize);
+    expect(fsState.writeDirtyResidentFileByInode(ino, page * pageSize, bytes)).toBe(pageSize);
+    expect(canonicalExports.memfs_set_file_size_shallow(ino, BigInt((page + 1) * pageSize)))
+      .toBe(BigInt((page + 1) * pageSize));
+  }
+
+  expectBytesEqual(fsState.readFile("/work/output.bin"), expected);
+});
+
 test("kernel-worker applies supervisor dirty write denial without dirtying resident pages", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
 
