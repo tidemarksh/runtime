@@ -981,6 +981,8 @@ export interface KernelExports {
   supervisor_complete_futex_wait?(vmPtr: number, completion: number): number;
   supervisor_signal_pending_for_blocked_wait?(vmPtr: number): number;
   supervisor_signal_boundary_check?(vmPtr: number): number;
+  supervisor_signal_transport_take?(pid: number): bigint;
+  supervisor_signal_transport_merge?(pid: number, pending: bigint): number;
 
   // Open flags
   abi_o_rdonly(): number;
@@ -2426,6 +2428,8 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_complete_futex_wait",
   "supervisor_signal_pending_for_blocked_wait",
   "supervisor_signal_boundary_check",
+  "supervisor_signal_transport_take",
+  "supervisor_signal_transport_merge",
 ] as const;
 
 export function requiredSupervisorRuntimeExportNames(): readonly string[] {

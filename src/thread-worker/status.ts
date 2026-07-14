@@ -1009,7 +1009,13 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   ];
   publishThreadWorkerStage(105, status);
   const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, effectiveSyncEffects);
+  const processPendingSnapshot = snapshotAbsoluteMemory(
+    kernelExports,
+    kernelState.processPendingPtr,
+    kernelState.processPendingBytes ?? 0,
+  );
   const kernelMemoryWrites = [
+    ...(processPendingSnapshot ? [processPendingSnapshot] : []),
     ...(snapshotFsRingMemory(kernelExports, status) ?? []),
     ...snapshotProcessMemfsMemory(
       kernelExports,

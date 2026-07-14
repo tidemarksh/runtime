@@ -1022,6 +1022,10 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
   expect(deps.resolveNetworkConnect).toHaveBeenCalledWith(handle, 0x1234);
   expect(handle.networkBridge).toBe(bridge);
   expect(deps.resumeConnectViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234, 0n);
+  expect(deps.enqueueWorker).toHaveBeenCalledTimes(1);
+  expect(deps.commitNetworkConnect.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.enqueueWorker.mock.invocationCallOrder[0],
+  );
   expect(deps.pumpNetworkConnections).not.toHaveBeenCalled();
   expect(deps.blockWorker).not.toHaveBeenCalled();
 });

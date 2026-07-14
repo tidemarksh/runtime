@@ -56,6 +56,7 @@ import {
   isEpollPassiveUntilWake,
   isEpollWakeRetryPending,
   isBlockedRpcPending,
+  setBlockedPassiveUntilWake,
   setEpollPassiveUntilWake,
   setEpollWakeRetryPending,
 } from "../host-blocked-state.js";
@@ -326,6 +327,7 @@ export function createWorkerSchedulerStateSyncHelpers(
             throw new Error(`unknown supervisor blocked wait wake action: ${exhaustive}`);
           }
         }
+        setBlockedPassiveUntilWake(blocked, false);
         if (isIndefiniteEpollWait(member, blocked)) {
           setEpollWakeRetryPending(blocked, true);
         }

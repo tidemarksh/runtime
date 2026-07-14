@@ -202,6 +202,29 @@ export function supervisorProcessFdTableIsCoherent(handle: ProcessHandle, vmPtr:
   return vmPtr !== 0 && processFdTableIsCoherent.call(handle.kernel, vmPtr) === 1;
 }
 
+export function describeSupervisorProcessFdTableIncoherence(
+  handle: ProcessHandle,
+  vmPtr: number,
+): string {
+  if (vmPtr === 0) {
+    return "vm=0";
+  }
+  const maxFds = handle.kernel.abi_max_fds();
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    const rawOfdId = handle.kernel.process_fd_ofd_id(vmPtr, fd);
+    if (rawOfdId === 0) {
+      continue;
+    }
+    const refcount = rawOfdId < maxFds
+      ? handle.kernel.kernel_ofd_refcount(rawOfdId)
+      : 0;
+    if (rawOfdId >= maxFds || refcount <= 0) {
+      return `fd=${fd}:raw-ofd=${rawOfdId}:refcount=${refcount}:max=${maxFds}`;
+    }
+  }
+  return "process-state-unavailable";
+}
+
 function supervisorFdEntryRestoreFlags(handle: ProcessHandle, options: ApplyThreadFdEntriesOptions): number {
   let flags = 0;
   if (options.preserveLiveRegularFileDescriptors === true) {

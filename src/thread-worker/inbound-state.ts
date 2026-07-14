@@ -8,6 +8,7 @@ import {
 import type {
   GuestMemoryWriteSnapshot,
   GuestWriteWatchRegion,
+  KernelMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
@@ -39,6 +40,7 @@ export interface ThreadWorkerInboundStatePayload {
   socketState?: KernelWorkerSocketStateSnapshot;
   pipeSlots?: KernelWorkerPipeSlotSnapshot[];
   guestMemoryWrites?: GuestMemoryWriteSnapshot[];
+  kernelMemoryWrites?: KernelMemoryWriteSnapshot[];
   guestWriteWatchRegions?: GuestWriteWatchRegion[];
 }
 
@@ -220,6 +222,27 @@ export function applyThreadWorkerGuestMemoryWrites(
       recordInboundGuestWriteDebug(overlap);
     }
     memory.set(write.bytes, start);
+  }
+}
+
+function applyThreadWorkerKernelMemoryWrites(
+  kernelExports: KernelExports,
+  writes?: readonly KernelMemoryWriteSnapshot[],
+): void {
+  if (writes === undefined || writes.length === 0) {
+    return;
+  }
+  const memory = new Uint8Array(kernelExports.memory.buffer);
+  for (const write of writes) {
+    if (
+      !Number.isFinite(write.ptr)
+      || write.ptr < 0
+      || write.bytes.length === 0
+      || write.ptr + write.bytes.length > memory.length
+    ) {
+      continue;
+    }
+    memory.set(write.bytes, write.ptr);
   }
 }
 
@@ -455,6 +478,7 @@ export function applyThreadWorkerInboundState(
     activeGuestWriteWatchRegions = payload.guestWriteWatchRegions;
   }
   applyProcessIdentity(kernelExports, payload.targetVmPtr, payload.processIdentity);
+  applyThreadWorkerKernelMemoryWrites(kernelExports, payload.kernelMemoryWrites);
   applyExitedThreads(kernelExports, payload.targetVmPtr, payload.exitedThreads);
   applyOfdSlots(kernelExports, payload.kernelState, payload.ofdSlots);
   if (fdEntriesTargetCurrentProcess(kernelExports, payload.targetVmPtr, payload.processIdentity)) {

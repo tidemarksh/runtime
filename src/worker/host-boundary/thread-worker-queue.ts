@@ -32,6 +32,7 @@ import {
   supervisorFaultExitKindProcessExit,
 } from "../supervisor-shadow.js";
 import {
+  describeSupervisorProcessFdTableIncoherence,
   snapshotAuthoritativeProcessFdEntriesForThread,
   snapshotProcessFdEntriesForThread,
   supervisorProcessFdTableIsCoherent,
@@ -74,6 +75,7 @@ import {
   takePendingExitedThreadsForNextStep,
   takePendingAuthoritativeFdEntriesForNextStep,
   takePendingKernelStateForNextStep,
+  takePendingKernelMemoryWritesForNextStep,
   takePendingPipeSlotsForNextStep,
 } from "../thread-step-payload.js";
 import {
@@ -805,7 +807,10 @@ export function createWorkerSchedulerQueueHelpers(
       return;
     }
     if (!supervisorProcessFdTableIsCoherent(handle, handle.vmPtr)) {
-      appendSchedulerQueueDebugLog(handle, "pump-held:fd-table-incoherent");
+      appendSchedulerQueueDebugLog(
+        handle,
+        `pump-held:fd-table-incoherent:${describeSupervisorProcessFdTableIncoherence(handle, handle.vmPtr)}`,
+      );
       if (!fdTableCoherenceRetryTimers.has(handle)) {
         const timer = setTimeout(() => {
           fdTableCoherenceRetryTimers.delete(handle);
@@ -933,6 +938,10 @@ export function createWorkerSchedulerQueueHelpers(
       budget: stepBudget,
       kernelState: pendingKernelState ?? handle.kernelState,
     };
+    const pendingKernelMemoryWrites = takePendingKernelMemoryWritesForNextStep(thread);
+    if (pendingKernelMemoryWrites.length > 0) {
+      stepMessage.kernelMemoryWrites = pendingKernelMemoryWrites;
+    }
     const processIdentity = snapshotThreadWorkerProcessIdentity(handle, vmPtr ?? 0);
     if (processIdentity !== undefined) {
       stepMessage.processIdentity = processIdentity;

@@ -71,6 +71,7 @@ export type ThreadWorkerInbound =
       fdEntries?: KernelWorkerFdEntrySnapshot[];
       ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       guestMemoryWrites?: GuestMemoryWriteSnapshot[];
+      kernelMemoryWrites?: KernelMemoryWriteSnapshot[];
       resumeBlockedSyscall?: boolean;
       resumeBlockedSyscallTimeoutExpired?: boolean;
     };

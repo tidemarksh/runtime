@@ -13,10 +13,12 @@ import { createWorkerSchedulerStateSyncHelpers } from "../../../../src/worker/ho
 import { applySocketStateFromKernelWorker } from "../../../../src/worker/host-boundary/shared-state.js";
 import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
 import {
+  isBlockedPassiveUntilWake,
   isEpollPassiveUntilWake,
   isEpollWakeRetryPending,
   setBlockedRpcGeneration,
   setBlockedRpcPending,
+  setBlockedPassiveUntilWake,
   setEpollPassiveUntilWake,
   setEpollWakeRetryPending,
 } from "../../../../src/worker/host-blocked-state.js";
@@ -610,6 +612,32 @@ test("requestPipeStateSync skips rpc-pending pipe waiters during waking sync", a
 
   expect(retryHostBlockedWorker).not.toHaveBeenCalledWith(handle, pipeWorker);
   expect(clearPipeSyncBeforeRetry).not.toHaveBeenCalled();
+});
+
+test("requestPipeStateSync wakes a passive pipe waiter after canonical state changes", async () => {
+  const retryHostBlockedWorker = vi.fn();
+  const handle = makeHandle();
+  addKernelShareMember(handle);
+  const pipeWorker = {} as Worker;
+  const blockedPipe = {
+    vmPtr: 0x1234,
+    status: handle.kernel.abi_status_pipe_wait(),
+  };
+  setBlockedPassiveUntilWake(blockedPipe as never, true);
+  hostExecutionState(handle).hostBlockedWorkers.set(pipeWorker, blockedPipe as never);
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker,
+  });
+
+  await helpers.requestPipeStateSync(handle, true);
+
+  expect(isBlockedPassiveUntilWake(blockedPipe as never)).toBe(false);
+  expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, pipeWorker);
 });
 
 test("requestEpollStateSync delegates no-ofd retry action to supervisor", async () => {

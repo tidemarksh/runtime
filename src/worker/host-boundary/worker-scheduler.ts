@@ -49,9 +49,11 @@ import type {
 } from "./worker-scheduler-types.js";
 import {
   copyHostBlockedEffectState,
+  isBlockedPassiveUntilWake,
   isEpollPassiveUntilWake,
   isEpollWakeRetryPending,
   isBlockedRpcPending,
+  setBlockedPassiveUntilWake,
   setEpollPassiveUntilWake,
 } from "../host-blocked-state.js";
 import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
@@ -459,6 +461,13 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
   retryHostBlockedWorkerImpl = blockedRetryCoordinator.retryHostBlockedWorker;
 
   function shouldSkipProgressRetry(handle: ProcessHandle, worker: Worker, blocked: HostBlockedWorkerState): boolean {
+    if (isBlockedPassiveUntilWake(blocked)) {
+      const interrupted = handle.kernel.thread_pending_signal_interrupts_blocked_syscall?.(blocked.vmPtr) === 1;
+      if (!interrupted) {
+        return true;
+      }
+      setBlockedPassiveUntilWake(blocked, false);
+    }
     if (
       blocked.status !== handle.kernel.abi_status_epoll_wait()
       || supervisorBlockedEpollWaitTimeoutMs(handle.kernel, blocked.vmPtr) >= 0

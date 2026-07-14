@@ -15,7 +15,12 @@ import {
   acquireWorker,
   releaseWorker,
 } from "../../pool.js";
-import { kernelShareOtherMembers } from "../../kernel-share.js";
+import {
+  kernelShareOtherMembers,
+  snapshotProcessPendingSignalState,
+  transportProcessPendingSignals,
+} from "../../kernel-share.js";
+import { setPendingKernelMemoryWritesForNextStep } from "../../thread-step-payload.js";
 import {
   assertHandleWorkerProcessIdentity,
   supervisorProcessOwnerMismatch,
@@ -243,13 +248,34 @@ function submitSupervisorConnectReadyEvent(
 }
 
 export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDeps) {
+  function wakeTransportedSignalTargets(source: ProcessHandle): void {
+    for (const target of transportProcessPendingSignals(source)) {
+      wakeRuntimeBridge(target.runtimeBridge);
+      const pendingSignalState = snapshotProcessPendingSignalState(target);
+      for (const worker of processWorkerList(target)) {
+        const thread = deps.threadWorkerStates.get(worker);
+        if (thread !== undefined) {
+          setPendingKernelMemoryWritesForNextStep(thread, pendingSignalState);
+        }
+        if (hostExecutionState(target).hostBlockedWorkers.has(worker)) {
+          deps.requestThreadWorkerBlockedResume(target, worker);
+        }
+      }
+      deps.notifyWorkerStatusProgress(target);
+      deps.pumpProcess(target);
+    }
+  }
+
   function consumeKernelRpcResumeOutcome(
     handle: ProcessHandle,
     worker: Worker,
     vmPtr: number,
     outcome: KernelRpcResumeOutcome,
+    enqueueCompleted = true,
   ): void {
     if (
+      enqueueCompleted
+      &&
       outcome.kind === "completed"
       && outcome.status === handle.kernel.abi_status_ok()
       && outcome.workerQueued !== true
@@ -438,6 +464,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             }
             if (shouldWakeSignalWaiters) {
               wakeRuntimeBridge(handle.runtimeBridge);
+              wakeTransportedSignalTargets(handle);
             }
             deps.notifyWorkerStatusProgress(handle);
             if (shouldSyncPipeState) {
@@ -466,6 +493,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       }
       if (shouldWakeSignalWaiters) {
         wakeRuntimeBridge(handle.runtimeBridge);
+        wakeTransportedSignalTargets(handle);
       }
       if (networkConnections(handle).size > 0) {
         void deps.pumpNetworkConnections(handle, thread.vmPtr)
@@ -877,7 +905,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             await deps.requestSocketStateSync(handle, false);
             const outcome = await deps.resumeConnectViaKernelWorker(handle, worker, thread.vmPtr, result);
             if (outcome !== undefined) {
-              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+              consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome, false);
             }
             if (outcome === undefined || outcome.kind === "completed") {
               submitSupervisorConnectReadyEvent(
@@ -922,7 +950,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               + `:a0=${handle.kernel.thread_a0?.(thread.vmPtr)?.toString() ?? "n/a"}`,
           );
           if (outcome !== undefined) {
-            consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome);
+            consumeKernelRpcResumeOutcome(handle, worker, thread.vmPtr, outcome, false);
           }
           if (outcome === undefined || outcome.kind === "completed") {
             submitSupervisorConnectReadyEvent(

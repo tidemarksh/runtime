@@ -1,6 +1,7 @@
 import { expect, test } from "vite-plus/test";
 import {
   applyThreadFdEntries,
+  describeSupervisorProcessFdTableIncoherence,
   snapshotAuthoritativeProcessFdEntriesForThread,
   snapshotProcessFdEntriesForThread,
 } from "../../../../src/worker/ownership/fd-table.js";
@@ -97,6 +98,32 @@ test("snapshotAuthoritativeProcessFdEntriesForThread strips generations for init
     fdFlags: 1,
     authorityEpoch: 0,
   });
+});
+
+test("fd table incoherence diagnostics report an out-of-range raw OFD binding", () => {
+  const handle = makeHandle({
+    ownerPid: 7,
+    threadPid: 7,
+    ownerFd9Ofd: 18,
+    threadFd9Ofd: 0,
+  });
+  handle.kernel.kernel_ofd_refcount = () => 0;
+
+  expect(describeSupervisorProcessFdTableIncoherence(handle, handle.vmPtr))
+    .toBe("fd=9:raw-ofd=18:refcount=0:max=16");
+});
+
+test("fd table incoherence diagnostics report a missing referenced OFD slot", () => {
+  const handle = makeHandle({
+    ownerPid: 7,
+    threadPid: 7,
+    ownerFd9Ofd: 10,
+    threadFd9Ofd: 0,
+  });
+  handle.kernel.kernel_ofd_refcount = () => 0;
+
+  expect(describeSupervisorProcessFdTableIncoherence(handle, handle.vmPtr))
+    .toBe("fd=9:raw-ofd=10:refcount=0:max=16");
 });
 
 function makeKernelState(): KernelRuntimeState {

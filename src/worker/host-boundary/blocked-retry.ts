@@ -70,12 +70,14 @@ import {
   consumeWaitTimerAlreadyChecked,
   getEpollWakeRetryGeneration,
   getLastPipeRetryLifecycleEvent,
+  isBlockedPassiveUntilWake,
   isBlockedRpcPending,
   isEpollPassiveUntilWake,
   isEpollWakeRetryPending,
   setEpollPassiveUntilWake,
   setEpollWakeRetryPending,
   setBlockedRpcPending,
+  setBlockedPassiveUntilWake,
   setLastPipeRetryLifecycleEvent,
 } from "../host-blocked-state.js";
 import { getProcessKernelShareForkSharedSync } from "../fork-shared-sync-state.js";
@@ -342,8 +344,10 @@ export function createBlockedRetryCoordinator(
         return;
       case "defer-running-worker":
       case "defer-process-gate":
-      case "defer-passive-wait":
         deps.scheduleSupervisorBlockedRetry(handle, worker);
+        return;
+      case "defer-passive-wait":
+        setBlockedPassiveUntilWake(latestBlocked, true);
         return;
       case "park-active-child":
         const parkResult = parkBehindSupervisorActiveChild(
@@ -1222,7 +1226,7 @@ export function createBlockedRetryCoordinator(
         executeFsRetry(handle, worker, blocked);
         return "done";
       case "defer-passive-wait":
-        deps.scheduleSupervisorBlockedRetry(handle, worker);
+        setBlockedPassiveUntilWake(blocked, true);
         return "done";
       case "resume-kernel-worker":
         if (!hostCleanupDone) {
@@ -1296,6 +1300,9 @@ export function createBlockedRetryCoordinator(
   function retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void {
     const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
     if (!blocked) {
+      return;
+    }
+    if (isBlockedPassiveUntilWake(blocked)) {
       return;
     }
     if (

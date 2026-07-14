@@ -1,6 +1,7 @@
 import type { KernelRuntimeState } from "../abi.js";
 import type {
   GuestMemoryWriteSnapshot,
+  KernelMemoryWriteSnapshot,
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
   KernelWorkerPipeSlotSnapshot,
@@ -13,6 +14,7 @@ interface ThreadStepPayloadState {
   pendingAuthoritativeFdsForNextStep: Set<number>;
   pendingPipeSlotsForNextStep: KernelWorkerPipeSlotSnapshot[];
   pendingGuestMemoryWrites: GuestMemoryWriteSnapshot[];
+  pendingKernelMemoryWrites: KernelMemoryWriteSnapshot[];
   pendingExitedThreads: ThreadWorkerExitedThreadPublication[];
   postedFdEntriesForNextStatus?: Map<number, KernelWorkerFdEntrySnapshot>;
   postedOfdSlotsForNextStatus?: Map<number, Uint8Array>;
@@ -37,6 +39,7 @@ function stepPayloadState(thread: ThreadWorkerState): ThreadStepPayloadState {
       pendingAuthoritativeFdsForNextStep: new Set(),
       pendingPipeSlotsForNextStep: [],
       pendingGuestMemoryWrites: [],
+      pendingKernelMemoryWrites: [],
       pendingExitedThreads: [],
     };
     threadStepPayloadStates.set(thread, state);
@@ -50,6 +53,7 @@ function clearIfIdle(thread: ThreadWorkerState, state: ThreadStepPayloadState): 
     && state.pendingAuthoritativeFdsForNextStep.size === 0
     && state.pendingPipeSlotsForNextStep.length === 0
     && state.pendingGuestMemoryWrites.length === 0
+    && state.pendingKernelMemoryWrites.length === 0
     && state.pendingExitedThreads.length === 0
     && state.postedFdEntriesForNextStatus === undefined
     && state.postedOfdSlotsForNextStatus === undefined
@@ -294,6 +298,31 @@ export function takePendingKernelStateForNextStep(
   state.pendingKernelStateForNextStep = undefined;
   clearIfIdle(thread, state);
   return kernelState;
+}
+
+export function setPendingKernelMemoryWritesForNextStep(
+  thread: ThreadWorkerState,
+  writes: readonly KernelMemoryWriteSnapshot[],
+): void {
+  stepPayloadState(thread).pendingKernelMemoryWrites = writes.map((write) => ({
+    ptr: write.ptr,
+    bytes: write.bytes.slice(),
+  }));
+}
+
+export function takePendingKernelMemoryWritesForNextStep(
+  thread: ThreadWorkerState | null | undefined,
+): KernelMemoryWriteSnapshot[] {
+  if (thread === null || thread === undefined) {
+    return [];
+  }
+  const state = threadStepPayloadStates.get(thread);
+  if (!state || state.pendingKernelMemoryWrites.length === 0) {
+    return [];
+  }
+  const writes = state.pendingKernelMemoryWrites.splice(0);
+  clearIfIdle(thread, state);
+  return writes;
 }
 
 export function appendPendingPipeSlotsForNextStep(

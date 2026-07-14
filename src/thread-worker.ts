@@ -342,6 +342,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
           fdEntries: msg.fdEntries,
           socketState: msg.socketState,
           pipeSlots: msg.pipeSlots,
+          kernelMemoryWrites: msg.kernelMemoryWrites,
         });
         acquireSharedMemoryForStep(kernelExports.memory.buffer);
         const resumeOutcome = resumeBlockedSyscallStep({
