@@ -230,7 +230,14 @@ function buildPackagesLz4FromInput(
     return new Uint8Array(readFileSync(inputPath));
   }
   try {
-    return new Uint8Array(execFileSync("lz4", ["-z", "-c", inputPath], {
+    const packages = inputPath.endsWith(".xz")
+      ? execFileSync("xz", ["-d", "-c", inputPath], {
+        maxBuffer: 256 * 1024 * 1024,
+        stdio: "pipe",
+      })
+      : readFileSync(inputPath);
+    return new Uint8Array(execFileSync("lz4", ["-z", "-c"], {
+      input: packages,
       maxBuffer: 256 * 1024 * 1024,
       stdio: "pipe",
     }));
