@@ -581,5 +581,5 @@ test("applyThreadWorkerInboundState applies a canonical generationless fd over a
   });
 
   expect(fdState.get(6)).toEqual({ ofdId: 7, fdFlags: 0, generation: 13 });
-  expect(restoreAction).toHaveBeenCalledWith(0x1234, 6, 7, 0xffffffffffffffffn, 3);
+  expect(restoreAction).not.toHaveBeenCalled();
 });

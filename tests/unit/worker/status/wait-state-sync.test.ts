@@ -1538,12 +1538,13 @@ test("STATUS_OK syncs epoll state through kernel-worker when available", async (
     1,
     true,
   );
+  kernel.kernel_ofd_refcount = (candidateOfdId) => (candidateOfdId === ofdId ? 1 : 0);
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 4 ? ofdId : 0);
   const worker = createdWorkers[0];
 
   enableSupervisorRunnableResume(kernel);
   emitReady(worker);
-  await flushMicrotasks();
+  await flushMicrotasks(100);
   worker.clearPostedMessages();
   enableSupervisorRunnableResume(kernel);
   worker.emit({
@@ -1605,12 +1606,14 @@ test("STATUS_OK syncs eventfd-backed OFD state before epoll retries", async () =
   const kernel = handle.kernel;
   const ofdId = 7;
   new DataView(kernel.memory.buffer).setInt32(handle.kernelState.ofdTablePtr + ofdId * 32, 9, true);
+  kernel.kernel_ofd_refcount = (candidateOfdId) => (candidateOfdId === ofdId ? 1 : 0);
   kernel.process_fd_ofd_id = (_vmPtr, fd) => (fd === 3 ? ofdId : 0);
   kernel.supervisor_process_epoll_dependent_sync_ofd = (_vmPtr, index) => (index === 0 ? ofdId : 0);
 
   const worker = createdWorkers[0];
   enableSupervisorRunnableResume(kernel);
   emitReady(worker);
+  await flushMicrotasks(100);
   worker.clearPostedMessages();
   worker.emit({
     type: "status",
@@ -1968,7 +1971,11 @@ test("waitInWorker EPOLL_WAIT timeout=0 completes through supervisor timer HostO
 
   expect(resumeTimeout).toHaveBeenCalledWith(0x1234);
   expect(worker.postedMessages).toEqual([
-    makeStepMessageExpectation(),
+    {
+      ...makeStepMessageExpectation(),
+      resumeBlockedSyscall: true,
+      resumeBlockedSyscallTimeoutExpired: true,
+    },
   ]);
 });
 

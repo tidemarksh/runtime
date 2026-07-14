@@ -322,6 +322,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
     const supervisorSignalControlDiagnostic = pollSupervisorSignalControlDiagnostic(handle);
     if (supervisorSignalControlDiagnostic !== undefined) {
       deps.appendWorkerDebugLog(handle, supervisorSignalControlDiagnostic);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, supervisorSignalControlDiagnostic);
     }
 
     const enqueueWorkerAfterOk = (releaseOwnerAsync = false): void => {
@@ -544,7 +545,12 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             + `:${formatFaultThreadSummary(handle, "faultVm", thread.vmPtr)}`
             + `:${formatFaultThreadSummary(handle, "exitVm", exitVmPtr)}`,
         );
-        void deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr).catch((error) => {
+        void (async () => {
+          if (statusSyncActions.syncPipeState) {
+            await deps.requestPipeStateSync(handle, true);
+          }
+          await deps.completeProcessExit(handle, exitCode, termSignal, exitVmPtr);
+        })().catch((error) => {
           deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
         });
       } else {

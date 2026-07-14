@@ -632,7 +632,7 @@ test("status ofd slots preserve live eventfd nonblock flags from stale snapshots
   );
 
   applyStatusOfdSlots(handle as never, makeStatusMessage({
-    fdEntries: [{ fd: 3, ofdId, fdFlags: 0 }],
+    fdEntries: [{ fd: 3, ofdId, fdFlags: 0, generation: 12 }],
     ofdSlots: [{
       ofdId,
       slot: makeOfdSlot(eventfdType, 0, 0, 1, 0n, O_RDWR),
@@ -709,4 +709,93 @@ test("status ofd slots preserve regular file access mode across fcntl setfl snap
   }) as never);
 
   expect(applied.getInt32(OFD_STATUS_FLAGS_OFFSET, true)).toBe(O_WRONLY | O_NONBLOCK);
+});
+
+test("status ofd slots preserve regular file access mode across stale thread snapshots", () => {
+  const fileType = 1;
+  const ofdId = 6;
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_fd_type_file: () => fileType,
+    }),
+  });
+  new Uint8Array((handle.memory as WebAssembly.Memory).buffer).set(
+    makeOfdSlot(fileType, -1, 42, 1, 0n, O_RDWR),
+    (handle.kernelState as { ofdTablePtr: number }).ofdTablePtr + ofdId * SLOT_BYTES,
+  );
+  const applied = new DataView(
+    (handle.memory as WebAssembly.Memory).buffer,
+    (handle.kernelState as { ofdTablePtr: number }).ofdTablePtr + ofdId * SLOT_BYTES,
+    SLOT_BYTES,
+  );
+
+  applyStatusOfdSlots(handle as never, makeStatusMessage({
+    fdEntries: [{ fd: 3, ofdId, fdFlags: 0, generation: 12 }],
+    ofdSlots: [{
+      ofdId,
+      slot: makeOfdSlot(fileType, -1, 42, 1, 0n, 0),
+    }],
+    fdTraceSyscallNr: 98n,
+    fdTraceResult: 0n,
+  }) as never, {
+    authoritativeOfdIds: new Set([ofdId]),
+    postedFdEntries: new Map([[3, { fd: 3, ofdId, fdFlags: 0, generation: 11 }]]),
+  });
+
+  expect(applied.getInt32(OFD_STATUS_FLAGS_OFFSET, true)).toBe(O_RDWR);
+});
+
+test("status ofd slots apply access mode for a regenerated same-identity OFD", () => {
+  const fileType = 1;
+  const ofdId = 6;
+  let handle: ReturnType<typeof makeHandle> | undefined;
+  const slotView = () => new DataView(
+    (handle!.memory as WebAssembly.Memory).buffer,
+    (handle!.kernelState as { ofdTablePtr: number }).ofdTablePtr + ofdId * SLOT_BYTES,
+    SLOT_BYTES,
+  );
+  handle = makeHandle({
+    kernel: makeKernel({
+      abi_fd_type_file: () => fileType,
+      abi_sys_openat: () => 56n,
+      kernel_ofd_fd_type: (candidate: number) => candidate === ofdId
+        ? slotView().getInt32(OFD_TYPE_OFFSET, true)
+        : 0,
+      kernel_ofd_host_fd: (candidate: number) => candidate === ofdId
+        ? slotView().getInt32(OFD_HOST_FD_OFFSET, true)
+        : -1,
+      kernel_ofd_ino: (candidate: number) => candidate === ofdId
+        ? slotView().getUint32(OFD_INO_OFFSET, true)
+        : 0,
+      kernel_ofd_refcount: (candidate: number) => candidate === ofdId
+        ? slotView().getInt32(OFD_REFCOUNT_OFFSET, true)
+        : 0,
+      kernel_ofd_offset: (candidate: number) => candidate === ofdId
+        ? slotView().getBigInt64(OFD_OFFSET_OFFSET, true)
+        : 0n,
+    }),
+  });
+  new Uint8Array((handle.memory as WebAssembly.Memory).buffer).set(
+    makeOfdSlot(fileType, -1, 42, 1, 0n, 0),
+    (handle.kernelState as { ofdTablePtr: number }).ofdTablePtr + ofdId * SLOT_BYTES,
+  );
+  const applied = new DataView(
+    (handle.memory as WebAssembly.Memory).buffer,
+    (handle.kernelState as { ofdTablePtr: number }).ofdTablePtr + ofdId * SLOT_BYTES,
+    SLOT_BYTES,
+  );
+
+  applyStatusOfdSlots(handle as never, makeStatusMessage({
+    syscallNr: 56n,
+    fdEntries: [{ fd: 3, ofdId, fdFlags: 0, generation: 12 }],
+    ofdSlots: [{
+      ofdId,
+      slot: makeOfdSlot(fileType, -1, 42, 1, 0n, O_RDWR),
+    }],
+  }) as never, {
+    authoritativeOfdIds: new Set(),
+    postedFdEntries: new Map([[3, { fd: 3, ofdId, fdFlags: 0, generation: 11 }]]),
+  });
+
+  expect(applied.getInt32(OFD_STATUS_FLAGS_OFFSET, true)).toBe(O_RDWR);
 });

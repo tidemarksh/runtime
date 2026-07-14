@@ -799,6 +799,13 @@ export async function handleVforkExecve(
     `vfork-execve:child-cwd-ready:${childPid}:${childKernel.process_cwd_ino(childVmPtr)}`,
   );
   setProcessLastDebugMessage(handle, `vfork-execve:child-kernel-ready child=${childPid}`);
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:start:${childPid}`);
+  await deps.registerProcessWithKernelWorker(childHandle, {
+    seedMemfsMode: "none",
+    pipeSeedMode: "process",
+  });
+  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:done:${childPid}`);
+  deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:resume-parent:start:${childPid}`);
   await deps.resumeVforkExecveParentViaKernelWorker(handle, parentThread.vmPtr, childPid);
   restoreLocalOfdSlots(handle, parentResumeOfdSlots);
@@ -829,16 +836,9 @@ export async function handleVforkExecve(
     && execveGuestPayload.path[execveGuestPayload.path.length - 1] === 0
     ? execveGuestPayload.path.slice(0, -1)
     : execveGuestPayload.path;
-  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:start:${childPid}`);
-  await deps.registerProcessWithKernelWorker(childHandle, {
-    seedMemfsMode: "none",
-    pipeSeedMode: "process",
-  });
-  deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-register:done:${childPid}`);
   assertVforkParentState(handle, parentThread.vmPtr, "parent-post-child-register");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-registered:${childPid}`);
   setProcessLastDebugMessage(handle, `vfork-execve:child-registered child=${childPid}`);
-  deps.assertProcessStandardFdIntegrity(childHandle, "vfork-child-post-register");
   deps.appendRuntimeLifecycleEvent(handle.runtimeId, `vfork-execve:child-sync:start:${childPid}`);
   trackVforkExecveChildSharedOfds(childHandle, childExecFdEntries);
   await deps.syncForkSharedStateViaKernelWorker(childHandle, kernelShareOtherMembers(childHandle), {

@@ -176,6 +176,43 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
   expect(lastFutexWaitDebug).toBeUndefined();
 });
 
+test("postThreadWorkerStatus omits unchanged owned state from routine status", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const snapshotFdTable = vi.fn(() => 4);
+  kernelExports.abi_max_fds = snapshotFdTable;
+  const statusCodes = makeStatusCodes();
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 8,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, statusCodes.SLEEP, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    fdEntries?: unknown;
+    ofdSlots?: unknown;
+    socketState?: unknown;
+    debug?: string;
+  };
+  expect(msg.fdEntries).toBeUndefined();
+  expect(msg.ofdSlots).toBeUndefined();
+  expect(msg.socketState).toBeUndefined();
+  expect(msg.debug).toBeUndefined();
+  expect(snapshotFdTable).not.toHaveBeenCalled();
+});
+
 test("postThreadWorkerStatus owns sync-effect snapshot payload assembly", () => {
   const postMessage = vi.fn();
   Object.defineProperty(globalThis, "postMessage", {
@@ -386,12 +423,14 @@ test("postThreadWorkerStatus patches eventfd OFD offset from fd trace", () => {
     lastFutexWaitDebug: undefined,
     setLastResumeBlockedDebug() {},
     setLastFutexWaitDebug() {},
-  }, 0, false, 0);
+  }, 0, false, 1 << 6);
 
   const msg = postMessage.mock.calls[0]?.[0] as {
+    syncEffects?: number;
     fdTraceArg0OfdOffset?: bigint;
     ofdSlots?: Array<{ ofdId: number; slot: Uint8Array }>;
   };
+  expect(msg.syncEffects).toBe(1 << 6);
   expect(msg.fdTraceArg0OfdOffset).toBe(1n);
   const snapshot = msg.ofdSlots?.find((entry) => entry.ofdId === ofdId);
   expect(snapshot).toBeDefined();

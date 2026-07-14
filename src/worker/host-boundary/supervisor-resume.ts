@@ -15,9 +15,16 @@ import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
 import { supervisorBlockedStatusIsHostWait } from "../../supervisor-blocked-resume.js";
 
 const SUPERVISOR_RESUME_DRAIN_LIMIT = 64;
+const DEFERRED_RESUME_RETRY_MS = 1;
 const SUPERVISOR_RESUME_SCRATCH_OFFSET = 0x28000;
 const SUPERVISOR_THREAD_STATE_HEADER_BYTES = 32;
 const SUPERVISOR_THREAD_STATE_RECORD_BYTES = 32;
+const SUPERVISOR_DETAILED_DIAGNOSTICS_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1"
+  || ((globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.TIDEMARK_SCHEDULER_QUEUE_DEBUG_LOG ?? "") === "1";
 
 interface SupervisorResumeRecord {
   kind: number;
@@ -48,6 +55,8 @@ export interface SupervisorResumeHostBoundaryDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void;
+  retryDeferredResumes(handle: ProcessHandle): void;
+  includeDetailedDiagnostics?: boolean;
 }
 
 export interface SupervisorResumeHostBoundary {
@@ -319,6 +328,34 @@ export function createSupervisorResumeHostBoundary(
   deps: SupervisorResumeHostBoundaryDeps,
 ): SupervisorResumeHostBoundary {
   const deferredResumeRecords = new WeakMap<ProcessHandle, SupervisorResumeRecord[]>();
+  const deferredResumeRetryTimers = new WeakMap<ProcessHandle, ReturnType<typeof setTimeout>>();
+
+  function scheduleDeferredResumeRetry(handle: ProcessHandle): void {
+    if (deferredResumeRetryTimers.has(handle)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      deferredResumeRetryTimers.delete(handle);
+      const records = deferredResumeRecords.get(handle);
+      if (records === undefined || records.length === 0) {
+        return;
+      }
+      if (ownerAsyncStatusForResumeRecord(handle, records[0]) !== null) {
+        scheduleDeferredResumeRetry(handle);
+        return;
+      }
+      deps.retryDeferredResumes(handle);
+    }, DEFERRED_RESUME_RETRY_MS);
+    deferredResumeRetryTimers.set(handle, timer);
+  }
+  const includeDetailedDiagnostics = deps.includeDetailedDiagnostics
+    ?? SUPERVISOR_DETAILED_DIAGNOSTICS_ENABLED;
+
+  function detailedThreadStateSnapshot(handle: ProcessHandle, vmPtr: number): string {
+    return includeDetailedDiagnostics
+      ? formatSupervisorThreadStateSnapshot(handle, vmPtr)
+      : "";
+  }
 
   function findWorkerByVmPtr(handle: ProcessHandle, vmPtr: number): Worker | undefined {
     for (const worker of processWorkers(handle)) {
@@ -360,6 +397,7 @@ export function createSupervisorResumeHostBoundary(
     const records = deferredResumeRecords.get(handle) ?? [];
     records.push(record);
     deferredResumeRecords.set(handle, records);
+    scheduleDeferredResumeRetry(handle);
     const worker = findWorkerByVmPtr(handle, record.vmPtr);
     const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
     const ownerAsync = getThreadOwnerAsyncDetail(thread);
@@ -411,7 +449,7 @@ export function createSupervisorResumeHostBoundary(
             `${source}:defer-blocked:0x${record.vmPtr.toString(16)}`
               + `:tid=${record.tid}:seq=${record.seq.toString()}`
               + `:status=${record.status}:current=${currentStatus}:blocked=${blocked.status}`
-              + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
+              + detailedThreadStateSnapshot(handle, record.vmPtr),
           );
           return null;
         }
@@ -443,7 +481,7 @@ export function createSupervisorResumeHostBoundary(
         + `:tid=${record.tid}:seq=${record.seq.toString()}`
         + `:process=0x${record.processPtr.toString(16)}`
         + `:status=${record.status}:detail=0x${record.detail0.toString(16)}`
-        + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
+        + detailedThreadStateSnapshot(handle, record.vmPtr),
     );
     return { worker: selectedWorker, resumeBlockedSyscall };
   }
@@ -462,7 +500,7 @@ export function createSupervisorResumeHostBoundary(
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:runnable:none:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`
-          + formatSupervisorThreadStateSnapshot(handle, handle.vmPtr),
+          + detailedThreadStateSnapshot(handle, handle.vmPtr),
       );
       return null;
     }
@@ -510,7 +548,7 @@ export function createSupervisorResumeHostBoundary(
         + `:process=0x${record.processPtr.toString(16)}`
         + `:detail=0x${record.detail0.toString(16)}`
         + `:status=${record.status}`
-        + formatSupervisorThreadStateSnapshot(handle, record.vmPtr),
+        + detailedThreadStateSnapshot(handle, record.vmPtr),
     );
   }
 
@@ -565,6 +603,7 @@ export function createSupervisorResumeHostBoundary(
         const record = deferred[0];
         const ownerAsyncStatus = ownerAsyncStatusForResumeRecord(handle, record);
         if (ownerAsyncStatus !== null) {
+          scheduleDeferredResumeRetry(handle);
           break;
         }
         deferred.shift();

@@ -1,10 +1,17 @@
 // Kernel-worker tests in this file validate shared-state bridge behavior during supervisor migration.
 import { expect, test, vi } from "vite-plus/test";
-import type { KernelExports } from "../../../src/abi.js";
+import type { KernelExports, KernelRuntimeState } from "../../../src/abi.js";
 import {
   collectProcessHeldOfdRefcounts,
   createKernelWorkerOfdPrimitives,
 } from "../../../src/kernel-worker/primitives/ofd.js";
+import {
+  OFD_HOST_FD_OFFSET,
+  OFD_INO_OFFSET,
+  OFD_OFFSET_OFFSET,
+  OFD_REFCOUNT_OFFSET,
+  OFD_TYPE_OFFSET,
+} from "../../../src/layout/ofd.js";
 
 function makeMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: 64, maximum: 64, shared: true });
@@ -115,6 +122,52 @@ test("collectProcessHeldOfdRefcounts uses supervisor process authority when avai
 
   expect(held[7]).toBe(2);
   expect(held[8]).toBe(1);
+});
+
+test("selected OFD transport preserves a live target refcount", () => {
+  const sourceMemory = makeMemory();
+  const targetMemory = makeMemory();
+  const tablePtr = 0x220000;
+  const slotBytes = 32;
+  const ofdId = 7;
+  const slotOffset = tablePtr + ofdId * slotBytes;
+  const writeSlot = (memory: WebAssembly.Memory, refcount: number, offset: bigint): void => {
+    const view = new DataView(memory.buffer, slotOffset, slotBytes);
+    view.setInt32(OFD_TYPE_OFFSET, 3, true);
+    view.setInt32(OFD_HOST_FD_OFFSET, -1, true);
+    view.setInt32(OFD_REFCOUNT_OFFSET, refcount, true);
+    view.setBigInt64(OFD_OFFSET_OFFSET, offset, true);
+    view.setUint32(OFD_INO_OFFSET, 45, true);
+  };
+  writeSlot(sourceMemory, 0, 64n);
+  writeSlot(targetMemory, 2, 32n);
+
+  const decideWrite = vi.fn(() => 1);
+  const makeTransportExports = (memory: WebAssembly.Memory) => ({
+    ...makeKernelExports(memory),
+    supervisor_ofd_slot_write_action: decideWrite,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+  }) as unknown as KernelExports;
+  const source = makeTransportExports(sourceMemory);
+  const target = makeTransportExports(targetMemory);
+  const state = { ofdTablePtr: tablePtr } as KernelRuntimeState;
+  const primitives = createKernelWorkerOfdPrimitives({
+    getCanonicalExports: () => target,
+    processKernels: new Map(),
+  });
+
+  primitives.copySelectedOfdState(source, state, target, state, [ofdId]);
+  let applied = new DataView(targetMemory.buffer, slotOffset, slotBytes);
+  expect(applied.getInt32(OFD_REFCOUNT_OFFSET, true)).toBe(2);
+  expect(applied.getBigInt64(OFD_OFFSET_OFFSET, true)).toBe(64n);
+
+  const snapshot = new Uint8Array(sourceMemory.buffer, slotOffset, slotBytes).slice();
+  new DataView(snapshot.buffer).setBigInt64(OFD_OFFSET_OFFSET, 96n, true);
+  primitives.applySelectedOfdSnapshots(target, state, [{ ofdId, slot: snapshot }]);
+  applied = new DataView(targetMemory.buffer, slotOffset, slotBytes);
+  expect(applied.getInt32(OFD_REFCOUNT_OFFSET, true)).toBe(2);
+  expect(applied.getBigInt64(OFD_OFFSET_OFFSET, true)).toBe(96n);
+  expect(decideWrite).toHaveBeenCalled();
 });
 
 test("reconcileCanonicalOfdRefcounts does not last-close an OFD while one member still holds it", () => {

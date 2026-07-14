@@ -186,12 +186,13 @@ test("recordChildExitViaKernelWorker returns parent wake effects after draining 
     heapPtr: baseState.heapPtr + 0x80,
   };
   const publishedStates: KernelRuntimeState[] = [];
+  const kernelWorkerRequest = vi.fn(async () => ({
+    type: "child-exit-recorded" as const,
+    requestId: 0,
+    kernelState: syncedState,
+  }));
   const handle = makeHandle({
-    kernelWorkerRequest: vi.fn(async () => ({
-      type: "child-exit-recorded",
-      requestId: 0,
-      kernelState: syncedState,
-    })),
+    kernelWorkerRequest,
   });
 
   const originalKernelState = handle.kernelState;
@@ -225,6 +226,13 @@ test("recordChildExitViaKernelWorker returns parent wake effects after draining 
     "progress:1",
   ]);
   expect(outcome.effects).toBeUndefined();
+  expect(kernelWorkerRequest).toHaveBeenCalledOnce();
+  expect(kernelWorkerRequest).toHaveBeenCalledWith(expect.objectContaining({
+    type: "record-child-exit",
+    pid: 1,
+    childPid: 7,
+    waitStatus: 0x0300,
+  }));
   expect(handle.recordedChildExits).toEqual([[7, 0x0300]]);
   expect(handle.kernelState.heapPtr).toBe(syncedState.heapPtr);
   expect(originalKernelState.heapPtr).toBe(baseState.heapPtr);

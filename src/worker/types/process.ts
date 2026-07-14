@@ -110,6 +110,7 @@ export interface KernelShareGroup {
   members: Set<ProcessHandle>;
   sharedOfdIds: Set<number>;
   ofdSlotSnapshots: Map<number, Uint8Array>;
+  allocationReservedOfdIds?: Set<number>;
 }
 
 export type KernelSyncHandle = Pick<

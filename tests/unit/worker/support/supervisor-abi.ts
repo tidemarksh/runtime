@@ -8,6 +8,7 @@ import {
   FS_OP_MKDIR,
   FS_OP_MMAP,
   FS_OP_OPENAT,
+  FS_OP_READ,
   FS_OP_RENAME,
   FS_OP_UNLINK,
 } from "../../../../src/layout/fs-ring.js";
@@ -2496,6 +2497,24 @@ export function makeSupervisorAbiStubs(
       }
       return callNumber(receiver, "process_fd_flags", vmPtr, fd);
     },
+    supervisor_process_fd_table_is_coherent(this: KernelExports | undefined, vmPtr: number) {
+      const receiver = currentExports(this);
+      const maxFds = callNumber(receiver, "abi_max_fds");
+      for (let fd = 0; fd < maxFds; fd += 1) {
+        const ofdId = callNumber(receiver, "process_fd_ofd_id", vmPtr, fd);
+        if (ofdId === 0) {
+          continue;
+        }
+        if (
+          ofdId < 0
+          || ofdId >= maxFds
+          || callNumber(receiver, "kernel_ofd_refcount", ofdId) <= 0
+        ) {
+          return 0;
+        }
+      }
+      return 1;
+    },
     supervisor_ofd_fd_type(this: KernelExports | undefined, ofdId: number) {
       const receiver = currentExports(this);
       if (ofdId <= 0 || ofdId >= callNumber(receiver, "abi_max_fds")) {
@@ -3102,6 +3121,11 @@ export function makeSupervisorAbiStubs(
           || ownerAsyncStatus === execveSpawn
           || lastStatus === execveSpawn
         );
+      const responseWritesAreAlreadyShared = opcode === FS_OP_MMAP
+        || (
+          opcode === FS_OP_READ
+          && callNumber(receiver, "supervisor_fs_pending_regular_file_ofd", vmPtr) > 0
+        );
       let disposition = 0;
       if (processOwnerMatches) {
         disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_process_owner_matches;
@@ -3116,7 +3140,7 @@ export function makeSupervisorAbiStubs(
       if (!failedExecveChildOwner && processOwnerMatches) {
         disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_apply_local_metadata;
       }
-      if (!failedExecveChildOwner && opcode !== FS_OP_MMAP) {
+      if (!failedExecveChildOwner && !responseWritesAreAlreadyShared) {
         disposition |= DEFAULT_NUMERIC_EXPORTS.supervisor_fs_response_flag_queue_thread_worker_writes;
       }
       if (opcode === FS_OP_CLOSE || opcode === FS_OP_EXECVE) {

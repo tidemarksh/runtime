@@ -200,24 +200,24 @@ function makeKernel() {
       result: bigint | number,
       hostMemfsMutated: number,
       hostOfdStateChanged: number,
-      pendingRingRequest: number,
+      _pendingRingRequest: number,
       regularFileRequest: number,
     ) => {
       const signedResult = Number(
         BigInt.asIntN(64, typeof result === "bigint" ? result : BigInt(result)),
       );
       const fsSucceeded = signedResult >= 0;
-      const memfsStateMayChange = (effects & (1 | 2)) !== 0;
-      const memfsPublishMayBeReady = (effects & 1) !== 0 || ((effects & 2) !== 0 && opcode === FS_OP_WRITE);
-      const ofdStateMayChange = (effects & 4) !== 0;
+      const memfsStateMayChange = (effects & (1 | 4)) !== 0;
+      const memfsPublishMayBeReady = (effects & 1) !== 0 || ((effects & 4) !== 0 && opcode === FS_OP_WRITE);
+      const ofdStateMayChange = (effects & 2) !== 0;
       let flags = 0;
-      if (hostMemfsMutated !== 0 || (fsSucceeded && (memfsStateMayChange || pendingRingRequest !== 0))) {
+      if (hostMemfsMutated !== 0 || (fsSucceeded && memfsStateMayChange)) {
         flags |= 1;
       }
       if (fsSucceeded && memfsPublishMayBeReady) {
         flags |= 2;
       }
-      if (hostOfdStateChanged !== 0 || (fsSucceeded && (ofdStateMayChange || pendingRingRequest !== 0))) {
+      if (hostOfdStateChanged !== 0 || (fsSucceeded && ofdStateMayChange)) {
         flags |= 4;
       }
       if (regularFileRequest !== 0) {
@@ -1044,7 +1044,7 @@ test("kernel-worker fs outcome defers file write publication to a later sync poi
   const kernel = {
     ...makeKernel(),
     thread_pending_fs_opcode: () => 2,
-    thread_pending_fs_effects: () => 2,
+    thread_pending_fs_effects: () => 4,
   };
   const kernelWorkerRequest = vi.fn(async () => ({
     type: "fs-processed",

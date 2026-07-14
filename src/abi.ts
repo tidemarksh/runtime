@@ -523,6 +523,7 @@ export interface KernelExports {
   supervisor_process_ofd_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_fd_flags_for_fd?(vmPtr: number, fd: number): number;
   supervisor_process_fd_is_open?(vmPtr: number, fd: number): number;
+  supervisor_process_fd_table_is_coherent?(vmPtr: number): number;
   supervisor_ofd_fd_type?(ofdId: number): number;
   supervisor_ofd_host_fd?(ofdId: number): number;
   supervisor_ofd_status_flags?(ofdId: number): number;
@@ -2147,6 +2148,7 @@ const REQUIRED_SUPERVISOR_RUNTIME_EXPORTS = [
   "supervisor_process_ofd_for_fd",
   "supervisor_process_fd_flags_for_fd",
   "supervisor_process_fd_is_open",
+  "supervisor_process_fd_table_is_coherent",
   "supervisor_ofd_fd_type",
   "supervisor_ofd_host_fd",
   "supervisor_ofd_status_flags",

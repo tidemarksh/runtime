@@ -199,7 +199,7 @@ interface KernelWorkerMessageHandlerDeps {
 }
 
 export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandlerDeps) {
-  return async function handleKernelWorkerMessage(msg: KernelWorkerInbound): Promise<void> {
+  async function dispatchKernelWorkerMessage(msg: KernelWorkerInbound): Promise<void> {
     try {
       switch (msg.type) {
         case "init-kernel": {
@@ -611,5 +611,12 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
         message: error instanceof Error ? (error.stack ?? error.message) : String(error),
       });
     }
+  }
+
+  let messageTail = Promise.resolve();
+  return function handleKernelWorkerMessage(msg: KernelWorkerInbound): Promise<void> {
+    const run = messageTail.then(() => dispatchKernelWorkerMessage(msg));
+    messageTail = run.then(() => {}, () => {});
+    return run;
   };
 }

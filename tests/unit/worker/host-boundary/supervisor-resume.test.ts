@@ -30,7 +30,10 @@ type QueueDeps = Parameters<typeof createWorkerSchedulerQueueHelpers>[0];
 function makeQueue(
   threadWorkerStates: WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>,
   debugEvents: string[],
-  overrides: Partial<Pick<QueueDeps, "takeThreadWorkerBlockedResume">> = {},
+  overrides: Partial<Pick<
+    QueueDeps,
+    "takeThreadWorkerBlockedResume" | "isSupervisorFutexWaiter" | "includeDetailedSupervisorDiagnostics"
+  >> = {},
 ) {
   return createWorkerSchedulerQueueHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -40,17 +43,18 @@ function makeQueue(
     blockWorker: () => {},
     clearHostBlockedRetryTimer: () => {},
     takeThreadWorkerBlockedResume: overrides.takeThreadWorkerBlockedResume ?? (() => false),
-    isSupervisorFutexWaiter: (handle, worker) => {
+    isSupervisorFutexWaiter: overrides.isSupervisorFutexWaiter ?? ((handle, worker) => {
       const thread = threadWorkerStates.get(worker);
       return thread !== undefined
         && handle.kernel.thread_status(thread.vmPtr) === handle.kernel.abi_status_futex_wait();
-    },
+    }),
     completeProcessExit: async () => {},
     failProcess: (_handle, error) => {
       throw error;
     },
     handleWorkerMessage: () => {},
     threadWorkerStates,
+    includeDetailedSupervisorDiagnostics: overrides.includeDetailedSupervisorDiagnostics,
   });
 }
 
@@ -203,6 +207,49 @@ test("host boundary preserves one-shot futex wake records while owner async stat
   }));
 });
 
+test("host boundary retries a deferred resume after owner async clears", async () => {
+  vi.useFakeTimers();
+  try {
+    const worker = { postMessage: vi.fn() } as unknown as Worker;
+    const thread = makeHostBoundaryThread(0x1234);
+    const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
+    threadWorkerStates.set(worker, thread);
+    const kernel = makeHostBoundaryKernel();
+    let resumePolled = false;
+    kernel.supervisor_resume_record_bytes = () => 48;
+    kernel.supervisor_resume_kind_futex_wake = () => 1;
+    kernel.supervisor_resume_kind_runnable_thread = () => 2;
+    kernel.supervisor_next_resume = vi.fn((outPtr: number, outLen: number) => {
+      if (resumePolled) {
+        return 0;
+      }
+      resumePolled = true;
+      return writeResumeRecord(kernel.memory, outPtr, {
+        kind: 2,
+        seq: 9n,
+        vmPtr: thread.vmPtr,
+        tid: 2,
+        processPtr: 0x2000,
+        status: kernel.abi_status_ok(),
+        detail0: 0n,
+      }) <= outLen ? 48 : 0;
+    });
+    kernel.supervisor_process_resume = vi.fn(() => 0);
+    const handle = makeHostBoundaryHandle(kernel, worker);
+    setThreadOwnerAsyncStatus(thread as never, kernel.abi_status_ok());
+    const queue = makeQueue(threadWorkerStates, []);
+
+    queue.pumpProcess(handle);
+    clearThreadOwnerAsyncStatus(thread as never);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(hostExecutionState(handle).runningWorker).toBe(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "step" }));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("host boundary keeps later runnable resume records for later pumps", () => {
   const firstWorker = { postMessage: vi.fn() } as unknown as Worker;
   const secondWorker = { postMessage: vi.fn() } as unknown as Worker;
@@ -326,6 +373,32 @@ test("host boundary marks Runtime blocked-resume fallback steps", () => {
   }));
   expect(debugEvents).toContain(
     "supervisor-resume:runnable:blocked-resume:0x1234:status=0",
+  );
+});
+
+test("host boundary discards a stale blocked-resume fallback for a supervisor futex waiter", () => {
+  const worker = { postMessage: vi.fn() } as unknown as Worker;
+  const thread = makeHostBoundaryThread(0x1234);
+  const threadWorkerStates = new WeakMap<Worker, ReturnType<typeof makeHostBoundaryThread>>();
+  threadWorkerStates.set(worker, thread);
+  const kernel = makeHostBoundaryKernel();
+  kernel.supervisor_process_resume = vi.fn(() => 0);
+  kernel.thread_status = () => kernel.abi_status_futex_wait();
+  const handle = makeHostBoundaryHandle(kernel, worker);
+  const debugEvents: string[] = [];
+  const takeThreadWorkerBlockedResume = vi.fn((_handle, candidate: Worker) => candidate === worker);
+
+  makeQueue(threadWorkerStates, debugEvents, {
+    takeThreadWorkerBlockedResume,
+    isSupervisorFutexWaiter: () => true,
+  }).pumpProcess(handle);
+
+  expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
+  expect(takeThreadWorkerBlockedResume).toHaveBeenCalledWith(handle, worker);
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+  expect(worker.postMessage).not.toHaveBeenCalled();
+  expect(debugEvents).toContain(
+    "supervisor-resume:runnable:discard-blocked-resume-futex-waiter:0x1234",
   );
 });
 
@@ -471,8 +544,7 @@ test("host boundary routes host-wait runnable resume through blocked-syscall ret
     resumeBlockedSyscall: true,
   }));
   expect(debugEvents).toContain(
-    "supervisor-resume:runnable:selected:0x1234:tid=2:seq=14:process=0x2000:status=0:detail=0x0"
-      + ":snapshot=process=0x2000:owner=0x1234:threads=2/2/0x1234/6/0x0",
+    "supervisor-resume:runnable:selected:0x1234:tid=2:seq=14:process=0x2000:status=0:detail=0x0",
   );
 });
 
@@ -559,7 +631,9 @@ test("host boundary includes supervisor thread snapshot in resume diagnostics", 
   hostExecutionState(handle).vforkReadyWorkers = [selectedWorker];
   const debugEvents: string[] = [];
 
-  makeQueue(threadWorkerStates, debugEvents).pumpProcess(handle);
+  makeQueue(threadWorkerStates, debugEvents, {
+    includeDetailedSupervisorDiagnostics: true,
+  }).pumpProcess(handle);
 
   expect(kernel.supervisor_thread_state_snapshot).toHaveBeenCalledWith(0x1234, 0, 64);
   expect(debugEvents).toContain(

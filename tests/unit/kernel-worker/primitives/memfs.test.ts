@@ -1,8 +1,9 @@
 // Kernel-worker tests in this file validate transitional runtime-owned bridge behavior.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { KernelExports, KernelRuntimeState } from "../../../../src/abi.js";
 import { readMemfsLayout } from "../../../../src/kernel-worker/common.js";
 import { createKernelWorkerMemfsPrimitives } from "../../../../src/kernel-worker/primitives/memfs.js";
+import { writeMemfsHeaderPointer } from "../../../../src/layout/memfs.js";
 
 function writeMemfsHeader(
   memory: WebAssembly.Memory,
@@ -42,6 +43,7 @@ function createFakeExports(
 ): KernelExports {
   return {
     memory,
+    kernel_attach_runtime_state: () => {},
     kernel_memfs_inodes_bytes: () => layout.inodesBytes,
     kernel_memfs_first_child_bytes: () => layout.firstChildBytes,
     kernel_memfs_dir_entries_bytes: () => layout.dirEntriesBytes,
@@ -52,6 +54,167 @@ function createFakeExports(
 }
 
 describe("createKernelWorkerMemfsPrimitives", () => {
+  it("reads wasm64 MemFS header pointers at eight-byte offsets", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+    const headerPtr = 0x80;
+    const headerBytes = 48;
+    const view = new DataView(memory.buffer, headerPtr, headerBytes);
+    view.setUint32(0, 17, true);
+    view.setUint32(4, 13, true);
+    view.setUint32(8, 8, true);
+    view.setUint32(12, 4096, true);
+    writeMemfsHeaderPointer(view, headerBytes, 0, 0x1000);
+    writeMemfsHeaderPointer(view, headerBytes, 1, 0x2000);
+    writeMemfsHeaderPointer(view, headerBytes, 2, 0x3000);
+    writeMemfsHeaderPointer(view, headerBytes, 3, 0x4000);
+
+    expect(readMemfsLayout(memory, headerPtr, { kernel_memfs_header_bytes: () => headerBytes })).toEqual({
+      inodeCount: 17,
+      dirEntryCount: 13,
+      dataUsed: 8,
+      dataCap: 4096,
+      inodesPtr: 0x1000,
+      firstChildPtr: 0x2000,
+      dirEntriesPtr: 0x3000,
+      dataPtr: 0x4000,
+    });
+  });
+
+  it("reattaches the target runtime state after replacing MemFS tables", () => {
+    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
+    const sourceMemory = new WebAssembly.Memory(memoryPages);
+    const targetMemory = new WebAssembly.Memory(memoryPages);
+    const sourceState = { memfsPtr: 0x80 } as KernelRuntimeState;
+    const targetState = {
+      heapBase: 1,
+      heapPtr: 2,
+      ofdTablePtr: 3,
+      memfsPtr: 0x180,
+      memStatePtr: 4,
+      epollTablePtr: 5,
+      socketStatePtr: 6,
+      socketUsed: 7,
+      pipeBase: 8,
+      pipeUsed: 9n,
+      netBufBase: 10,
+      netBufUsed: 11n,
+      sigSlotsPtr: 12,
+      processPendingPtr: 13,
+      processRuntimeStatePtr: 14,
+      timeStatePtr: 15,
+    } as KernelRuntimeState;
+    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
+      inodeCount: 1,
+      dirEntryCount: 1,
+      dataUsed: 8,
+      dataCap: 16,
+      inodesPtr: 0x200,
+      firstChildPtr: 0x300,
+      dirEntriesPtr: 0x340,
+      dataPtr: 0x440,
+    });
+    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
+      inodeCount: 1,
+      dirEntryCount: 1,
+      dataUsed: 8,
+      dataCap: 16,
+      inodesPtr: 0x500,
+      firstChildPtr: 0x600,
+      dirEntriesPtr: 0x640,
+      dataPtr: 0x740,
+    });
+    const sourceExports = createFakeExports(sourceMemory, {
+      inodesBytes: 128,
+      firstChildBytes: 16,
+      dirEntriesBytes: 64,
+      dataBytes: 16,
+      dataPtr: 0x440,
+    });
+    const targetExports = createFakeExports(targetMemory, {
+      inodesBytes: 128,
+      firstChildBytes: 16,
+      dirEntriesBytes: 64,
+      dataBytes: 16,
+      dataPtr: 0x740,
+    });
+    const attach = vi.fn();
+    targetExports.kernel_attach_runtime_state = attach;
+
+    createKernelWorkerMemfsPrimitives().copyMemfsState(
+      sourceExports,
+      sourceState,
+      targetExports,
+      targetState,
+    );
+
+    expect(attach).toHaveBeenCalledOnce();
+    expect(attach.mock.calls[0]?.[3]).toBe(targetState.memfsPtr);
+  });
+
+  it("copies only active metadata entries and clears a stale target tail", () => {
+    const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
+    const sourceMemory = new WebAssembly.Memory(memoryPages);
+    const targetMemory = new WebAssembly.Memory(memoryPages);
+    const primitives = createKernelWorkerMemfsPrimitives();
+    const sourceState = { memfsPtr: 0x80 } as KernelRuntimeState;
+    const targetState = { memfsPtr: 0x180 } as KernelRuntimeState;
+
+    writeMemfsHeader(sourceMemory, sourceState.memfsPtr, {
+      inodeCount: 2,
+      dirEntryCount: 2,
+      dataUsed: 8,
+      dataCap: 16,
+      inodesPtr: 0x200,
+      firstChildPtr: 0x300,
+      dirEntriesPtr: 0x340,
+      dataPtr: 0x440,
+    });
+    writeMemfsHeader(targetMemory, targetState.memfsPtr, {
+      inodeCount: 3,
+      dirEntryCount: 3,
+      dataUsed: 8,
+      dataCap: 16,
+      inodesPtr: 0x500,
+      firstChildPtr: 0x600,
+      dirEntriesPtr: 0x640,
+      dataPtr: 0x740,
+    });
+
+    new Uint8Array(sourceMemory.buffer, 0x200, 64).fill(0x11);
+    new Uint8Array(sourceMemory.buffer, 0x300, 8).fill(0x22);
+    new Uint8Array(sourceMemory.buffer, 0x340, 32).fill(0x33);
+    new Uint8Array(targetMemory.buffer, 0x500, 128).fill(0xcc);
+    new Uint8Array(targetMemory.buffer, 0x600, 16).fill(0xcc);
+    new Uint8Array(targetMemory.buffer, 0x640, 64).fill(0xcc);
+
+    const sourceExports = createFakeExports(sourceMemory, {
+      inodesBytes: 128,
+      firstChildBytes: 16,
+      dirEntriesBytes: 64,
+      dataBytes: 16,
+      dataPtr: 0x440,
+    });
+    const targetExports = createFakeExports(targetMemory, {
+      inodesBytes: 128,
+      firstChildBytes: 16,
+      dirEntriesBytes: 64,
+      dataBytes: 16,
+      dataPtr: 0x740,
+    });
+
+    primitives.copyMemfsState(sourceExports, sourceState, targetExports, targetState);
+
+    expect(new Uint8Array(targetMemory.buffer, 0x500, 64)).toEqual(new Uint8Array(64).fill(0x11));
+    expect(new Uint8Array(targetMemory.buffer, 0x500 + 64, 32)).toEqual(new Uint8Array(32));
+    expect(new Uint8Array(targetMemory.buffer, 0x500 + 96, 32)).toEqual(new Uint8Array(32).fill(0xcc));
+    expect(new Uint8Array(targetMemory.buffer, 0x600, 8)).toEqual(new Uint8Array(8).fill(0x22));
+    expect(new Uint8Array(targetMemory.buffer, 0x600 + 8, 4)).toEqual(new Uint8Array(4));
+    expect(new Uint8Array(targetMemory.buffer, 0x600 + 12, 4)).toEqual(new Uint8Array(4).fill(0xcc));
+    expect(new Uint8Array(targetMemory.buffer, 0x640, 32)).toEqual(new Uint8Array(32).fill(0x33));
+    expect(new Uint8Array(targetMemory.buffer, 0x640 + 32, 16)).toEqual(new Uint8Array(16));
+    expect(new Uint8Array(targetMemory.buffer, 0x640 + 48, 16)).toEqual(new Uint8Array(16).fill(0xcc));
+  });
+
   it("copies metadata into the target memfs layout without regular inline data", () => {
     const memoryPages = { initial: 1, maximum: 4, shared: true } as const;
     const sourceMemory = new WebAssembly.Memory(memoryPages);
@@ -323,13 +486,14 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     });
     writeMemfsHeader(targetMemory, targetState.memfsPtr, {
       inodeCount: 3,
-      dataUsed: 0,
+      dataUsed: 16,
       dataCap: 64,
       inodesPtr: 0x400,
       firstChildPtr: 0x480,
       dirEntriesPtr: 0x4a0,
       dataPtr: 0x500,
     });
+    new Uint8Array(targetMemory.buffer, 0x500, 64).fill(0xcc);
 
     const sourceInodeView = new DataView(sourceMemory.buffer);
     const regularInodeBase = 0x200 + 32;
@@ -351,14 +515,14 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     const sourceExports = createFakeExports(sourceMemory, {
       inodesBytes: 96,
       firstChildBytes: 12,
-      dirEntriesBytes: 32,
+      dirEntriesBytes: 36,
       dataBytes: 64,
       dataPtr: 0x300,
     });
     const targetExports = createFakeExports(targetMemory, {
       inodesBytes: 96,
       firstChildBytes: 12,
-      dirEntriesBytes: 32,
+      dirEntriesBytes: 36,
       dataBytes: 64,
       dataPtr: 0x500,
     });
@@ -379,6 +543,7 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     expect(symlinkDataCap).toBe(symlinkTarget.length);
     expect(new TextDecoder().decode(new Uint8Array(targetMemory.buffer, 0x500 + symlinkDataOffset, symlinkTarget.length))).toBe("usr/lib");
     expect(readMemfsLayout(targetMemory, targetState.memfsPtr).dataUsed).toBe(8 + symlinkTarget.length);
+    expect(new Uint8Array(targetMemory.buffer)[0x500 + 32]).toBe(0xcc);
   });
 
   it("includeData copy preserves inline regular file data", () => {
@@ -450,14 +615,14 @@ describe("createKernelWorkerMemfsPrimitives", () => {
     const sourceExports = createFakeExports(sourceMemory, {
       inodesBytes: 96,
       firstChildBytes: 12,
-      dirEntriesBytes: 32,
+      dirEntriesBytes: 36,
       dataBytes: 64,
       dataPtr: 0x300,
     });
     const targetExports = createFakeExports(targetMemory, {
       inodesBytes: 96,
       firstChildBytes: 12,
-      dirEntriesBytes: 32,
+      dirEntriesBytes: 36,
       dataBytes: 64,
       dataPtr: 0x500,
     });

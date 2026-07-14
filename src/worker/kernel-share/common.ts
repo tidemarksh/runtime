@@ -32,6 +32,7 @@ export function createKernelShareGroup(): KernelShareGroup {
     members: new Set(),
     sharedOfdIds: new Set(),
     ofdSlotSnapshots: new Map(),
+    allocationReservedOfdIds: new Set(),
   };
 }
 
@@ -106,6 +107,12 @@ export function deleteKernelShareSharedOfdId(handle: ProcessHandle, ofdId: numbe
 
 export function kernelShareHasSharedOfdId(handle: ProcessHandle, ofdId: number): boolean {
   return kernelShareSharedOfdIds(handle).has(ofdId);
+}
+
+export function kernelShareAllocationReservedOfdIds(handle: ProcessHandle): Set<number> {
+  const group = processKernelShareGroup(handle);
+  group.allocationReservedOfdIds ??= new Set();
+  return group.allocationReservedOfdIds;
 }
 
 export function setKernelShareOfdSlotSnapshot(

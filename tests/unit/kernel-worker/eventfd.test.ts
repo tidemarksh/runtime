@@ -43,6 +43,8 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     abi_fd_type_file: () => 1,
     abi_fd_type_eventfd: () => FD_TYPE_EVENTFD,
     abi_fd_type_timerfd: () => FD_TYPE_TIMERFD,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_write_action: () => 1,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,

@@ -255,7 +255,11 @@ export function createBlockedRetryCoordinator(
     }
   }
 
-  type ActiveChildParkResult = "parked" | "no-active-child" | "unsupported-status";
+  type ActiveChildParkResult =
+    | "parked"
+    | "host-child-unavailable"
+    | "no-active-child"
+    | "unsupported-status";
 
   function parkBehindSupervisorActiveChild(
     handle: ProcessHandle,
@@ -271,13 +275,20 @@ export function createBlockedRetryCoordinator(
     if (childPid <= 0) {
       return "no-active-child";
     }
-    deps.pumpSupervisorSelectedChildProcess?.(childPid);
+    const childPumped = deps.pumpSupervisorSelectedChildProcess?.(childPid) ?? true;
     const event = statusActions.activeChildPipe
       ? `pipe-retry-skip:${handle.pid}:active-child:${childPid}:ready=${readyCount ?? "n/a"}:${deps.formatFirstPipeWaitDebug(handle, blocked.vmPtr)}:${deps.formatBlockedPollFdSet(handle, blocked.vmPtr)}`
       : `wait4-retry-skip:${handle.pid}:active-child:${childPid}`;
     if (getLastPipeRetryLifecycleEvent(blocked) !== event) {
       setLastPipeRetryLifecycleEvent(blocked, event);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, event);
+    }
+    if (!childPumped) {
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `blocked-retry-active-child-host-unavailable:${handle.pid}:${childPid}:status=${blocked.status}`,
+      );
+      return "host-child-unavailable";
     }
     return "parked";
   }
@@ -347,7 +358,10 @@ export function createBlockedRetryCoordinator(
             new Error(`kernel supervisor selected active-child retry for unsupported status ${latestBlocked.status}`),
           );
         }
-        if (parkResult === "no-active-child") {
+        if (
+          parkResult === "no-active-child"
+          || parkResult === "host-child-unavailable"
+        ) {
           deps.scheduleSupervisorBlockedRetry(handle, worker, ["host-progress"]);
         }
         return;
@@ -1105,6 +1119,9 @@ export function createBlockedRetryCoordinator(
         }
         if (parkResult === "no-active-child") {
           return "retry";
+        }
+        if (parkResult === "host-child-unavailable") {
+          deps.scheduleSupervisorBlockedRetry(handle, worker, ["host-progress"]);
         }
         return "done";
       case "resume-wait4":

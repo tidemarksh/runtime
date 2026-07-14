@@ -33,6 +33,8 @@ function makeKernelExports(memory: WebAssembly.Memory): KernelExports {
     abi_max_threads: () => 64,
     abi_fd_type_file: () => 1,
     abi_fd_type_epoll: () => 3,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_write_action: () => 1,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,

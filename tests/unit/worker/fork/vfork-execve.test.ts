@@ -1179,6 +1179,14 @@ test("vfork execve resumes the parent and initializes the child lifecycle throug
   expect(
     requests.some((msg) => msg.type === "resume-vfork-execve-parent" && msg.childPid === 156),
   ).toBe(true);
+  const childRegisterIndex = requests.findIndex(
+    (msg) => msg.type === "register-process" && msg.pid === 156,
+  );
+  const parentResumeIndex = requests.findIndex(
+    (msg) => msg.type === "resume-vfork-execve-parent" && msg.childPid === 156,
+  );
+  expect(childRegisterIndex).toBeGreaterThanOrEqual(0);
+  expect(parentResumeIndex).toBeGreaterThan(childRegisterIndex);
   expect(
     requests.some(
       (msg) => msg.type === "rehydrate-fork-shared-state"

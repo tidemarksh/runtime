@@ -261,8 +261,8 @@ test("syncForkSharedState keeps memfsOnly publication metadata-only", () => {
     makeKernelState(),
   );
 
-  expect(memfsCopyModes).toEqual([true, false]);
-  expect(canonicalFanoutModes).toEqual([true, false]);
+  expect(memfsCopyModes).toEqual([]);
+  expect(canonicalFanoutModes).toEqual([true, true, false, false]);
   expect(restoreProcSelfExe).not.toHaveBeenCalled();
 });
 
@@ -331,6 +331,10 @@ test("syncForkSharedState preserves published file data through page-cache resto
   );
 
   expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledTimes(1);
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith(
+    sourceExports,
+    { metadataAlreadyCopied: true, regularDataAlreadyExternalized: false },
+  );
   expect(canonicalExports.opLog).toContain("page-cache-restore");
   expect(canonicalExports.opLog).not.toContain("canonical:truncate:3:4");
   expect(canonicalExports.opLog).not.toContain("canonical:write:3:4");
@@ -404,8 +408,14 @@ test("syncForkSharedState restores preserved published file data to target proce
     makeKernelState(),
   );
 
-  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith();
-  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith(targetExports);
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith(
+    sourceExports,
+    { metadataAlreadyCopied: true, regularDataAlreadyExternalized: false },
+  );
+  expect(restorePublishedRegularFileDataFromPageCache).toHaveBeenCalledWith(
+    targetExports,
+    { metadataAlreadyCopied: true, regularDataAlreadyExternalized: false },
+  );
 });
 
 test("syncForkSharedState filters private fd entries outside tracked OFDs", () => {

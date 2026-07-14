@@ -653,6 +653,14 @@ function makeKernel(
     supervisor_ofd_refcount(this: KernelExports, ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_refcount(ofdId) : 0;
     },
+    supervisor_ofd_reconcile_refcount(this: KernelExports, ofdId: number, expectedRefcount: number) {
+      if (ofdId <= 0 || ofdId >= this.abi_max_fds() || expectedRefcount < 0) {
+        return 0;
+      }
+      const refcount = Math.trunc(expectedRefcount);
+      new DataView(memory.buffer).setUint32(state.ofdTablePtr + ofdId * 32 + 12, refcount, true);
+      return refcount;
+    },
     supervisor_ofd_offset(this: KernelExports, ofdId: number) {
       return ofdId > 0 && ofdId < this.abi_max_fds() ? this.kernel_ofd_offset(ofdId) : 0n;
     },

@@ -429,6 +429,11 @@ export function publishInode(
   }
 }
 
+export function publishedInodeUpperBound(sab: SharedArrayBuffer): number {
+  const u32 = new Uint32Array(sab);
+  return Math.min(MAX_INODES, Atomics.load(u32, OFF_INODE_COUNT >>> 2));
+}
+
 function residentPageRecordCount(sab: SharedArrayBuffer): number {
   const available = Math.max(0, sab.byteLength - DATA_REGION_OFFSET);
   const residentAvailable = Math.max(0, available - metadataDataRegionCapacity(sab));
@@ -480,6 +485,66 @@ interface ResidentPageRecordState {
   dirtyEnd: number;
 }
 
+interface ResidentPageHeapEntry {
+  index: number;
+  lastUsed: number;
+}
+
+interface ResidentPageIndexState {
+  initialized: boolean;
+  byIdentity: Map<string, number>;
+  cleanLru: ResidentPageHeapEntry[];
+  nextEmpty: number;
+}
+
+const residentPageIndexes = new WeakMap<SharedArrayBuffer, ResidentPageIndexState>();
+
+function residentPageIdentity(fileObjectId: number, generation: number, pageIndex: number): string {
+  return `${fileObjectId}:${generation}:${pageIndex}`;
+}
+
+function pushCleanLru(state: ResidentPageIndexState, entry: ResidentPageHeapEntry): void {
+  const heap = state.cleanLru;
+  let index = heap.length;
+  heap.push(entry);
+  while (index > 0) {
+    const parent = (index - 1) >>> 1;
+    if (heap[parent].lastUsed <= entry.lastUsed) {
+      break;
+    }
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = entry;
+}
+
+function popCleanLru(state: ResidentPageIndexState): ResidentPageHeapEntry | undefined {
+  const heap = state.cleanLru;
+  const first = heap[0];
+  const last = heap.pop();
+  if (first === undefined || last === undefined || heap.length === 0) {
+    return first;
+  }
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    if (left >= heap.length) {
+      break;
+    }
+    const right = left + 1;
+    const child = right < heap.length && heap[right].lastUsed < heap[left].lastUsed
+      ? right
+      : left;
+    if (heap[child].lastUsed >= last.lastUsed) {
+      break;
+    }
+    heap[index] = heap[child];
+    index = child;
+  }
+  heap[index] = last;
+  return first;
+}
+
 function readStableResidentPageRecord(
   sab: SharedArrayBuffer,
   index: number,
@@ -517,6 +582,152 @@ function readStableResidentPageRecord(
   };
 }
 
+function residentPageIndexState(sab: SharedArrayBuffer): ResidentPageIndexState {
+  let state = residentPageIndexes.get(sab);
+  if (state !== undefined) {
+    return state;
+  }
+  state = {
+    initialized: false,
+    byIdentity: new Map(),
+    cleanLru: [],
+    nextEmpty: 0,
+  };
+  residentPageIndexes.set(sab, state);
+  return state;
+}
+
+function ensureResidentPageIndex(sab: SharedArrayBuffer): ResidentPageIndexState {
+  const state = residentPageIndexState(sab);
+  if (state.initialized) {
+    return state;
+  }
+  const count = residentPageRecordCount(sab);
+  state.byIdentity.clear();
+  state.cleanLru.length = 0;
+  state.nextEmpty = count;
+  for (let index = 0; index < count; index += 1) {
+    const record = readStableResidentPageRecord(sab, index);
+    if (!record || (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
+      state.nextEmpty = Math.min(state.nextEmpty, index);
+      continue;
+    }
+    state.byIdentity.set(
+      residentPageIdentity(record.fileObjectId, record.generation, record.pageIndex),
+      index,
+    );
+    if ((record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) === 0) {
+      pushCleanLru(state, { index, lastUsed: record.lastUsed });
+    }
+  }
+  state.initialized = true;
+  return state;
+}
+
+function residentPageRecordMatches(
+  sab: SharedArrayBuffer,
+  index: number,
+  fileObjectId: number,
+  generation: number,
+  pageIndex: number,
+): boolean {
+  const u32 = new Uint32Array(sab);
+  const base32 = residentPageRecordOffset(sab, index) >>> 2;
+  const v1 = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+  if (v1 === 0 || (v1 & 1) !== 0) {
+    return false;
+  }
+  const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+  const matches = (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+    && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2)) === fileObjectId
+    && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2)) === generation
+    && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2)) === pageIndex;
+  return matches
+    && Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2)) === v1;
+}
+
+function forgetResidentPageRecord(
+  state: ResidentPageIndexState,
+  index: number,
+  record: ResidentPageRecordState | null,
+): void {
+  if (record && (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0) {
+    const key = residentPageIdentity(record.fileObjectId, record.generation, record.pageIndex);
+    if (state.byIdentity.get(key) === index) {
+      state.byIdentity.delete(key);
+    }
+  }
+  state.nextEmpty = Math.min(state.nextEmpty, index);
+}
+
+function nextEmptyResidentPageRecord(
+  sab: SharedArrayBuffer,
+  state: ResidentPageIndexState,
+): number {
+  const u32 = new Uint32Array(sab);
+  const count = residentPageRecordCount(sab);
+  const start = Math.min(state.nextEmpty, count);
+  for (const [from, to] of [[start, count], [0, start]] as const) {
+    for (let index = from; index < to; index += 1) {
+      const base32 = residentPageRecordOffset(sab, index) >>> 2;
+      const version = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
+      const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
+      if ((version & 1) === 0 && (flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
+        state.nextEmpty = index;
+        return index;
+      }
+    }
+  }
+  state.nextEmpty = count;
+  return -1;
+}
+
+function oldestCleanResidentPageRecord(
+  sab: SharedArrayBuffer,
+  state: ResidentPageIndexState,
+): number {
+  while (state.cleanLru.length > 0) {
+    const candidate = popCleanLru(state);
+    if (candidate === undefined) {
+      return -1;
+    }
+    const record = readStableResidentPageRecord(sab, candidate.index);
+    if (
+      !record
+      || (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0
+    ) {
+      continue;
+    }
+    if (record.lastUsed !== candidate.lastUsed) {
+      pushCleanLru(state, { index: candidate.index, lastUsed: record.lastUsed });
+      continue;
+    }
+    return candidate.index;
+  }
+
+  // Another isolate can publish or touch records in this SAB without updating
+  // this isolate's advisory heap. Recover from the shared record table.
+  let oldestIndex = -1;
+  let oldestLastUsed = 0xffffffff;
+  const count = residentPageRecordCount(sab);
+  for (let index = 0; index < count; index += 1) {
+    const record = readStableResidentPageRecord(sab, index);
+    if (
+      !record
+      || (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0
+      || (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0
+    ) {
+      continue;
+    }
+    if (record.lastUsed < oldestLastUsed) {
+      oldestIndex = index;
+      oldestLastUsed = record.lastUsed;
+    }
+  }
+  return oldestIndex;
+}
+
 function nextResidentClock(sab: SharedArrayBuffer): number {
   const u32 = new Uint32Array(sab);
   return Atomics.add(u32, OFF_RESIDENT_CLOCK >>> 2, 1) + 1;
@@ -528,17 +739,20 @@ function findResidentPageRecordIndex(
   generation: number,
   pageIndex: number,
 ): number {
+  const state = ensureResidentPageIndex(sab);
+  const key = residentPageIdentity(fileObjectId, generation, pageIndex);
+  const index = state.byIdentity.get(key);
+  if (index !== undefined && residentPageRecordMatches(sab, index, fileObjectId, generation, pageIndex)) {
+    return index;
+  }
+  if (index !== undefined) {
+    state.byIdentity.delete(key);
+  }
   const count = residentPageRecordCount(sab);
-  for (let index = 0; index < count; index += 1) {
-    const record = readStableResidentPageRecord(sab, index);
-    if (
-      record
-      && (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
-      && record.fileObjectId === fileObjectId
-      && record.generation === generation
-      && record.pageIndex === pageIndex
-    ) {
-      return index;
+  for (let candidate = 0; candidate < count; candidate += 1) {
+    if (residentPageRecordMatches(sab, candidate, fileObjectId, generation, pageIndex)) {
+      state.byIdentity.set(key, candidate);
+      return candidate;
     }
   }
   return -1;
@@ -596,48 +810,20 @@ function tryReserveResidentPageRecord(
 ): { recordIndex: number; oddVersion: number } | null {
   const u32 = new Uint32Array(sab);
   const count = residentPageRecordCount(sab);
+  const indexState = ensureResidentPageIndex(sab);
   for (let attempt = 0; attempt < Math.max(1, count * 2); attempt += 1) {
-    let existingIndex = -1;
-    let emptyIndex = -1;
-    let oldestIndex = -1;
-    let oldestLastUsed = 0xffffffff;
-
-    for (let index = 0; index < count; index += 1) {
-      const record = readStableResidentPageRecord(sab, index);
-      if (
-        record
-        && (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
-        && record.fileObjectId === fileObjectId
-        && record.generation === generation
-        && record.pageIndex === pageIndex
-      ) {
-        existingIndex = index;
-        break;
-      }
-    }
-
-    if (existingIndex < 0) {
-      for (let index = 0; index < count; index += 1) {
-        const base32 = residentPageRecordOffset(sab, index) >>> 2;
-        const version = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2));
-        if ((version & 1) !== 0) {
-          continue;
-        }
-        const flags = Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2));
-        if ((flags & RESIDENT_PAGE_RECORD_FLAG_VALID) === 0) {
-          emptyIndex = index;
-          break;
-        }
-        const record = readStableResidentPageRecord(sab, index);
-        if (!record || (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0) {
-          continue;
-        }
-        if (record.lastUsed < oldestLastUsed) {
-          oldestIndex = index;
-          oldestLastUsed = record.lastUsed;
-        }
-      }
-    }
+    const existingIndex = findResidentPageRecordIndex(
+      sab,
+      fileObjectId,
+      generation,
+      pageIndex,
+    );
+    const emptyIndex = existingIndex < 0
+      ? nextEmptyResidentPageRecord(sab, indexState)
+      : -1;
+    const oldestIndex = existingIndex < 0 && emptyIndex < 0
+      ? oldestCleanResidentPageRecord(sab, indexState)
+      : -1;
 
     const selected = authority.selectPublishSlot({
       existingSlot: existingIndex,
@@ -674,13 +860,21 @@ function tryReserveResidentPageRecord(
     }
     const oddVersion = tryBeginResidentPageRecordWrite(sab, selected, expectedVersion);
     if (oddVersion === null) {
+      if (selected === emptyIndex) {
+        indexState.nextEmpty = Math.min(indexState.nextEmpty, selected);
+      } else if (selected === oldestIndex && selectedRecord) {
+        pushCleanLru(indexState, { index: selected, lastUsed: selectedRecord.lastUsed });
+      }
       continue;
     }
     const base32 = residentPageRecordOffset(sab, selected) >>> 2;
     if (selectedIsCleanEvict) {
+      forgetResidentPageRecord(indexState, selected, selectedRecord);
       Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
       Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), 0);
       Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), 0);
+    } else if (selectedIsEmpty) {
+      indexState.nextEmpty = selected + 1;
     }
     return { recordIndex: selected, oddVersion };
   }
@@ -688,6 +882,8 @@ function tryReserveResidentPageRecord(
 }
 
 function clearResidentPageRecord(sab: SharedArrayBuffer, recordIndex: number): void {
+  const indexState = ensureResidentPageIndex(sab);
+  const record = readStableResidentPageRecord(sab, recordIndex);
   const oddVersion = tryBeginResidentPageRecordWrite(sab, recordIndex);
   if (oddVersion === null) {
     return;
@@ -698,6 +894,7 @@ function clearResidentPageRecord(sab: SharedArrayBuffer, recordIndex: number): v
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_START >>> 2), 0);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_DIRTY_END >>> 2), 0);
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
+  forgetResidentPageRecord(indexState, recordIndex, record);
 }
 
 function invalidateResidentPages(sab: SharedArrayBuffer, ino: number): void {
@@ -823,6 +1020,17 @@ export function publishResidentPage(
     RESIDENT_PAGE_RECORD_FLAG_VALID | (dirty ? RESIDENT_PAGE_RECORD_FLAG_DIRTY : 0),
   );
   Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), oddVersion + 1);
+  const indexState = ensureResidentPageIndex(sab);
+  indexState.byIdentity.set(
+    residentPageIdentity(meta.fileObjectId, meta.generation, pageIndex),
+    recordIndex,
+  );
+  if (!dirty) {
+    pushCleanLru(indexState, {
+      index: recordIndex,
+      lastUsed: Atomics.load(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2)),
+    });
+  }
   return true;
 }
 
@@ -877,7 +1085,11 @@ function readResidentFileDataWithDirtyPolicy(
         && (versionAfterCopy & 1) === 0
       ) {
         out.set(pageSnapshot.subarray(pageOffset, pageOffset + copyLen), copied);
-        Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2), nextResidentClock(sab));
+        const lastUsed = nextResidentClock(sab);
+        Atomics.store(u32, base32 + (RESIDENT_PAGE_RECORD_LAST_USED >>> 2), lastUsed);
+        if ((record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) === 0) {
+          pushCleanLru(ensureResidentPageIndex(sab), { index: recordIndex, lastUsed });
+        }
         pageCopied = true;
         break;
       }

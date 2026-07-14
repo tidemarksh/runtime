@@ -7,6 +7,7 @@ import {
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
+  publishedInodeUpperBound,
   publishResidentPage,
   readInodeMeta,
   readInodeRecord,
@@ -21,8 +22,25 @@ const RESIDENT_PAGE_RECORD_BYTES = 40;
 const RESIDENT_PAGE_RECORD_VERSION = 0;
 const RESIDENT_PAGE_RECORD_FILE_OBJECT_ID = 4;
 const RESIDENT_PAGE_RECORD_PAGE_INDEX = 8;
+const RESIDENT_PAGE_RECORD_DATA_OFF = 12;
 const RESIDENT_PAGE_RECORD_GENERATION = 20;
 const RESIDENT_PAGE_RECORD_FLAGS = 24;
+
+test("published inode upper bound follows the highest published inode", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+
+  expect(publishedInodeUpperBound(sab)).toBe(0);
+
+  publishInode(sab, 7, {
+    mode: 0o100644,
+    size: 0,
+    parentIno: 1,
+    name: new Uint8Array(),
+    nextSibling: 0,
+  });
+
+  expect(publishedInodeUpperBound(sab)).toBe(8);
+});
 
 const fakeSupervisorDirtyPageAuthority: ResidentDirtyPageAuthority = {
   selectPublishSlot(input) {
@@ -152,6 +170,79 @@ test("page-cache publish does not claim a resident page slot reserved by another
   expect(Atomics.load(u32, recordBase32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2))).toBe(1);
   expect(Atomics.load(u32, recordBase32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2))).toBe(0);
   expect(readResidentFileData(sab, 2, 0, bytes.length)).toBeNull();
+});
+
+test("page-cache local index discovers a resident page published by another isolate", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES);
+  const u32 = new Uint32Array(sab);
+  const bytes = new TextEncoder().encode("shared page");
+  const recordBase32 = (DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE) >>> 2;
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: bytes.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: 1,
+  });
+  expect(readResidentFileData(sab, 2, 0, bytes.length)).toBeNull();
+
+  new Uint8Array(sab, DATA_REGION_OFFSET, bytes.length).set(bytes);
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2), 2);
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2), 0);
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2), DATA_REGION_OFFSET);
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2), 1);
+  Atomics.store(u32, recordBase32 + (16 >>> 2), bytes.length);
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 1);
+  Atomics.store(u32, recordBase32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), 2);
+
+  expect(readResidentFileData(sab, 2, 0, bytes.length)).toEqual(bytes);
+});
+
+test("page-cache local index follows a resident page relocated by another isolate", () => {
+  const sab = new SharedArrayBuffer(
+    DATA_REGION_OFFSET + 2 * (DEFAULT_RESIDENT_PAGE_SIZE + RESIDENT_PAGE_RECORD_BYTES),
+  );
+  const initial = new TextEncoder().encode("initial page");
+  const relocated = new TextEncoder().encode("relocated page");
+  const u32 = new Uint32Array(sab);
+  const recordsOffset = DATA_REGION_OFFSET + 2 * DEFAULT_RESIDENT_PAGE_SIZE;
+
+  publishInode(sab, 2, {
+    mode: 0o100644,
+    size: relocated.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("external"),
+    nextSibling: 0,
+    fileObjectId: 2,
+    generation: 1,
+  });
+  expect(publishResidentPage(sab, 2, 0, initial, { authority: fakeSupervisorDirtyPageAuthority })).toBe(true);
+  expect(readResidentFileData(sab, 2, 0, initial.length)).toEqual(initial);
+
+  const firstRecord32 = recordsOffset >>> 2;
+  const secondRecord32 = (recordsOffset + RESIDENT_PAGE_RECORD_BYTES) >>> 2;
+  Atomics.store(u32, firstRecord32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), 3);
+  Atomics.store(u32, firstRecord32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 0);
+  Atomics.store(u32, firstRecord32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), 4);
+
+  new Uint8Array(sab, DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE, relocated.length).set(relocated);
+  Atomics.store(u32, secondRecord32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), 1);
+  Atomics.store(u32, secondRecord32 + (RESIDENT_PAGE_RECORD_FILE_OBJECT_ID >>> 2), 2);
+  Atomics.store(u32, secondRecord32 + (RESIDENT_PAGE_RECORD_PAGE_INDEX >>> 2), 0);
+  Atomics.store(
+    u32,
+    secondRecord32 + (RESIDENT_PAGE_RECORD_DATA_OFF >>> 2),
+    DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE,
+  );
+  Atomics.store(u32, secondRecord32 + (16 >>> 2), relocated.length);
+  Atomics.store(u32, secondRecord32 + (RESIDENT_PAGE_RECORD_GENERATION >>> 2), 1);
+  Atomics.store(u32, secondRecord32 + (RESIDENT_PAGE_RECORD_FLAGS >>> 2), 1);
+  Atomics.store(u32, secondRecord32 + (RESIDENT_PAGE_RECORD_VERSION >>> 2), 2);
+
+  expect(readResidentFileData(sab, 2, 0, relocated.length)).toEqual(relocated);
 });
 
 test("page-cache flush import delegates dirty resident writeback", () => {

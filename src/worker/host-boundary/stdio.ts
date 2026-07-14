@@ -355,6 +355,9 @@ function hiddenOutputPipeForFd(
   if (inheritedSlots.has(fdSlot) && fdOfdId(handle, fd) === ownerOfdId) {
     return fdSlot;
   }
+  if (processHoldsPipeSlot(owner, fdSlot)) {
+    return 0;
+  }
   if (fdSlot > 0 && fdSlot === outputPipeForFd(handle, fd)) {
     return fdSlot;
   }
@@ -370,6 +373,19 @@ function inheritedOutputPipeSlots(parent: ProcessHandle): Set<number> {
       stdioPipeSlotForFd(parent, 2),
     ].filter((slot) => slot > 0),
   );
+}
+
+function processHoldsPipeSlot(handle: ProcessHandle, pipeSlot: number): boolean {
+  if (pipeSlot <= 0) {
+    return false;
+  }
+  const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
+  for (let fd = 0; fd < maxFds; fd += 1) {
+    if (stdioPipeSlotForFd(handle, fd) === pipeSlot) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function writeProcessStdin(handle: ProcessHandle, data: Uint8Array): void {

@@ -6,7 +6,9 @@ import {
 } from "../../../../src/worker/fork/shared-ofd.js";
 import {
   pruneStaleKernelShareOfdIds,
+  pruneUnheldKernelShareOfdIds,
   reconcileForkSharedOfdRefcounts,
+  syncKernelShareOfdReservations,
 } from "../../../../src/worker/fork-shared.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 
@@ -88,6 +90,8 @@ test("stale shared OFDs are reconciled before their reservations are released", 
       operations.push(`${name}:unreserve:${ofdId}`);
     };
   }
+  setProcessKernelShareGroup(child, processKernelShareGroup(parent));
+  addKernelShareSharedOfdId(parent, 8);
   addKernelShareMember(parent);
   addKernelShareMember(parent, child);
 
@@ -100,4 +104,107 @@ test("stale shared OFDs are reconciled before their reservations are released", 
     "child:unreserve:8",
   ]);
   expect(kernelShareHasSharedOfdId(parent, 8)).toBe(false);
+});
+
+test("stale shared OFD pruning preserves an OFD observed by the active process snapshot", () => {
+  const parent = makeHandle([], [8]);
+  const operations: string[] = [];
+  parent.kernel.supervisor_ofd_reconcile_refcount = (ofdId: number, refcount: number) => {
+    operations.push(`reconcile:${ofdId}:${refcount}`);
+    return refcount;
+  };
+  parent.kernel.kernel_unreserve_ofd = (ofdId: number) => {
+    operations.push(`unreserve:${ofdId}`);
+  };
+  addKernelShareSharedOfdId(parent, 8);
+  addKernelShareMember(parent);
+
+  pruneStaleKernelShareOfdIds(parent, [8], [8]);
+
+  expect(operations).toEqual([]);
+  expect(kernelShareHasSharedOfdId(parent, 8)).toBe(true);
+});
+
+test("kernel-share allocation reservations cover every OFD held by a member", () => {
+  const parent = makeHandle([0, 4], [8]);
+  const child = makeHandle([0, 7], [8]);
+  const operations: string[] = [];
+  for (const [name, handle] of [["parent", parent], ["child", child]] as const) {
+    handle.kernel.kernel_reserve_ofd = (ofdId: number) => {
+      operations.push(`${name}:reserve:${ofdId}`);
+    };
+  }
+  setProcessKernelShareGroup(child, processKernelShareGroup(parent));
+  addKernelShareSharedOfdId(parent, 8);
+  addKernelShareMember(parent);
+  addKernelShareMember(parent, child);
+
+  syncKernelShareOfdReservations(parent);
+
+  expect(operations).toEqual([
+    "parent:reserve:8",
+    "parent:reserve:4",
+    "parent:reserve:7",
+    "child:reserve:8",
+    "child:reserve:4",
+    "child:reserve:7",
+  ]);
+});
+
+test("kernel-share reservations preserve OFDs observed through the active process snapshot", () => {
+  const heldOfdIds = [0, 7];
+  const parent = makeHandle(heldOfdIds);
+  const operations: string[] = [];
+  parent.kernel.kernel_reserve_ofd = (ofdId: number) => {
+    operations.push(`reserve:${ofdId}`);
+  };
+  parent.kernel.kernel_unreserve_ofd = (ofdId: number) => {
+    operations.push(`unreserve:${ofdId}`);
+  };
+  addKernelShareMember(parent);
+
+  syncKernelShareOfdReservations(parent);
+  heldOfdIds[1] = 0;
+  syncKernelShareOfdReservations(parent, [7]);
+  syncKernelShareOfdReservations(parent);
+
+  expect(operations).toEqual([
+    "reserve:7",
+    "reserve:7",
+    "unreserve:7",
+  ]);
+});
+
+test("detached child-only shared OFDs release reservations from remaining members", () => {
+  const parent = makeHandle([], [8, 9]);
+  const child = makeHandle([8], [8, 9]);
+  const sibling = makeHandle([9], [8, 9]);
+  const operations: string[] = [];
+  for (const [name, handle] of [["parent", parent], ["sibling", sibling]] as const) {
+    handle.kernel.supervisor_ofd_reconcile_refcount = (ofdId: number, refcount: number) => {
+      operations.push(`${name}:reconcile:${ofdId}:${refcount}`);
+      return refcount;
+    };
+    handle.kernel.kernel_unreserve_ofd = (ofdId: number) => {
+      operations.push(`${name}:unreserve:${ofdId}`);
+    };
+  }
+  setProcessKernelShareGroup(child, processKernelShareGroup(parent));
+  setProcessKernelShareGroup(sibling, processKernelShareGroup(parent));
+  addKernelShareSharedOfdId(parent, 8);
+  addKernelShareSharedOfdId(parent, 9);
+  addKernelShareMember(parent);
+  addKernelShareMember(parent, child);
+  addKernelShareMember(parent, sibling);
+  kernelShareMembers(parent).delete(child);
+
+  pruneUnheldKernelShareOfdIds(parent);
+
+  expect(operations).toEqual([
+    "parent:reconcile:8:0",
+    "parent:unreserve:8",
+    "sibling:reconcile:8:0",
+    "sibling:unreserve:8",
+  ]);
+  expect(kernelShareSharedOfdIdList(parent)).toEqual([9]);
 });

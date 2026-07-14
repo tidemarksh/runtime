@@ -9,7 +9,10 @@ interface KernelWorkerProcessMemfsSyncDeps {
     targetState: KernelRuntimeState,
     options?: { includeData?: boolean; targetVmPtr?: number },
   ): void;
-  restorePublishedRegularFileDataFromPageCache(targetExports?: KernelExports): void;
+  restorePublishedRegularFileDataFromPageCache(
+    targetExports?: KernelExports,
+    options?: { metadataAlreadyCopied?: boolean; regularDataAlreadyExternalized?: boolean },
+  ): void;
 }
 
 export function createKernelWorkerProcessMemfsSync(deps: KernelWorkerProcessMemfsSyncDeps) {
@@ -22,7 +25,7 @@ export function createKernelWorkerProcessMemfsSync(deps: KernelWorkerProcessMemf
     deps.copyCanonicalMemfsToProcess(canonicalState, processExports, processState, {
       includeData: true,
     });
-    deps.restorePublishedRegularFileDataFromPageCache(processExports);
+    deps.restorePublishedRegularFileDataFromPageCache(processExports, { metadataAlreadyCopied: true });
     return readKernelRuntimeState(processExports);
   };
 }

@@ -57,7 +57,10 @@ export interface KernelWorkerSharedStateSyncDeps {
     targetState: KernelRuntimeState,
     options?: { includeData?: boolean },
   ): void;
-  restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
+  restorePublishedRegularFileDataFromPageCache?(
+    targetExports?: KernelExports,
+    options?: { metadataAlreadyCopied?: boolean; regularDataAlreadyExternalized?: boolean },
+  ): void;
   clearMemfsState(targetExports: KernelExports, targetState: KernelRuntimeState): void;
   reconcileCanonicalOfdRefcounts(
     memberPids: ReadonlySet<number>,

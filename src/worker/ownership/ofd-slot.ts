@@ -46,6 +46,8 @@ interface StatusMessageLike {
   trustRegularFileOffsetOfdIds?: ReadonlySet<number>;
   recordRegularFileOfdOffsets?: boolean;
   allowRegularFileIdentityReplacement?: boolean;
+  preserveRegularFileAccessMode?: boolean;
+  replaceRegularFileAccessModeOfdIds?: ReadonlySet<number>;
 }
 
 const SUPERVISOR_RESTORE_SYSCALL_NONE = 0xffffffffffffffffn;
@@ -505,18 +507,15 @@ function preserveLiveOfdRefcount(
   return merged;
 }
 
-function preserveFcntlSetflAccessMode(
+function preserveRegularFileAccessMode(
   handle: ProcessHandle,
   msg: StatusMessageLike,
   snapshot: OfdSlotSnapshotLike,
   slotBytes: number,
 ): Uint8Array {
   if (
-    msg.fdTraceSyscallNr !== SYS_FCNTL
-    || msg.fdTraceArg1 !== F_SETFL
-    || msg.fdTraceArg0OfdId !== snapshot.ofdId
-    || msg.fdTraceResult === undefined
-    || msg.fdTraceResult < 0n
+    msg.preserveRegularFileAccessMode !== true
+    || msg.replaceRegularFileAccessModeOfdIds?.has(snapshot.ofdId) === true
   ) {
     return snapshot.slot;
   }
@@ -530,7 +529,14 @@ function preserveFcntlSetflAccessMode(
     snapshot.slot.byteOffset,
     snapshot.slot.byteLength,
   );
-  if (currentView.getInt32(OFD_TYPE_OFFSET, true) !== snapshotView.getInt32(OFD_TYPE_OFFSET, true)) {
+  const fileType = handle.kernel.abi_fd_type_file?.();
+  if (
+    fileType === undefined
+    || currentView.getInt32(OFD_TYPE_OFFSET, true) !== fileType
+    || snapshotView.getInt32(OFD_TYPE_OFFSET, true) !== fileType
+    || currentView.getInt32(OFD_HOST_FD_OFFSET, true) !== snapshotView.getInt32(OFD_HOST_FD_OFFSET, true)
+    || currentView.getUint32(OFD_INO_OFFSET, true) !== snapshotView.getUint32(OFD_INO_OFFSET, true)
+  ) {
     return snapshot.slot;
   }
   const currentFlags = currentView.getInt32(OFD_STATUS_FLAGS_OFFSET, true);
@@ -611,7 +617,7 @@ export function applyThreadOfdSlots(
         continue;
       }
       const refcountMergedSlot = preserveLiveOfdRefcount(handle, msg, snapshot, slotBytes);
-      const statusMergedSlot = preserveFcntlSetflAccessMode(
+      const statusMergedSlot = preserveRegularFileAccessMode(
         handle,
         msg,
         { ...snapshot, slot: refcountMergedSlot },

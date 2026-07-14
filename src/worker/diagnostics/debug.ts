@@ -861,18 +861,18 @@ function formatWorkerThreadState(
   if (tid === undefined) {
     return null;
   }
-  const pc = handle.kernel.thread_pc(vmPtr);
+  const pc = handle.kernel.thread_pc?.(vmPtr) ?? 0n;
   const ra = handle.kernel.thread_ra?.(vmPtr) ?? 0n;
-  const sp = handle.kernel.thread_sp(vmPtr);
-  const a0 = handle.kernel.thread_a0(vmPtr);
-  const a1 = handle.kernel.thread_a1(vmPtr);
+  const sp = handle.kernel.thread_sp?.(vmPtr) ?? 0n;
+  const a0 = handle.kernel.thread_a0?.(vmPtr) ?? 0n;
+  const a1 = handle.kernel.thread_a1?.(vmPtr) ?? 0n;
   const a2 = handle.kernel.thread_reg?.(vmPtr, 12) ?? 0n;
   const a3 = handle.kernel.thread_reg?.(vmPtr, 13) ?? 0n;
   const gp = handle.kernel.thread_gp?.(vmPtr) ?? 0n;
   const tp = handle.kernel.thread_tp?.(vmPtr) ?? 0n;
   const s11 = handle.kernel.thread_s11?.(vmPtr) ?? 0n;
   const sigMask = handle.kernel.thread_sig_mask?.(vmPtr) ?? 0n;
-  const sigPending = handle.kernel.thread_sig_pending(vmPtr);
+  const sigPending = handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n;
   const sigCode = handle.kernel.thread_sig_info_code?.(vmPtr) ?? 0;
   return [
     `tid=${tid}`,
@@ -1167,6 +1167,10 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
   const sigPending = handle.kernel.thread_sig_pending?.(vmPtr) ?? 0n;
   const cloneFlags = handle.kernel.thread_clone_flags?.(vmPtr) ?? 0n;
   const cloneChildTidptr = handle.kernel.thread_clone_child_tidptr?.(vmPtr) ?? 0n;
+  const status = handle.kernel.thread_status?.(vmPtr) ?? 0;
+  const syscall = handle.kernel.thread_a7?.(vmPtr) ?? 0n;
+  const blockedFd = handle.kernel.thread_blocked_fd?.(vmPtr) ?? 0;
+  const blockedOfdId = handle.kernel.thread_blocked_ofd_id?.(vmPtr) ?? 0;
   const blockedAddr = handle.kernel.thread_record_blocked_addr?.(vmPtr) ?? 0n;
   const futexWaitAddr = handle.kernel.thread_futex_wait_addr?.(vmPtr) ?? 0n;
   const futexWaitExpected = handle.kernel.thread_futex_wait_expected?.(vmPtr);
@@ -1190,6 +1194,10 @@ function formatThreadDebug(handle: ProcessHandle, vmPtr: number): string {
     `sig_pending=0x${sigPending.toString(16)}`,
     `clone_flags=0x${cloneFlags.toString(16)}`,
     `clone_child_tidptr=0x${cloneChildTidptr.toString(16)}`,
+    `status=${status}`,
+    `syscall=${syscall.toString()}`,
+    `blocked_fd=${blockedFd}`,
+    `blocked_ofd=${blockedOfdId}`,
     `blocked_addr=0x${blockedAddr.toString(16)}`,
     `futex_wait_addr=0x${futexWaitAddr.toString(16)}`,
     futexWaitExpected !== undefined ? `futex_wait_expected=${futexWaitExpected}` : "",

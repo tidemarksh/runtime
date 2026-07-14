@@ -7,7 +7,10 @@ import type { KernelExports } from "../../../src/abi.js";
 import {
   DATA_REGION_OFFSET,
   evictResidentPage,
+  INODE_ENTRY_SIZE,
+  inodeOffset,
   publishInode,
+  readInodeMeta,
   readInodeRecord,
   readResidentFileData,
   type ResidentPageTableAuthority,
@@ -383,10 +386,11 @@ function makeKernelExports(): FakeKernelExports {
         : 0;
     }
     if (kind === 2) {
+      const targetType = targetMode & 0o170000;
       return publishedPresent !== 0
         && (publishedMode & 0o170000) === 0o100000
         && publishedSizeNumber > 0
-        && (targetMode & 0o170000) === 0o100000
+        && (targetType === 0 || targetType === 0o100000)
         && (hasBackingFile !== 0 || hasDirtyResidentPages !== 0 || publishedFileObjectIdNumber !== 0)
         ? 1
         : 0;
@@ -1597,6 +1601,44 @@ test("kernel-worker flushes dirty resident pages to backing and leaves clean res
   expect(new TextDecoder().decode(fsState.readFile("/lib/runtime.bin"))).toBe("abcXYZ");
 });
 
+test("kernel-worker republishes resident inode metadata before a backing fill", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.writeFile("/lib/runtime.bin", encoder.encode("abcdef"), 0o644, false);
+  const ino = canonicalExports.fileIno("/lib/runtime.bin");
+  new Uint8Array(sabPageCache).fill(0, inodeOffset(ino), inodeOffset(ino) + INODE_ENTRY_SIZE);
+  expect(readInodeMeta(sabPageCache, ino)).toBeNull();
+
+  expect(fsState.ensurePublishedBackingInodeForFill(ino, 6, canonicalExports)).toBe(true);
+  expect(readInodeMeta(sabPageCache, ino)).toMatchObject({
+    size: 6,
+    mode: 0o100644,
+  });
+});
+
+test("kernel-worker establishes a source-backed file object before republishing fill metadata", () => {
+  const { canonicalExports, fsState, sabPageCache } = makeFsState();
+  const source = encoder.encode("abcdef");
+  const backingExtent = {
+    sourceIdentity: "artifact:runtime.bin",
+    offset: 0,
+    length: source.length,
+  };
+  fsState.loadFsSnapshot([
+    { kind: "dir", path: "/", mode: 0o755 },
+    { kind: "file", path: "/lib/runtime.bin", size: source.length, mode: 0o644, backingExtent },
+  ]);
+  fsState.registerBackingSource(backingExtent.sourceIdentity, source);
+  const ino = fsState.resolvePath("/lib/runtime.bin");
+  new Uint8Array(sabPageCache).fill(0, inodeOffset(ino), inodeOffset(ino) + INODE_ENTRY_SIZE);
+
+  expect(fsState.ensurePublishedBackingInodeForFill(ino, source.length, canonicalExports)).toBe(true);
+  expect(readInodeMeta(sabPageCache, ino)).toMatchObject({
+    size: source.length,
+    mode: 0o100644,
+  });
+});
+
 test("kernel-worker tracks dirty resident inode state for backing source decisions", () => {
   const { canonicalExports, fsState } = makeFsState();
   const pageTableCalls: Array<Parameters<NonNullable<KernelExports["supervisor_fs_page_table_source_decision"]>>> = [];
@@ -1881,7 +1923,7 @@ test("kernel-worker loadFsSnapshot restores symlinks into seed entries", () => {
   });
 });
 
-test("kernel-worker syncFileDataMutation exports dirty resident metadata without whole-file rewrite", () => {
+test("kernel-worker syncFileDataMutation defers dirty resident writeback until explicit flush", () => {
   const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
   const initialData = encoder.encode("abcdefghijklmnop");
   const nextData = encoder.encode("abc");
@@ -1903,8 +1945,10 @@ test("kernel-worker syncFileDataMutation exports dirty resident metadata without
   expect(memberExports.opLog.some((entry) => entry.startsWith("truncate:/lib/runtime.bin:3"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/lib/runtime.bin:3"))).toBe(false);
   expect(canonicalExports.opLog).toContain("external:/lib/runtime.bin:3");
-  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("dirty-pinned");
   expectBytesEqual(fsState.readFile("/lib/runtime.bin"), nextData);
+  expect(fsState.flushDirtyResidentFileByInode(ino)).toBe(true);
+  expect(evictResidentPage(sabPageCache, ino, 0, fakeSupervisorPageTableAuthority)).toBe("evicted");
 });
 
 test("kernel-worker syncFileDataMutation clears stale source backing extent on export", () => {
@@ -1996,6 +2040,26 @@ test("kernel-worker restorePublishedRegularFileDataFromPageCache repairs shallow
 
   expect(canonicalExports.opLog).toContain(`external:/lib/runtime.bin:${publishedData.length}`);
   expect(Number(canonicalExports.memfs_file_size(ino))).toBe(publishedData.length);
+  expectBytesEqual(fsState.readFile("/lib/runtime.bin"), publishedData);
+});
+
+test("kernel-worker restore skips inode reconstruction after metadata copy", () => {
+  const { canonicalExports, fsState } = makeFsState();
+  const publishedData = encoder.encode("published-data");
+
+  fsState.writeFile("/lib/runtime.bin", publishedData, 0o755, false);
+  const lookup = vi.spyOn(canonicalExports, "memfs_lookup");
+  const externalize = vi.spyOn(canonicalExports, "memfs_set_file_external");
+  const setMode = vi.spyOn(canonicalExports, "memfs_set_mode");
+
+  fsState.restorePublishedRegularFileDataFromPageCache(canonicalExports, {
+    metadataAlreadyCopied: true,
+    regularDataAlreadyExternalized: true,
+  });
+
+  expect(lookup).not.toHaveBeenCalled();
+  expect(externalize).not.toHaveBeenCalled();
+  expect(setMode).not.toHaveBeenCalled();
   expectBytesEqual(fsState.readFile("/lib/runtime.bin"), publishedData);
 });
 
@@ -2113,6 +2177,22 @@ test("kernel-worker restorePublishedRegularFileDataForInode skips target inode c
   expect(canonicalExports.fileIno("/work/collision.txt")).toBe(collisionIno);
 });
 
+test("kernel-worker restorePublishedRegularFileDataForInode reconstructs a missing regular inode", () => {
+  const { canonicalExports, memberExports, fsState } = makeFsState();
+  const data = encoder.encode("published-data");
+
+  fsState.mkdir("/work", 0o755, false);
+  fsState.writeFile("/work/restored.txt", data, 0o644, false);
+  const ino = canonicalExports.fileIno("/work/restored.txt");
+  expect(ino).toBeGreaterThan(1);
+  expect(memberExports.fileIno("/work/restored.txt")).toBe(0);
+
+  expect(fsState.restorePublishedRegularFileDataForInode(ino, memberExports)).toBe(true);
+
+  expect(memberExports.fileIno("/work/restored.txt")).toBe(ino);
+  expect(Number(memberExports.memfs_file_size(ino))).toBe(data.length);
+});
+
 test("kernel-worker syncMetadataMutation materializes absolute-path file creation without full fanout", () => {
   const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
 
@@ -2129,6 +2209,30 @@ test("kernel-worker syncMetadataMutation materializes absolute-path file creatio
   expect(ino).toBeGreaterThan(1);
   expect(memberExports.fileIno("/work/new.txt")).toBe(ino);
   expect(readInodeRecord(sabPageCache, ino)).not.toBeNull();
+});
+
+test("kernel-worker syncMetadataMutation maps a process-local parent to the canonical parent inode", () => {
+  const { canonicalExports, memberExports, fsState, sabPageCache } = makeFsState();
+
+  fsState.mkdir("/occupied", 0o755, false);
+  fsState.mkdir("/work", 0o755, false);
+  const canonicalWorkIno = canonicalExports.fileIno("/work");
+  const workName = encoder.encode("work");
+  const workPtr = memberExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(memberExports.memory.buffer).set(workName, workPtr);
+  const memberWorkIno = memberExports.memfs_ensure_dir(1, workPtr, workName.length, 0o755);
+  expect(memberWorkIno).not.toBe(canonicalWorkIno);
+
+  expect(Number(memberExports.memfs_reserve_inode_until(10))).toBeGreaterThanOrEqual(0);
+  const name = encoder.encode("out.txt");
+  const ptr = memberExports.kernel_heap_ptr() + 0x13000;
+  new Uint8Array(memberExports.memory.buffer).set(name, ptr);
+  const ino = memberExports.memfs_create_file(memberWorkIno, ptr, name.length);
+  expect(ino).toBe(10);
+
+  expect(fsState.syncMetadataMutation(memberExports, "/work/out.txt")).toBe(true);
+  expect(canonicalExports.fileIno("/work/out.txt")).toBe(ino);
+  expect(readInodeRecord(sabPageCache, ino)?.parentIno).toBe(canonicalWorkIno);
 });
 
 test("kernel-worker syncMetadataMutation rejects target inode collision", () => {

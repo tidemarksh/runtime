@@ -1,12 +1,7 @@
 import {
   kernelOfdStateBytes,
   kernelOfdStatePtr,
-  supervisorOfdFdType,
-  supervisorOfdHostFd,
-  supervisorOfdIno,
-  supervisorOfdOffset,
   supervisorOfdReconcileRefcount,
-  supervisorOfdRefcount,
   type KernelExports,
   type KernelRuntimeState,
 } from "../../abi.js";
@@ -26,76 +21,56 @@ interface KernelWorkerPrimitivesDeps {
   processKernels: Map<number, KernelExports>;
 }
 
-function ofdSlotsCanBeShared(
-  sourceExports: KernelExports,
+function requireSupervisorOfdSlotWriteAction(
   targetExports: KernelExports,
-  ofdId: number,
-): boolean {
-  const sourceType = supervisorOfdFdType(sourceExports, ofdId);
-  const targetType = supervisorOfdFdType(targetExports, ofdId);
-  if (sourceType === 0) {
-    return targetType === 0;
+): NonNullable<KernelExports["supervisor_ofd_slot_write_action"]> {
+  const decide = targetExports.supervisor_ofd_slot_write_action;
+  if (!decide) {
+    throw new Error("kernel supervisor ABI missing supervisor_ofd_slot_write_action");
   }
-  if (targetType === 0) {
-    return true;
-  }
-  if (sourceType !== targetType) {
-    return false;
-  }
-  if (
-    supervisorOfdIno(sourceExports, ofdId) !== supervisorOfdIno(targetExports, ofdId)
-    || supervisorOfdHostFd(sourceExports, ofdId) !== supervisorOfdHostFd(targetExports, ofdId)
-  ) {
-    return false;
-  }
-  if (
-    sourceType === sourceExports.abi_fd_type_file()
-    && supervisorOfdRefcount(targetExports, ofdId) > 0
-    && supervisorOfdOffset(sourceExports, ofdId) < supervisorOfdOffset(targetExports, ofdId)
-  ) {
-    return false;
-  }
-  return true;
+  return decide.bind(targetExports);
 }
 
-function ofdSnapshotCanApply(
-  targetExports: KernelExports,
-  targetState: KernelRuntimeState,
-  snapshot: KernelWorkerOfdSlotSnapshot,
-  slotBytes: number,
+function requireSupervisorRestoreActionSkip(targetExports: KernelExports): number {
+  const skip = targetExports.supervisor_fd_entry_restore_action_skip;
+  if (!skip) {
+    throw new Error("kernel supervisor ABI missing supervisor_fd_entry_restore_action_skip");
+  }
+  return skip.call(targetExports);
+}
+
+function ofdSlotWriteShouldBeSkipped(
+  ofdId: number,
+  candidate: DataView,
+  decide: ReturnType<typeof requireSupervisorOfdSlotWriteAction>,
+  skipAction: number,
 ): boolean {
-  const targetType = supervisorOfdFdType(targetExports, snapshot.ofdId);
-  if (targetType === 0) {
-    return true;
+  return decide(
+    ofdId,
+    candidate.getInt32(OFD_TYPE_OFFSET, true),
+    candidate.getInt32(OFD_HOST_FD_OFFSET, true),
+    candidate.getUint32(OFD_INO_OFFSET, true),
+    candidate.getBigInt64(OFD_OFFSET_OFFSET, true),
+  ) === skipAction;
+}
+
+function preserveLiveTargetRefcount(target: DataView, candidate: Uint8Array): Uint8Array {
+  const candidateView = new DataView(candidate.buffer, candidate.byteOffset, candidate.byteLength);
+  if (
+    target.getInt32(OFD_TYPE_OFFSET, true) === 0
+    || target.getInt32(OFD_TYPE_OFFSET, true) !== candidateView.getInt32(OFD_TYPE_OFFSET, true)
+  ) {
+    return candidate;
   }
-  const view = new DataView(snapshot.slot.buffer, snapshot.slot.byteOffset, snapshot.slot.byteLength);
-  const sourceType = view.getInt32(OFD_TYPE_OFFSET, true);
-  if (sourceType === 0) {
-    return targetType === 0;
+  const currentRefcount = target.getInt32(OFD_REFCOUNT_OFFSET, true);
+  const candidateRefcount = candidateView.getInt32(OFD_REFCOUNT_OFFSET, true);
+  if (currentRefcount <= candidateRefcount) {
+    return candidate;
   }
-  if (sourceType !== targetType) {
-    return false;
-  }
-  const sourceHostFd = view.getInt32(OFD_HOST_FD_OFFSET, true);
-  const sourceIno = view.getUint32(OFD_INO_OFFSET, true);
-  const targetOffset = targetState.ofdTablePtr + snapshot.ofdId * slotBytes;
-  const targetView = new DataView(targetExports.memory.buffer, targetOffset, slotBytes);
-  const targetHostFd = targetView.getInt32(OFD_HOST_FD_OFFSET, true);
-  const targetIno = targetView.getUint32(OFD_INO_OFFSET, true);
-  if (sourceIno !== targetIno || sourceHostFd !== targetHostFd) {
-    return false;
-  }
-  const fileType = targetExports.abi_fd_type_file?.();
-  if (fileType !== undefined) {
-    if (
-      sourceType === fileType
-      && targetView.getInt32(OFD_REFCOUNT_OFFSET, true) > 0
-      && view.getBigInt64(OFD_OFFSET_OFFSET, true) < targetView.getBigInt64(OFD_OFFSET_OFFSET, true)
-    ) {
-      return false;
-    }
-  }
-  return true;
+  const preserved = candidate.slice();
+  new DataView(preserved.buffer, preserved.byteOffset, preserved.byteLength)
+    .setInt32(OFD_REFCOUNT_OFFSET, currentRefcount, true);
+  return preserved;
 }
 
 function requireSupervisorProcessHeldOfdRefcount(
@@ -159,20 +134,26 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
       throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
     }
+    const decideWrite = requireSupervisorOfdSlotWriteAction(targetExports);
+    const skipAction = requireSupervisorRestoreActionSkip(targetExports);
+    const sourceBytes = new Uint8Array(sourceExports.memory.buffer);
+    const targetBytes = new Uint8Array(targetExports.memory.buffer);
 
     for (const ofdId of ofdIds) {
       if (ofdId <= 0 || ofdId >= maxFds) {
         continue;
       }
-      if (!ofdSlotsCanBeShared(sourceExports, targetExports, ofdId)) {
+      const sourceOffset = sourceState.ofdTablePtr + ofdId * slotBytes;
+      const targetOffset = targetState.ofdTablePtr + ofdId * slotBytes;
+      const candidate = sourceBytes.slice(sourceOffset, sourceOffset + slotBytes);
+      const candidateView = new DataView(candidate.buffer, candidate.byteOffset, candidate.byteLength);
+      if (ofdSlotWriteShouldBeSkipped(ofdId, candidateView, decideWrite, skipAction)) {
         continue;
       }
-      copyMemoryRange(
-        sourceExports.memory,
-        sourceState.ofdTablePtr + ofdId * slotBytes,
-        targetExports.memory,
-        targetState.ofdTablePtr + ofdId * slotBytes,
-        slotBytes,
+      const targetView = new DataView(targetExports.memory.buffer, targetOffset, slotBytes);
+      targetBytes.set(
+        preserveLiveTargetRefcount(targetView, candidate),
+        targetOffset,
       );
     }
   }
@@ -188,7 +169,6 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
       throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
     }
-
     const bytes = new Uint8Array(targetExports.memory.buffer);
     for (const ofdId of ofdIds) {
       if (ofdId <= 0 || ofdId >= maxFds) {
@@ -209,16 +189,25 @@ export function createKernelWorkerOfdPrimitives(deps: KernelWorkerPrimitivesDeps
     if (!Number.isInteger(slotBytes) || slotBytes <= 0) {
       throw new Error(`invalid OFD table layout: bytes=${tableBytes} maxFds=${maxFds}`);
     }
+    const decideWrite = requireSupervisorOfdSlotWriteAction(targetExports);
+    const skipAction = requireSupervisorRestoreActionSkip(targetExports);
 
     const bytes = new Uint8Array(targetExports.memory.buffer);
     for (const snapshot of snapshots) {
       if (snapshot.ofdId <= 0 || snapshot.ofdId >= maxFds || snapshot.slot.length !== slotBytes) {
         continue;
       }
-      if (!ofdSnapshotCanApply(targetExports, targetState, snapshot, slotBytes)) {
+      const candidate = new DataView(
+        snapshot.slot.buffer,
+        snapshot.slot.byteOffset,
+        snapshot.slot.byteLength,
+      );
+      if (ofdSlotWriteShouldBeSkipped(snapshot.ofdId, candidate, decideWrite, skipAction)) {
         continue;
       }
-      bytes.set(snapshot.slot, targetState.ofdTablePtr + snapshot.ofdId * slotBytes);
+      const targetOffset = targetState.ofdTablePtr + snapshot.ofdId * slotBytes;
+      const targetView = new DataView(targetExports.memory.buffer, targetOffset, slotBytes);
+      bytes.set(preserveLiveTargetRefcount(targetView, snapshot.slot), targetOffset);
     }
   }
 

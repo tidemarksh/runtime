@@ -388,6 +388,8 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     memory,
     abi_max_fds: () => 256,
     abi_max_threads: () => 64,
+    supervisor_fd_entry_restore_action_skip: () => 2,
+    supervisor_ofd_slot_write_action: () => 1,
     abi_max_pipes: () => 64,
     abi_fd_type_file: () => 1,
     abi_fd_type_pipe: () => FD_TYPE_PIPE,

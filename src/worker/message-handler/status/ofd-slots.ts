@@ -184,6 +184,9 @@ export function applyStatusOfdSlots(
     msg,
     options.postedFdEntries,
   );
+  const accessModeReplacementOfdIds = statusCanReplaceRegularFileIdentity(handle, msg)
+    ? regeneratedOfdIds
+    : new Set<number>();
   const authoritativeOfdIds = options.authoritativeOfdIds === undefined
     ? undefined
     : new Set([...options.authoritativeOfdIds, ...regeneratedOfdIds]);
@@ -211,6 +214,8 @@ export function applyStatusOfdSlots(
       ...statusMessage,
       trustRegularFileOfdOffsets: options.trustRegularFileOfdOffsets,
       trustRegularFileOffsetOfdIds: regeneratedOfdIds,
+      preserveRegularFileAccessMode: true,
+      replaceRegularFileAccessModeOfdIds: accessModeReplacementOfdIds,
       allowRegularFileIdentityReplacement: authoritativeOfdIds !== undefined
         || statusCanReplaceRegularFileIdentity(handle, msg),
     },

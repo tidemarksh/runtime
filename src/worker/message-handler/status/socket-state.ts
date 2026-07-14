@@ -20,9 +20,6 @@ import {
   recordStatusSocketMetaTransition,
   STATUS_SOCKET_DEBUG_LOG_ENABLED,
 } from "./debug.js";
-import {
-  applyThreadMemfsKernelWriteToForkShareMembers,
-} from "./memfs-kernel-write.js";
 import { isProcessMemfsDirty } from "../../process-memfs-state.js";
 import {
   maskIncompatibleOfdSlotKernelWrite,
@@ -137,7 +134,6 @@ export function applyThreadKernelMemoryWrites(
     const writeBytes = maskIncompatibleOfdSlotKernelWrite(handle, write.ptr, write.bytes);
     memory.set(writeBytes, write.ptr);
     restoreNetworkRecv?.();
-    applyThreadMemfsKernelWriteToForkShareMembers(handle, write.ptr, write.bytes);
     if (pipeSlotLifecycleDebugEnabled()) {
       appendRuntimeLifecycleEvent?.(
         handle.runtimeId,

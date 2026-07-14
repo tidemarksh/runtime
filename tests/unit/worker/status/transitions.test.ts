@@ -787,9 +787,13 @@ test("status transitions append supervisor signal-control diagnostics once per s
     expect.stringContaining("supervisor-signal-control:kind=2:seq=11"),
     expect.stringContaining("supervisor-signal-control:kind=2:seq=12"),
   ]);
+  const signalControlLifecycleEvents = deps.appendRuntimeLifecycleEvent.mock.calls
+    .map(([, event]) => event)
+    .filter((event) => String(event).startsWith("supervisor-signal-control:"));
+  expect(signalControlLifecycleEvents).toEqual(signalControlLogs);
 });
 
-test("STATUS_FAULT completes supervisor-selected fault exit VM when the process table is stale", () => {
+test("STATUS_FAULT syncs final pipe state before completing the supervisor-selected process exit", async () => {
   const worker = {} as Worker;
   const faultWorker = {} as Worker;
   const handle = makeHandle(worker);
@@ -845,6 +849,10 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
   };
   setThreadHostIdentity(faultThread as never, 1, 1);
   deps.threadWorkerStates.set(faultWorker, faultThread);
+  let resolvePipeSync: (() => void) | undefined;
+  deps.requestPipeStateSync = vi.fn(() => new Promise<void>((resolve) => {
+    resolvePipeSync = resolve;
+  }));
   const transition = createWorkerStatusTransitionHandler(deps as never);
 
   transition({
@@ -863,10 +871,17 @@ test("STATUS_FAULT completes supervisor-selected fault exit VM when the process 
     status: 3,
     wroteToPipe: false,
     drainedPipe: false,
-    completedSyncEffects: 0,
+    completedSyncEffects: 1,
   });
 
   expect(kernel.supervisor_fault_exit_decision).toHaveBeenCalledWith(0x1234, expect.any(Number), 88);
+  expect(deps.requestPipeStateSync).toHaveBeenCalledWith(handle, true);
+  expect(deps.completeProcessExit).not.toHaveBeenCalled();
+
+  resolvePipeSync?.();
+  await vi.waitFor(() => {
+    expect(deps.completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x5678);
+  });
   expect(deps.completeProcessExit).toHaveBeenCalledWith(handle, 139, 11, 0x5678);
   expect(deps.appendRuntimeLifecycleEvent).toHaveBeenCalledWith(
     77,

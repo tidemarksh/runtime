@@ -466,6 +466,7 @@ function makeKernel() {
         kernel.exports.process_fd_flags?.(vmPtr, fd) ?? 0,
       supervisor_process_fd_is_open: (vmPtr: number, fd: number) =>
         (kernel.exports.process_fd_ofd_id?.(vmPtr, fd) ?? 0) !== 0 ? 1 : 0,
+      supervisor_process_fd_table_is_coherent: () => 1,
       supervisor_process_socket_ofd_for_fd: () => -1,
       supervisor_ofd_is_regular_file: () => 0,
       supervisor_pipe_sync_ofd_candidate: () => 0,
@@ -1704,6 +1705,51 @@ test("wait4 active-child retry rechecks when the child exits before parking", as
   );
   expect(threadResumeWait4).toHaveBeenCalledWith(0x1234);
   expect(hostExecutionState(handle).hostBlockedWorkers.has(worker)).toBe(false);
+});
+
+test("wait4 active-child retry is rescheduled when the selected host child is already gone", () => {
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x1234));
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = () => kernel.abi_status_wait4();
+  kernel.supervisor_blocked_retry_action = vi.fn(() => (
+    kernel.supervisor_blocked_retry_action_park_active_child!()
+  ));
+  kernel.supervisor_blocked_wait_active_child_pid = () => 7;
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  setPendingChildSpawnRecords(handle, 0);
+  const lifecycleEvents: string[] = [];
+  const pumpSupervisorSelectedChildProcess = vi.fn(() => false);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
+      lifecycleEvents.push(event);
+    },
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    pumpSupervisorSelectedChildProcess,
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.blockWorker(handle, worker, handle.kernel.abi_status_wait4(), 0x1234);
+
+  expect(pumpSupervisorSelectedChildProcess).toHaveBeenCalledWith(7);
+  expect(lifecycleEvents).toContain(
+    `blocked-retry-active-child-host-unavailable:1:7:status=${kernel.abi_status_wait4()}`,
+  );
+  expect(kernel.supervisor_enqueue_blocked_retry_timer).toHaveBeenCalledWith(
+    0x1234,
+    kernel.supervisor_blocked_wait_retry_flag_host_progress!(),
+  );
+  scheduler.clearHostBlockedRetryTimer(handle, worker);
 });
 
 test("blocked retry delegates vfork process gate retry reason to kernel", () => {
@@ -5028,6 +5074,60 @@ test("pumpProcess clears an answered running marker before selecting runnable wo
   }));
 });
 
+test("pumpProcess holds other threads while a process kernel RPC is pending", () => {
+  const blockedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const runnableWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const blockedThread = makeThreadState(0x1234);
+  const runnableThread = makeThreadState(0x5678);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(blockedWorker, blockedThread);
+  threadWorkerStates.set(runnableWorker, runnableThread);
+  const { exports: kernel } = makeKernel();
+  kernel.thread_status = (vmPtr: number) => vmPtr === blockedThread.vmPtr
+    ? kernel.abi_status_wait4()
+    : kernel.abi_status_ok();
+  const handle = makeHandle(kernel, blockedWorker, threadWorkerStates);
+  addProcessWorker(handle, runnableWorker);
+  installTestSupervisorProcessResume(kernel, handle, threadWorkerStates);
+  const blocked = {
+    vmPtr: blockedThread.vmPtr,
+    status: kernel.abi_status_wait4(),
+  };
+  hostExecutionState(handle).hostBlockedWorkers.set(blockedWorker, blocked);
+  setBlockedRpcPending(blocked, true);
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  scheduler.pumpProcess(handle);
+
+  expect(kernel.supervisor_process_resume).not.toHaveBeenCalled();
+  expect(blockedWorker.postMessage).not.toHaveBeenCalled();
+  expect(runnableWorker.postMessage).not.toHaveBeenCalled();
+
+  setBlockedRpcPending(blocked, false);
+  scheduler.pumpProcess(handle);
+
+  expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
+  expect(runnableWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+    budget: expect.any(Number),
+  }));
+});
+
 test("pumpProcess keeps an unanswered running worker after an active step clears", async () => {
   vi.setSystemTime(new Date(10_000));
   const runningWorker = {
@@ -6303,6 +6403,44 @@ test("step publishes the full process fd table to the selected worker", () => {
   }));
 });
 
+test("pumpProcess retries after Kernel FD and OFD state becomes coherent", async () => {
+  vi.useFakeTimers();
+  const worker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(worker, makeThreadState(0x5678));
+  const { exports: kernel } = makeKernel();
+  let coherent = false;
+  kernel.supervisor_process_fd_table_is_coherent = () => coherent ? 1 : 0;
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  hostExecutionState(handle).vforkReadyWorkers = [worker];
+
+  const scheduler = createWorkerScheduler({
+    appendRuntimeLifecycleEvent: () => {},
+    threadWorkerStates,
+    completeProcessExit: async () => {},
+    failProcess: () => {},
+    resumeVforkParentAfterChildExit: () => false,
+    resumeWait4ViaKernelWorker: async () => {},
+    handleWorkerMessage: () => {},
+  });
+
+  try {
+    scheduler.pumpProcess(handle);
+    expect(worker.postMessage).not.toHaveBeenCalled();
+
+    coherent = true;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(worker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: "step",
+      budget: expect.any(Number),
+    }));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("pumpProcess runs supervisor-selected ready worker while preserving a still-waiting worker", () => {
   const waitingWorker = {
     postMessage: vi.fn(),
@@ -6598,6 +6736,7 @@ test("pumpProcess records supervisor thread-state snapshot diagnostics for selec
     },
     handleWorkerMessage: () => {},
     threadWorkerStates,
+    includeDetailedSupervisorDiagnostics: true,
   });
 
   queue.pumpProcess(handle);
@@ -6778,6 +6917,7 @@ test("pumpProcess does not run TypeScript continuation when supervisor process r
     },
     handleWorkerMessage: () => {},
     threadWorkerStates,
+    includeDetailedSupervisorDiagnostics: true,
   });
 
   queue.pumpProcess(handle);

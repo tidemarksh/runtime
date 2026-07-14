@@ -2,7 +2,6 @@ import type { ProcessHandle, ThreadWorkerState, VforkSnapshot } from "./types.js
 import type { KernelWorkerFdEntrySnapshot } from "../messages.js";
 import { getThreadActivityState } from "./thread-activity-state.js";
 import {
-  activeKernelShareOfdIds,
   collectProcessHeldOfdRefcounts,
   collectProcessHeldOfds,
   hasPlausibleOfdState,
@@ -13,6 +12,7 @@ import {
   deleteKernelShareOfdSlotSnapshot,
   deleteKernelShareSharedOfdId,
   getKernelShareOfdSlotSnapshot,
+  kernelShareAllocationReservedOfdIds,
   kernelShareMemberList,
   kernelShareSharedOfdIdList,
   snapshotLocalPipeSlots,
@@ -25,6 +25,29 @@ import {
   OFD_OFFSET_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../layout/ofd.js";
+
+const OFD_RESERVATION_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_OFD_RESERVATION_DEBUG ?? "") === "1";
+
+function unreserveKernelShareOfd(
+  member: ProcessHandle,
+  ofdId: number,
+  reason: string,
+): void {
+  if (OFD_RESERVATION_DEBUG_ENABLED) {
+    console.error([
+      "[tidemark-ofd-unreserve]",
+      `reason=${reason}`,
+      `pid=${member.pid}`,
+      `ofd=${ofdId}`,
+      `type=${member.kernel.supervisor_ofd_fd_type?.(ofdId) ?? "n/a"}`,
+      `refcount=${member.kernel.supervisor_ofd_refcount?.(ofdId) ?? "n/a"}`,
+      `held=${collectProcessHeldOfds(member).has(ofdId) ? 1 : 0}`,
+    ].join(":"));
+  }
+  member.kernel.kernel_unreserve_ofd?.(ofdId);
+}
 
 function requireSupervisorRestoreActionSkip(handle: ProcessHandle): number {
   const skip = handle.kernel.supervisor_fd_entry_restore_action_skip;
@@ -105,25 +128,74 @@ export function snapshotKernelShareOfdSlots(
   return snapshots;
 }
 
-export function syncKernelShareOfdReservations(handle: ProcessHandle): void {
-  const activeOfdIds = activeKernelShareOfdIds(handle);
-  const reservedOfdIds = [...new Set([...kernelShareSharedOfdIdList(handle), ...activeOfdIds])];
-  for (const member of kernelShareMemberList(handle)) {
-    for (const ofdId of reservedOfdIds) {
+export function syncKernelShareOfdReservations(
+  handle: ProcessHandle,
+  observedHeldOfdIds: Iterable<number> = [],
+): void {
+  const members = kernelShareMemberList(handle);
+  const heldOfdIds = new Set<number>();
+  for (const member of members) {
+    for (const ofdId of collectProcessHeldOfds(member)) {
+      heldOfdIds.add(ofdId);
+    }
+  }
+  for (const ofdId of observedHeldOfdIds) {
+    if (ofdId > 0 && ofdId < handle.kernel.abi_max_fds()) {
+      heldOfdIds.add(ofdId);
+    }
+  }
+  const desired = new Set([...kernelShareSharedOfdIdList(handle), ...heldOfdIds]);
+  const applied = kernelShareAllocationReservedOfdIds(handle);
+  for (const ofdId of applied) {
+    if (desired.has(ofdId)) {
+      continue;
+    }
+    for (const member of members) {
+      unreserveKernelShareOfd(member, ofdId, "reservation-sync");
+    }
+  }
+  for (const member of members) {
+    for (const ofdId of desired) {
       member.kernel.kernel_reserve_ofd?.(ofdId);
     }
   }
+  applied.clear();
+  for (const ofdId of desired) {
+    applied.add(ofdId);
+  }
 }
 
-export function pruneStaleKernelShareOfdIds(handle: ProcessHandle, staleOfdIds: Iterable<number>): void {
+export function pruneStaleKernelShareOfdIds(
+  handle: ProcessHandle,
+  staleOfdIds: Iterable<number>,
+  observedHeldOfdIds: Iterable<number> = [],
+): void {
+  const observedHeld = new Set(observedHeldOfdIds);
   for (const ofdId of staleOfdIds) {
-    for (const member of kernelShareMemberList(handle)) {
+    const members = kernelShareMemberList(handle);
+    if (
+      observedHeld.has(ofdId)
+      || members.some((member) => collectProcessHeldOfds(member).has(ofdId))
+    ) {
+      continue;
+    }
+    for (const member of members) {
       supervisorOfdReconcileRefcount(member, ofdId, 0);
-      member.kernel.kernel_unreserve_ofd?.(ofdId);
+      unreserveKernelShareOfd(member, ofdId, "stale-prune");
     }
     deleteKernelShareSharedOfdId(handle, ofdId);
     deleteKernelShareOfdSlotSnapshot(handle, ofdId);
+    kernelShareAllocationReservedOfdIds(handle).delete(ofdId);
   }
+}
+
+export function pruneUnheldKernelShareOfdIds(handle: ProcessHandle): void {
+  const members = kernelShareMemberList(handle);
+  const heldByMember = members.map((member) => collectProcessHeldOfds(member));
+  const staleOfdIds = kernelShareSharedOfdIdList(handle).filter((ofdId) => (
+    !heldByMember.some((heldOfdIds) => heldOfdIds.has(ofdId))
+  ));
+  pruneStaleKernelShareOfdIds(handle, staleOfdIds);
 }
 
 export function mergeKernelShareOfdStateInto(handle: ProcessHandle, sharedOfdIds: Iterable<number>): void {

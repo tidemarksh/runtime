@@ -178,9 +178,6 @@ function pruneUnpeeredRegularFileSharedOfds(handle: ProcessHandle): void {
       pruneStaleKernelShareOfdIds(handle, [ofdId]);
       continue;
     }
-    for (const member of kernelShareMemberList(handle)) {
-      member.kernel.kernel_unreserve_ofd?.(ofdId);
-    }
     deleteKernelShareSharedOfdId(handle, ofdId);
     deleteKernelShareOfdSlotSnapshot(handle, ofdId);
   }
@@ -402,7 +399,7 @@ export async function syncForkSharedStateViaKernelWorker(
     .filter((ofdId) => sourceHeldOfdIds.has(ofdId) || sourceFdOfdIds.includes(ofdId));
   const staleOfdIds = memfsOnly ? [] : staleKernelShareOfdIds(handle);
   if (!memfsOnly) {
-    syncKernelShareOfdReservations(handle);
+    syncKernelShareOfdReservations(handle, sourceFdOfdIds);
   }
   const preservedRuntimeNetworkKernelStates = kernelShareMemberList(handle).map((member) =>
     snapshotRuntimeNetworkKernelState(member, member === handle ? sourceVmPtr : member.vmPtr)
@@ -463,7 +460,7 @@ export async function syncForkSharedStateViaKernelWorker(
         }
         return forkSharedActionIncludes(handle, action);
       });
-    syncKernelShareOfdReservations(handle);
+    syncKernelShareOfdReservations(handle, sourceFdOfdIds);
     const deltaOfdIdSet = new Set([
       ...sourceActiveOfdIds,
       ...sourceForkSharedFdOfdIds,
@@ -508,7 +505,7 @@ export async function syncForkSharedStateViaKernelWorker(
     );
     if (deltaOfdIds.length === 0 && !memfsOnly) {
       lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));
-      pruneStaleKernelShareOfdIds(handle, staleOfdIds);
+      pruneStaleKernelShareOfdIds(handle, staleOfdIds, sourceFdOfdIds);
       return;
     }
     syncOfdIds = deltaOfdIds;
@@ -597,9 +594,9 @@ export async function syncForkSharedStateViaKernelWorker(
     }
   }
   lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));
-  pruneStaleKernelShareOfdIds(handle, staleOfdIds);
+  pruneStaleKernelShareOfdIds(handle, staleOfdIds, sourceFdOfdIds);
   if (!memfsOnly) {
-    syncKernelShareOfdReservations(handle);
+    syncKernelShareOfdReservations(handle, sourceFdOfdIds);
   }
   restoreProcessStates(processStateSnapshots);
   const heldAfterSync = collectProcessHeldOfds(handle);

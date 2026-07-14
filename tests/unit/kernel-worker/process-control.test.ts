@@ -94,6 +94,10 @@ function makeKernelExports(options: {
   writeRequest?: { fd: number; offset: number; length: number; ino: number; size: number; pwrite?: boolean };
   truncateRequest?: { fd: number; size: number; ino: number; currentSize: number };
   pendingRegularFileRequest?: { fd: number; ofdId: number };
+  heldOfdIds?: number[];
+  reservedOfdIds?: number[];
+  inodeCount?: number;
+  inodeModes?: Array<{ ino: number; mode: number }>;
   onProcessFs?: (memory: WebAssembly.Memory, kernelState: KernelRuntimeState) => void;
   onResumeFs?: (memory: WebAssembly.Memory, kernelState: KernelRuntimeState) => void;
   supervisorBackingFillRequest?: {
@@ -114,9 +118,12 @@ function makeKernelExports(options: {
   const stackPointer = new WebAssembly.Global({ value: "i32", mutable: true }, 0);
   const maxFds = 32;
   const ofdSlotBytes = 32;
-  let inodeCount = 2;
+  let inodeCount = options.inodeCount ?? 2;
   const fdOfdIds = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.ofdId]));
   const fdFlags = new Map((options.fdEntries ?? []).map((entry) => [entry.fd, entry.fdFlags ?? 0]));
+  const heldOfdIds = new Set(options.heldOfdIds ?? []);
+  const reservedOfdIds = new Set(options.reservedOfdIds ?? []);
+  const inodeModes = new Map((options.inodeModes ?? []).map((entry) => [entry.ino, entry.mode]));
   const guestBase = 0x1000;
   const fsRingBase = 0x3000;
   const pathPtr = options.pathPtr ?? 0x2000;
@@ -373,6 +380,16 @@ function makeKernelExports(options: {
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
     kernel_ofd_table_bytes: () => maxFds * ofdSlotBytes,
+    kernel_reserve_ofd: (ofdId: number) => {
+      reservedOfdIds.add(ofdId);
+    },
+    kernel_unreserve_ofd: (ofdId: number) => {
+      reservedOfdIds.delete(ofdId);
+    },
+    kernel_ofd_reserved: (ofdId: number) => Number(reservedOfdIds.has(ofdId)),
+    supervisor_process_held_ofd_refcount: (_vmPtr: number, ofdId: number) => (
+      Number(heldOfdIds.has(ofdId))
+    ),
     kernel_memfs_ptr: () => runtimeState.memfsPtr,
     kernel_memfs_header_bytes: () => runtimeState.memfsHeaderBytes,
     kernel_memfs_inodes_bytes: () => runtimeState.memfsInodesBytes,
@@ -380,6 +397,7 @@ function makeKernelExports(options: {
     kernel_memfs_dir_entries_bytes: () => runtimeState.memfsDirEntriesBytes,
     kernel_memfs_data_bytes: () => runtimeState.memfsDataBytes,
     memfs_inode_count: () => inodeCount,
+    memfs_inode_mode: (ino: number) => inodeModes.get(ino) ?? 0,
     memfs_reserve_inode_until: (targetIno: number) => {
       inodeCount = Math.max(inodeCount, targetIno);
       return 0n;
@@ -1129,7 +1147,7 @@ test("processFs publishes supervisor-selected backing ranges before processing f
   expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
 });
 
-test("processFs publishes resident pages for read fills even when backing is directly readable", async () => {
+test("processFs republishes missing inode metadata before a directly readable backing fill", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     resumeResult: 24,
@@ -1147,14 +1165,18 @@ test("processFs publishes resident pages for read fills even when backing is dir
   const readBackingFileRangeByInode = vi.fn((_ino: number, offset: number, length: number) => (
     backing.subarray(offset, offset + length)
   ));
-  publishInode(sab, 31, {
-    mode: 0o100644,
-    size: backing.length,
-    parentIno: 1,
-    name: new TextEncoder().encode("supervisor-direct-read"),
-    nextSibling: 0,
-    fileObjectId: 31,
-    generation: 1,
+  const ensurePublishedBackingInodeForFill = vi.fn((ino, expectedSize, sourceExports) => {
+    expect(sourceExports).toBe(processExports);
+    publishInode(sab, ino, {
+      mode: 0o100644,
+      size: expectedSize,
+      parentIno: 0,
+      name: new Uint8Array(),
+      nextSibling: 0,
+      fileObjectId: ino,
+      generation: 1,
+    });
+    return true;
   });
 
   const processControl = createKernelWorkerProcessControl({
@@ -1198,6 +1220,7 @@ test("processFs publishes resident pages for read fills even when backing is dir
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
     readBackingFileRangeByInode,
+    ensurePublishedBackingInodeForFill,
     fanoutCanonicalMemfs: () => {},
     fsEffectMemfsMutation: 1 << 0,
     fsEffectSharedOfdState: 1 << 1,
@@ -1210,6 +1233,7 @@ test("processFs publishes resident pages for read fills even when backing is dir
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.result).toBe(24n);
+  expect(ensurePublishedBackingInodeForFill).toHaveBeenCalledWith(31, 9000, processExports);
   expect(readBackingFileRangeByInode).toHaveBeenCalledTimes(1);
   expect(readBackingFileRangeByInode).toHaveBeenCalledWith(31, 4096, DEFAULT_RESIDENT_PAGE_SIZE);
   expect(readResidentFileData(sab, 31, 4096, 32)).toEqual(backing.subarray(4096, 4128));
@@ -1976,6 +2000,8 @@ test("processFs demand-fills source-backed append writes before processing fs", 
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     resumeResult: 4,
+    effects: 1 << 2,
+    targetIno: 15,
     fdEntries: [{ fd: 5, ofdId: 7 }],
     writeRequest: { fd: 5, offset: 8192, length: 4, ino: 15, size: 8192, pwrite: true },
   });
@@ -1983,6 +2009,7 @@ test("processFs demand-fills source-backed append writes before processing fs", 
   const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 16384);
   const backing = Uint8Array.from({ length: 8192 }, (_value, index) => index & 0xff);
   let backingReady = false;
+  let publishedDataRestored = false;
   const ensureBackingSourceRangeForInode = vi.fn(async () => true);
   publishInode(sab, 15, {
     mode: 0o100644,
@@ -2012,6 +2039,10 @@ test("processFs demand-fills source-backed append writes before processing fs", 
     copyMemfsState: () => {},
     rebuildPageCacheFromExports: () => {},
     rebuildPageCacheFromCanonical: () => {},
+    restorePublishedRegularFileDataForInode: () => {
+      publishedDataRestored = true;
+      return true;
+    },
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
     syncSocketState: (_pid, kernelState) => kernelState,
@@ -2035,6 +2066,7 @@ test("processFs demand-fills source-backed append writes before processing fs", 
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
     readBackingFileRangeByInode: (_ino, offset, length) => {
+      expect(publishedDataRestored).toBe(true);
       if (!backingReady) {
         return null;
       }
@@ -2057,6 +2089,7 @@ test("processFs demand-fills source-backed append writes before processing fs", 
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.result).toBe(4n);
+  expect(publishedDataRestored).toBe(true);
   expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(15, 4096, 4096, 8192);
   expect(readResidentFileData(sab, 15, 4096, 4096)).toEqual(backing.subarray(4096, 8192));
 });
@@ -2254,11 +2287,10 @@ test("processFs retries execve after publishing kernel-reported backing miss ran
   expect(clearMiss).toHaveBeenCalledTimes(1);
   expect(readResidentFileData(sab, 13, 128, 16)).toEqual(backing.subarray(128, 144));
   expect(processExports.opLog).toEqual(["process-fs", "process-fs", "resume-fs"]);
-  expect(result.guestMemoryWrites).toHaveLength(1);
-  expect(result.guestMemoryWrites?.[0]?.guestPtr).toBe(0);
-  expect(result.guestMemoryWrites?.[0]?.bytes).toHaveLength(processExports.memory.buffer.byteLength - 0x1000);
-  expect(result.guestMemoryWrites?.[0]?.bytes[0]).toBe(0x7f);
-  expect(result.guestMemoryWrites?.[0]?.bytes.at(-1)).toBe(0x55);
+  expect(result.guestMemoryWrites).toBeUndefined();
+  const sharedMemory = new Uint8Array(processExports.memory.buffer);
+  expect(sharedMemory[0x1000]).toBe(0x7f);
+  expect(sharedMemory.at(-1)).toBe(0x55);
 });
 
 test("processFs follows supervisor execve backing retry limits", async () => {
@@ -2451,6 +2483,94 @@ test("processFs materializes source-backed files before processing writes", asyn
   expect(result.result).toBe(7n);
   expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(11, 0, 128, 128);
   expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
+});
+
+test("processFs synchronizes inode allocation without reserving process-local OFD ids", async () => {
+  const canonicalExports = makeKernelExports({ inodeCount: 11 });
+  const memberExports = makeKernelExports({ heldOfdIds: [7], inodeCount: 17 });
+  let reservedDuringProcess = 0;
+  let inodeCountsDuringProcess: number[] = [];
+  const processExports = makeKernelExports({
+    effects: 1 << 0,
+    opcode: 3,
+    inodeCount: 5,
+    resumeResult: 5,
+    onProcessFs: () => {
+      reservedDuringProcess = processExports.kernel_ofd_reserved?.(7) ?? 0;
+      inodeCountsDuringProcess = [canonicalExports, processExports, memberExports]
+        .map((exports) => exports.memfs_inode_count());
+    },
+  });
+  const processKernels = new Map<number, KernelExports>([
+    [7, processExports],
+    [8, memberExports],
+  ]);
+  const canonicalProcesses = new Map([
+    [7, { pid: 7, ppid: 1, pgid: 7, sid: 7, didExec: false, vmPtr: 0x1234 }],
+    [8, { pid: 8, ppid: 1, pgid: 8, sid: 8, didExec: false, vmPtr: 0x5678 }],
+  ]);
+  const copyCanonicalMemfsToProcess = vi.fn();
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => new SharedArrayBuffer(65536),
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses,
+    seedEntries: new Map(),
+    encoder: new TextEncoder(),
+    getCanonicalNextPid: () => 9,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => ({ kernelState, pipeSlots: [] }),
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess,
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: () => null,
+    flushDirtyResidentFileByInode: () => false,
+    truncateDirtyResidentFileByInode: () => 0,
+    writeDirtyResidentFileByInode: () => 0,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(reservedDuringProcess).toBe(0);
+  expect(inodeCountsDuringProcess).toEqual([17, 17, 17]);
+  expect(processExports.kernel_ofd_reserved?.(7)).toBe(0);
+  expect(copyCanonicalMemfsToProcess).not.toHaveBeenCalled();
 });
 
 test("processFs returns fd and OFD snapshots after successful fs processing", async () => {
@@ -3439,7 +3559,6 @@ test("processFs uses targeted file-data sync when target ino is unavailable but 
 
 test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_TRUNC)", async () => {
   const canonicalExports = makeKernelExports();
-  let canonicalMemfsRefreshed = false;
   const processExports = makeKernelExports({
     opcode: 3,
     effects: (1 << 0) | (1 << 2),
@@ -3447,7 +3566,8 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
     path: "app.bin",
     absolutePath: "/work/app.bin",
     onResumeFs: () => {
-      expect(canonicalMemfsRefreshed).toBe(true);
+      expect(metadataPaths).toEqual([]);
+      expect(filePaths).toEqual([]);
     },
   });
   const processKernels = new Map<number, KernelExports>([[7, processExports]]);
@@ -3478,15 +3598,8 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
     syncPipeState: (_pid, kernelState) => kernelState,
     syncEpollState: (_pid, kernelState) => kernelState,
     syncSocketState: (_pid, kernelState) => kernelState,
-    copyCanonicalMemfsToProcess: (
-      _canonicalState,
-      targetExports,
-      _targetState,
-      options,
-    ) => {
-      expect(targetExports).toBe(processExports);
-      expect(options).toEqual({ includeData: false, targetVmPtr: 0x1234 });
-      canonicalMemfsRefreshed = true;
+    copyCanonicalMemfsToProcess: () => {
+      throw new Error("full process MemFS refresh should be skipped");
     },
     composeProcessPipeUsed: () => 0n,
     collectProcessHeldEpollOfdIds: () => [],
@@ -3524,13 +3637,12 @@ test("processFs uses targeted metadata and file-data sync for openat(O_CREAT|O_T
   const result = await processControl.processFs(7, 0x1234, makeKernelState());
 
   expect(result.memfsMutated).toBe(true);
-  expect(canonicalMemfsRefreshed).toBe(true);
   expect(metadataPaths).toEqual(["/work/app.bin"]);
   expect(filePaths).toEqual(["/work/app.bin"]);
   expect(copyMemfsCalls).toEqual([]);
 });
 
-test("processFs refreshes canonical MemFS only when the directory epoch changed", async () => {
+test("processFs never replaces process MemFS around targeted tree mutations", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
     opcode: 6,
@@ -3595,11 +3707,11 @@ test("processFs refreshes canonical MemFS only when the directory epoch changed"
 
   await processControl.processFs(7, 0x1234, makeKernelState());
   await processControl.processFs(7, 0x1234, makeKernelState());
-  expect(copyCanonicalMemfsToProcess).toHaveBeenCalledTimes(1);
+  expect(copyCanonicalMemfsToProcess).not.toHaveBeenCalled();
 
   bumpDirEpoch(pageCache);
   await processControl.processFs(7, 0x1234, makeKernelState());
-  expect(copyCanonicalMemfsToProcess).toHaveBeenCalledTimes(2);
+  expect(copyCanonicalMemfsToProcess).not.toHaveBeenCalled();
 });
 
 test("processFs skips full page-cache restore for created file-data target with no inode", async () => {

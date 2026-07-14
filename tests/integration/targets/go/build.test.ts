@@ -1065,7 +1065,7 @@ test("Runtime go build compiles internal abi after compiler version probe", asyn
     const { exitCode, output, debugInfo } = await spawnWithOutput(
       runtime,
       goBytes,
-      ["go", "build", "-a", "-x", "internal/abi"],
+      ["go", "build", "-a", "-x", ...(GO_BUILD_INSPECT_WORK ? ["-work"] : []), "internal/abi"],
       goEnv(1),
       300_000,
     ).catch(async (error) => {
@@ -1075,9 +1075,19 @@ test("Runtime go build compiles internal abi after compiler version probe", asyn
     const sourcePath = "/usr/local/go/src/internal/goarch/goarch_riscv64.go";
     const abiSymtabPath = "/usr/local/go/src/internal/abi/symtab.go";
     const abiTypePath = "/usr/local/go/src/internal/abi/type.go";
+    const abiAsmPath = "/usr/local/go/src/internal/abi/abi_test.s";
+    const textflagPath = "/usr/local/go/pkg/include/textflag.h";
+    const workDir = /^WORK=(\S+)$/m.exec(output)?.[1];
+    const goarchArchivePath = workDir ? `${workDir}/b002/_pkg_.a` : null;
     const failureInspection = exitCode === 0
       ? ""
       : [
+        ...(goarchArchivePath
+          ? [
+            ...await inspectGuestBytes(runtime, goarchArchivePath, 0, 512),
+            `goarch-archive-page-cache=${JSON.stringify(await runtime.debugPageCachePath(goarchArchivePath))}`,
+          ]
+          : []),
         ...await inspectGuestTextLines(runtime, sourcePath, 1, 24),
         ...await inspectGuestBytes(runtime, sourcePath, 0, 512),
         `goarch-riscv64-page-cache=${JSON.stringify(await runtime.debugPageCachePath(sourcePath))}`,
@@ -1087,6 +1097,10 @@ test("Runtime go build compiles internal abi after compiler version probe", asyn
         ...await inspectGuestTextLines(runtime, abiTypePath, 739, 755),
         ...await inspectGuestBytes(runtime, abiTypePath, 20464, 160),
         `abi-type-page-cache=${JSON.stringify(await runtime.debugPageCachePath(abiTypePath))}`,
+        ...await inspectGuestBytes(runtime, abiAsmPath, 0, 1024),
+        `abi-asm-page-cache=${JSON.stringify(await runtime.debugPageCachePath(abiAsmPath))}`,
+        ...await inspectGuestBytes(runtime, textflagPath, 0, 1600),
+        `textflag-page-cache=${JSON.stringify(await runtime.debugPageCachePath(textflagPath))}`,
       ].join("\n");
     expect(
       exitCode,
@@ -1293,6 +1307,70 @@ test("Runtime preserves regular file identity across cross-thread fd handoff", a
     runtime.destroy();
   }
 }, 120_000);
+
+test("Runtime preserves distinct regular files across concurrent child exits", async () => {
+  if (!BUSYBOX_BINARY_PATH || !existsSync(BUSYBOX_BINARY_PATH)) {
+    return logSkip(`missing BusyBox binary: ${BUSYBOX_BINARY_PATH || "TIDEMARK_TEST_BUSYBOX_BINARY"}`);
+  }
+  const prepared = await prepareGoRuntime({
+    includeToolchain: false,
+    includeSampleModule: false,
+    hostFileBackingMode: GO_BUILD_HOST_FILE_BACKING_MODE,
+  });
+  if (!prepared) {
+    return;
+  }
+
+  const { runtime } = prepared;
+  const script = [
+    "round=0",
+    "while [ \"$round\" -lt 8 ]; do",
+    "  child=0",
+    "  while [ \"$child\" -lt 4 ]; do",
+    "    (",
+    "      line=0",
+    "      while [ \"$line\" -lt 32 ]; do",
+    "        printf '%s:%s:%s\\n' \"$round\" \"$child\" \"$line\"",
+    "        line=$((line + 1))",
+    "      done",
+    "    ) > \"/tmp/ofd-$round-$child\" &",
+    "    child=$((child + 1))",
+    "  done",
+    "  wait || exit 70",
+    "  child=0",
+    "  while [ \"$child\" -lt 4 ]; do",
+    "    lines=$(/bin/busybox wc -l < \"/tmp/ofd-$round-$child\") || exit 71",
+    "    if [ \"$lines\" -ne 32 ]; then",
+    "      bytes=$(/bin/busybox wc -c < \"/tmp/ofd-$round-$child\")",
+    "      echo \"line-count-mismatch path=/tmp/ofd-$round-$child lines=$lines bytes=$bytes\" >&2",
+    "      exit 72",
+    "    fi",
+    "    child=$((child + 1))",
+    "  done",
+    "  round=$((round + 1))",
+    "done",
+    "echo concurrent-process-files-ok",
+  ].join("\n");
+  try {
+    const { exitCode, output, debugInfo } = await spawnWithOutput(
+      runtime,
+      new Uint8Array(readFileSync(BUSYBOX_BINARY_PATH)),
+      ["/bin/busybox", "sh", "-c", script],
+      ["PATH=/bin"],
+      120_000,
+    ).catch(async (error) => {
+      const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+      throw new Error(`${detail}\n${await runtimeDebugSummary(runtime)}`);
+    });
+    expect(
+      exitCode,
+      `concurrent child file probe exited with ${exitCode}\n${output}\n${debugInfo ?? ""}\n${await runtimeDebugSummary(runtime)}`,
+    ).toBe(0);
+    expect(output).toContain("concurrent-process-files-ok");
+  } finally {
+    runtime.destroy();
+  }
+}, 180_000);
 
 test("Runtime reads Go source in one large host-backed request", async () => {
   if (!BUSYBOX_BINARY_PATH || !existsSync(BUSYBOX_BINARY_PATH)) {

@@ -211,7 +211,7 @@ async function flushMicrotasks(count = 10): Promise<void> {
   }
 }
 
-test("recordExitOnParent syncs and drains child output before waking the parent", async () => {
+test("recordExitOnParent publishes child output before waking the parent", async () => {
   const order: string[] = [];
   const parent = makeHandle({
     pid: 1,
@@ -267,11 +267,14 @@ test("recordExitOnParent syncs and drains child output before waking the parent"
   await helpers.completeProcessExit(child, 0, 0);
 
   expect(order).toEqual([
+    "pipe-sync:1:sync",
+    "pipe-sync:3:sync",
     "pipe-sync:1:wake",
     "drain:1",
-    "pipe-sync:3:wake",
     "drain:3",
     "unregister:3",
+    "pipe-sync:1:wake",
+    "drain:1",
     "debug:1",
     "debug:1",
     "record:1",
@@ -350,7 +353,7 @@ test("completeProcessExit waits for child pipe sync before recording parent exit
     },
     requestPipeStateSync: async (handle, wakeWaiters = false) => {
       order.push(`pipe-sync:${handle.pid}:${wakeWaiters ? "wake" : "sync"}`);
-      if (handle === child && wakeWaiters) {
+      if (handle === child) {
         await childPipeSync;
       }
     },
@@ -366,7 +369,7 @@ test("completeProcessExit waits for child pipe sync before recording parent exit
 
   const beforeRelease = order.join("\n");
   expect(beforeRelease).not.toContain("exit-parent-prepublish-done:1:3:pending=0:records=3/0");
-  expect(beforeRelease).toContain("pipe-sync:3:wake");
+  expect(beforeRelease).toContain("pipe-sync:3:sync");
   expect(beforeRelease).not.toContain("unregister:3");
   expect(beforeRelease).not.toContain("record:1");
 
@@ -374,7 +377,10 @@ test("completeProcessExit waits for child pipe sync before recording parent exit
   await exitPromise;
 
   expect(order.indexOf("child-pipe-sync-done:3")).toBeLessThan(order.indexOf("unregister:3"));
-  expect(order.indexOf("unregister:3")).toBeLessThan(order.indexOf("record:1"));
+  const unregisterIndex = order.indexOf("unregister:3");
+  const parentCloseSyncIndex = order.indexOf("pipe-sync:1:wake", unregisterIndex);
+  expect(unregisterIndex).toBeLessThan(parentCloseSyncIndex);
+  expect(parentCloseSyncIndex).toBeLessThan(order.indexOf("record:1"));
   expect(order).toContain("progress:1");
 });
 
@@ -729,12 +735,13 @@ test("completeProcessExit routes deferred parent record rejection through local 
   expect(destroyed).toContain("3:15");
 });
 
-test("completeProcessExit preserves published file data during exit MemFS publication", async () => {
+test("completeProcessExit pulls canonical MemFS before exit snapshot publication", async () => {
   const handle = makeHandle({
     parentPid: null,
     memfsDirty: true,
   });
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {});
+  const syncProcessMemfsViaKernelWorker = vi.fn(async () => {});
   const publishRuntimeFsState = vi.fn(() => 1);
 
   const helpers = createWorkerExitHelpers({
@@ -755,26 +762,21 @@ test("completeProcessExit preserves published file data during exit MemFS public
     requestPipeStateSync: async () => {},
     snapshotProcessFs: () => [],
     syncForkSharedStateViaKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     unregisterProcessWithKernelWorker: async () => {},
   });
 
   await helpers.completeProcessExit(handle, 0, 0);
 
-  expect(syncForkSharedStateViaKernelWorker).toHaveBeenCalledWith(
+  expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncProcessMemfsViaKernelWorker).toHaveBeenCalledWith(
     handle,
-    [],
-    expect.objectContaining({
-      cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
-      includeMemfs: true,
-      memfsOnly: true,
-      trackHeldOfds: false,
-      sourceVmPtr: handle.vmPtr,
-    }),
+    { kind: "syscall", nr: -1n, name: "process-exit-memfs-snapshot" },
   );
   expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
 });
 
-test("completeProcessExit publishes dirty MemFS locally when no exit threads remain", async () => {
+test("completeProcessExit pulls canonical MemFS when no exit threads remain", async () => {
   const onExit = vi.fn();
   const baseKernel = makeHandle().kernel;
   const handle = makeHandle({
@@ -787,6 +789,7 @@ test("completeProcessExit publishes dirty MemFS locally when no exit threads rem
     } as never,
   });
   const syncForkSharedStateViaKernelWorker = vi.fn(() => new Promise<void>(() => {}));
+  const syncProcessMemfsViaKernelWorker = vi.fn(async () => {});
   const snapshotProcessFs = vi.fn(() => []);
   const publishRuntimeFsState = vi.fn(() => 1);
 
@@ -808,6 +811,7 @@ test("completeProcessExit publishes dirty MemFS locally when no exit threads rem
     requestPipeStateSync: async () => {},
     snapshotProcessFs,
     syncForkSharedStateViaKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     unregisterProcessWithKernelWorker: async () => {},
   });
 
@@ -815,14 +819,17 @@ test("completeProcessExit publishes dirty MemFS locally when no exit threads rem
   await flushMicrotasks(100);
 
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncProcessMemfsViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    { kind: "syscall", nr: -1n, name: "process-exit-memfs-snapshot" },
+  );
   expect(snapshotProcessFs).toHaveBeenCalledWith(handle);
   expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
   expect(onExit).toHaveBeenCalledWith(1);
   await exitPromise;
 });
 
-test("completeProcessExit publishes dirty MemFS locally when exit thread slots are faulted", async () => {
-  const events: string[] = [];
+test("completeProcessExit pulls canonical MemFS when exit thread slots are faulted", async () => {
   const onExit = vi.fn();
   const baseKernel = makeHandle().kernel;
   const faultedVmPtrs = new Map<number, number>([
@@ -845,14 +852,13 @@ test("completeProcessExit publishes dirty MemFS locally when exit thread slots a
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {
     throw new Error("kernel-worker MemFS sync should be skipped for terminal exit threads");
   });
+  const syncProcessMemfsViaKernelWorker = vi.fn(async () => {});
   const snapshotProcessFs = vi.fn(() => []);
   const publishRuntimeFsState = vi.fn(() => 1);
 
   const helpers = createWorkerExitHelpers({
     processHandles: new Map([[3, handle]]),
-    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
-      events.push(event);
-    },
+    appendRuntimeLifecycleEvent: () => {},
     appendWorkerDebugLog: () => {},
     captureRuntimeFailureSnapshot: () => {},
     debugRuntimeProcessHandles: () => "pid=3",
@@ -868,6 +874,7 @@ test("completeProcessExit publishes dirty MemFS locally when exit thread slots a
     requestPipeStateSync: async () => {},
     snapshotProcessFs,
     syncForkSharedStateViaKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     unregisterProcessWithKernelWorker: async () => {},
   });
 
@@ -875,15 +882,17 @@ test("completeProcessExit publishes dirty MemFS locally when exit thread slots a
   await flushMicrotasks(100);
 
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncProcessMemfsViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    { kind: "syscall", nr: -1n, name: "process-exit-memfs-snapshot" },
+  );
   expect(snapshotProcessFs).toHaveBeenCalledWith(handle);
   expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
-  expect(events).toContain("exit-fs-publish-local-terminal-threads:3");
   expect(onExit).toHaveBeenCalledWith(1);
   await exitPromise;
 });
 
-test("completeProcessExit publishes dirty MemFS locally when no live exit thread slots remain", async () => {
-  const events: string[] = [];
+test("completeProcessExit pulls canonical MemFS when no live exit thread slots remain", async () => {
   const onExit = vi.fn();
   const baseKernel = makeHandle().kernel;
   const handle = makeHandle({
@@ -902,14 +911,13 @@ test("completeProcessExit publishes dirty MemFS locally when no live exit thread
   const syncForkSharedStateViaKernelWorker = vi.fn(async () => {
     throw new Error("kernel-worker MemFS sync should be skipped when no live thread slots remain");
   });
+  const syncProcessMemfsViaKernelWorker = vi.fn(async () => {});
   const snapshotProcessFs = vi.fn(() => []);
   const publishRuntimeFsState = vi.fn(() => 1);
 
   const helpers = createWorkerExitHelpers({
     processHandles: new Map([[3, handle]]),
-    appendRuntimeLifecycleEvent: (_runtimeId, event) => {
-      events.push(event);
-    },
+    appendRuntimeLifecycleEvent: () => {},
     appendWorkerDebugLog: () => {},
     captureRuntimeFailureSnapshot: () => {},
     debugRuntimeProcessHandles: () => "pid=3",
@@ -925,6 +933,7 @@ test("completeProcessExit publishes dirty MemFS locally when no live exit thread
     requestPipeStateSync: async () => {},
     snapshotProcessFs,
     syncForkSharedStateViaKernelWorker,
+    syncProcessMemfsViaKernelWorker,
     unregisterProcessWithKernelWorker: async () => {},
   });
 
@@ -932,9 +941,12 @@ test("completeProcessExit publishes dirty MemFS locally when no live exit thread
   await flushMicrotasks(100);
 
   expect(syncForkSharedStateViaKernelWorker).not.toHaveBeenCalled();
+  expect(syncProcessMemfsViaKernelWorker).toHaveBeenCalledWith(
+    handle,
+    { kind: "syscall", nr: -1n, name: "process-exit-memfs-snapshot" },
+  );
   expect(snapshotProcessFs).toHaveBeenCalledWith(handle);
   expect(publishRuntimeFsState).toHaveBeenCalledWith(1, []);
-  expect(events).toContain("exit-fs-publish-local-no-live-thread-slots:3");
   expect(onExit).toHaveBeenCalledWith(1);
   await exitPromise;
 });
@@ -1493,9 +1505,13 @@ test("completeProcessExit wakes inherited-output parent after child stdio releas
   expect(order).not.toContain("hidden-drain:3");
   expect(order.filter((entry) => entry === "pipe-sync:3:sync")).toHaveLength(2);
   expect(order.filter((entry) => entry === "pipe-sync:1:sync")).toHaveLength(0);
-  expect(order.filter((entry) => entry === "pipe-sync:1:wake")).toHaveLength(2);
+  expect(order.filter((entry) => entry === "pipe-sync:1:wake")).toHaveLength(3);
   expect(order).toContain("record:1");
   const recordIndex = order.indexOf("record:1");
+  const unregisterIndex = order.indexOf("unregister:3");
+  const closeWakeIndex = order.findIndex((entry, index) => index > unregisterIndex && entry === "pipe-sync:1:wake");
+  expect(closeWakeIndex).toBeGreaterThan(unregisterIndex);
+  expect(recordIndex).toBeGreaterThan(closeWakeIndex);
   const parentWakeIndex = order.findIndex((entry, index) => index > recordIndex && entry === "pipe-sync:1:wake");
   const parentDrainIndex = order.findIndex((entry, index) => index > parentWakeIndex && entry === "drain:1");
   const postRecordProgressIndex = order.findIndex((entry, index) => index > parentDrainIndex && entry === "progress:1");
@@ -1577,7 +1593,7 @@ test("completeProcessExit treats duped child stdio pipes as internal protocol pi
 
   await helpers.completeProcessExit(child, 0, 0);
 
-  expect(order).toContain("pipe-sync:3:wake");
+  expect(order).toContain("pipe-sync:3:sync");
   expect(order).toContain("hidden-drain:3");
   expect(order).toContain("record:1");
   expect(order).toContain("unregister:3");
@@ -2143,5 +2159,8 @@ test("completeProcessExit does not treat redirected child pipes as inherited par
 
   expect(lifecycle).toContain("parent-pipe-sync-before-child-exit-start:1:3");
   expect(lifecycle).not.toContain("child-parent-pipe-refresh:1:3");
-  expect(syncs).toContain("3:wake");
+  const childPublishIndex = syncs.indexOf("3:sync");
+  const parentWakeIndex = syncs.indexOf("1:wake");
+  expect(childPublishIndex).toBeGreaterThanOrEqual(0);
+  expect(parentWakeIndex).toBeGreaterThan(childPublishIndex);
 });

@@ -1,4 +1,8 @@
-import type { KernelExports, KernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  type KernelExports,
+  type KernelRuntimeState,
+} from "../../abi.js";
 import {
   clearMemoryRange,
   copyMemoryRange,
@@ -18,6 +22,43 @@ import {
 const MEMFS_S_IFLNK = 0o120000;
 
 export function createKernelWorkerMemfsPrimitives() {
+  function copyActiveTable(
+    sourceExports: KernelExports,
+    sourcePtr: number,
+    sourceTotalBytes: number,
+    sourceCount: number,
+    targetExports: KernelExports,
+    targetPtr: number,
+    targetTotalBytes: number,
+    targetCount: number,
+    maxEntries: number,
+  ): void {
+    if (maxEntries <= 0) {
+      return;
+    }
+    const sourceEntryBytes = sourceTotalBytes / maxEntries;
+    const targetEntryBytes = targetTotalBytes / maxEntries;
+    if (!Number.isInteger(sourceEntryBytes) || sourceEntryBytes !== targetEntryBytes) {
+      throw new Error("incompatible MemFS table layout");
+    }
+    const copiedEntries = Math.min(Math.max(sourceCount, 0), maxEntries);
+    const previousTargetEntries = Math.min(Math.max(targetCount, 0), maxEntries);
+    if (previousTargetEntries > copiedEntries) {
+      clearMemoryRange(
+        targetExports.memory,
+        targetPtr + copiedEntries * targetEntryBytes,
+        (previousTargetEntries - copiedEntries) * targetEntryBytes,
+      );
+    }
+    copyMemoryRange(
+      sourceExports.memory,
+      sourcePtr,
+      targetExports.memory,
+      targetPtr,
+      copiedEntries * sourceEntryBytes,
+    );
+  }
+
   function preserveCopiedInlineData(
     sourceExports: KernelExports,
     targetExports: KernelExports,
@@ -91,33 +132,46 @@ export function createKernelWorkerMemfsPrimitives() {
     targetState: KernelRuntimeState,
     options: { includeData?: boolean } = {},
   ): void {
-    const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr);
-    const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr);
-    copyMemoryRange(
-      sourceExports.memory,
+    const sourceLayout = readMemfsLayout(sourceExports.memory, sourceState.memfsPtr, sourceExports);
+    const targetLayout = readMemfsLayout(targetExports.memory, targetState.memfsPtr, targetExports);
+    const maxInodes = sourceExports.kernel_memfs_first_child_bytes() / 4;
+    copyActiveTable(
+      sourceExports,
       sourceLayout.inodesPtr,
-      targetExports.memory,
-      targetLayout.inodesPtr,
       sourceExports.kernel_memfs_inodes_bytes(),
+      sourceLayout.inodeCount,
+      targetExports,
+      targetLayout.inodesPtr,
+      targetExports.kernel_memfs_inodes_bytes(),
+      targetLayout.inodeCount,
+      maxInodes,
     );
-    copyMemoryRange(
-      sourceExports.memory,
+    copyActiveTable(
+      sourceExports,
       sourceLayout.firstChildPtr,
-      targetExports.memory,
-      targetLayout.firstChildPtr,
       sourceExports.kernel_memfs_first_child_bytes(),
+      sourceLayout.inodeCount,
+      targetExports,
+      targetLayout.firstChildPtr,
+      targetExports.kernel_memfs_first_child_bytes(),
+      targetLayout.inodeCount,
+      maxInodes,
     );
-    copyMemoryRange(
-      sourceExports.memory,
+    copyActiveTable(
+      sourceExports,
       sourceLayout.dirEntriesPtr,
-      targetExports.memory,
-      targetLayout.dirEntriesPtr,
       sourceExports.kernel_memfs_dir_entries_bytes(),
+      sourceLayout.dirEntryCount,
+      targetExports,
+      targetLayout.dirEntriesPtr,
+      targetExports.kernel_memfs_dir_entries_bytes(),
+      targetLayout.dirEntryCount,
+      maxInodes,
     );
     clearMemoryRange(
       targetExports.memory,
-      targetExports.kernel_memfs_data_ptr(),
-      targetExports.kernel_memfs_data_bytes(),
+      targetLayout.dataPtr,
+      Math.min(targetLayout.dataUsed, targetLayout.dataCap),
     );
     copyMemoryRange(
       sourceExports.memory,
@@ -151,6 +205,7 @@ export function createKernelWorkerMemfsPrimitives() {
       dataUsed,
       { clearRegularData: !preserveRegularData },
     );
+    attachKernelRuntimeState(targetExports, targetState);
   }
 
   function clearMemfsState(

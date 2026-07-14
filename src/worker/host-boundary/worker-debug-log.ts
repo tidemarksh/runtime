@@ -4,6 +4,8 @@ import { workerDebugLog } from "../worker-debug-log.js";
 const WORKER_DEBUG_LOG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_WORKER_DEBUG_LOG ?? "") === "1";
+const WORKER_DEBUG_LOG_LIMIT = 4096;
+const WORKER_DEBUG_LOG_TRIM_COUNT = 1024;
 
 const ALWAYS_ON_SUPERVISOR_TRACE_PREFIXES = [
   "supervisor-blocked-retry-timer-arm",
@@ -33,7 +35,7 @@ export function appendWorkerDebugLog(handle: ProcessHandle, event: string): void
     return;
   }
   workerDebugLog(handle).push(event);
-  if (workerDebugLog(handle).length > 4096) {
-    workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
+  if (workerDebugLog(handle).length > WORKER_DEBUG_LOG_LIMIT) {
+    workerDebugLog(handle).splice(0, WORKER_DEBUG_LOG_TRIM_COUNT);
   }
 }

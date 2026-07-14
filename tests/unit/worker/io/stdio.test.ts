@@ -448,6 +448,53 @@ test("drainHiddenProcessOutput uses hidden child local stdout after host stdio d
   expect(delivered).toEqual(["child-exit-out\n"]);
 });
 
+test("drainHiddenProcessOutput preserves a child capture pipe held by the parent", () => {
+  const capturePipe = 6;
+  const { handle: owner } = makeHandle();
+  const ownerProcessFdOfdId = owner.kernel.process_fd_ofd_id.bind(owner.kernel);
+  const ownerOfdType = owner.kernel.kernel_ofd_fd_type.bind(owner.kernel);
+  const ownerOfdIno = owner.kernel.kernel_ofd_ino.bind(owner.kernel);
+  owner.kernel = {
+    ...owner.kernel,
+    process_fd_ofd_id: (vmPtr: number, fd: number) => (
+      fd === 7 ? 8 : ownerProcessFdOfdId(vmPtr, fd)
+    ),
+    kernel_ofd_fd_type: (ofdId: number) => (
+      ofdId === 8 ? owner.kernel.abi_fd_type_pipe() : ownerOfdType(ofdId)
+    ),
+    kernel_ofd_ino: (ofdId: number) => (ofdId === 8 ? capturePipe : ownerOfdIno(ofdId)),
+  } as unknown as KernelExports;
+  const { handle: child } = makeHandle({
+    pid: 2,
+    parentPid: owner.pid,
+    hostStdio: processHostStdio(owner),
+    stdinPipe: processStdinPipe(owner),
+    stdoutPipe: capturePipe,
+    stderrPipe: processStderrPipe(owner),
+    stdioOwner: owner,
+    onStdout: undefined,
+  });
+  const childProcessFdOfdId = child.kernel.process_fd_ofd_id.bind(child.kernel);
+  const childOfdType = child.kernel.kernel_ofd_fd_type.bind(child.kernel);
+  const childOfdIno = child.kernel.kernel_ofd_ino.bind(child.kernel);
+  child.kernel = {
+    ...child.kernel,
+    process_fd_ofd_id: (vmPtr: number, fd: number) => (
+      fd === 1 ? 9 : childProcessFdOfdId(vmPtr, fd)
+    ),
+    kernel_ofd_fd_type: (ofdId: number) => (
+      ofdId === 9 ? child.kernel.abi_fd_type_pipe() : childOfdType(ofdId)
+    ),
+    kernel_ofd_ino: (ofdId: number) => (ofdId === 9 ? capturePipe : childOfdIno(ofdId)),
+  } as unknown as KernelExports;
+
+  seedPipe(child.memory, child.kernelState, capturePipe, "captured-by-parent\n");
+
+  expect(drainHiddenProcessOutput(child)).toBe(false);
+  expect(new TextDecoder().decode(readPipe(child.memory, child.kernelState.pipeBase, capturePipe).data))
+    .toBe("captured-by-parent\n");
+});
+
 test("drainHiddenProcessOutput falls back to shared host stdout after child fds detach", () => {
   const { handle: owner } = makeHandle();
   const delivered: string[] = [];

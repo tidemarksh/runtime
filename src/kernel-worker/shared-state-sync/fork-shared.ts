@@ -156,15 +156,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
         sharedPipeSlots,
       );
     }
-    if (includeMemfs) {
-      pushMemfsDebug("before-source-to-canonical");
-      deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
-        includeData: !memfsOnly,
-      });
-      deps.restorePublishedRegularFileDataFromPageCache?.();
-      pushMemfsDebug("after-source-to-canonical");
-    }
-
     const memberVmPtrs = new Map<number, number>([[pid, vmPtr]]);
     const memberPids = new Set<number>([pid]);
     for (const target of targetKernelStates) {
@@ -201,6 +192,18 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       deps.composeProcessPipeUsed(processExports, vmPtr, reconciledCanonicalState.pipeUsed),
       managedPipeSlots,
     );
+    if (includeMemfs) {
+      pushMemfsDebug("before-canonical-to-source");
+      deps.copyCanonicalMemfsToProcess(reconciledCanonicalState, processExports, sourceState, {
+        includeData: !memfsOnly,
+        ...(vmPtr !== 0 ? { targetVmPtr: vmPtr } : {}),
+      });
+      deps.restorePublishedRegularFileDataFromPageCache?.(processExports, {
+        metadataAlreadyCopied: true,
+        regularDataAlreadyExternalized: memfsOnly,
+      });
+      pushMemfsDebug("after-canonical-to-source");
+    }
 
     const targetStateByPid = new Map<number, KernelRuntimeState>();
     const targetVmPtrByPid = new Map<number, number>();
@@ -241,7 +244,10 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
           includeData: !memfsOnly,
           ...(targetVmPtr !== undefined ? { targetVmPtr } : {}),
         });
-        deps.restorePublishedRegularFileDataFromPageCache?.(targetExports);
+        deps.restorePublishedRegularFileDataFromPageCache?.(targetExports, {
+          metadataAlreadyCopied: true,
+          regularDataAlreadyExternalized: memfsOnly,
+        });
         if (FORK_SHARED_MEMFS_DEBUG_ENABLED) {
           debug.push([
             `phase=after-canonical-to-target-${targetPid}`,

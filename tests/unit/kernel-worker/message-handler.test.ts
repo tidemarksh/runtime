@@ -203,6 +203,44 @@ test("message handler awaits async file reads before responding", async () => {
   ]);
 });
 
+test("message handler serializes Kernel supervisor requests across async boundaries", async () => {
+  const posted: KernelWorkerOutbound[] = [];
+  const deps = makeDeps(posted);
+  const kernelState = makeKernelState();
+  let finishRead: (() => void) | undefined;
+  deps.readFile.mockImplementation(() => new Promise<Uint8Array>((resolve) => {
+    finishRead = () => resolve(new Uint8Array([7, 8, 9]));
+  }));
+  const handleMessage = createKernelWorkerMessageHandler(deps);
+
+  const read = handleMessage({
+    type: "read-file",
+    requestId: 41,
+    path: "/tmp/a",
+  });
+  await Promise.resolve();
+  const sync = handleMessage({
+    type: "sync-fork-shared-state",
+    requestId: 42,
+    pid: 7,
+    vmPtr: 0x1234,
+    targetPids: [],
+    targetKernelStates: [],
+    ofdIds: [],
+    ofdSlots: [],
+    fdEntries: [],
+    kernelState,
+  });
+  await Promise.resolve();
+
+  expect(deps.syncForkSharedState).not.toHaveBeenCalled();
+  expect(finishRead).toBeDefined();
+  finishRead?.();
+  await Promise.all([read, sync]);
+  expect(deps.syncForkSharedState).toHaveBeenCalledOnce();
+  expect(posted.map((message) => message.requestId)).toEqual([41, 42]);
+});
+
 test("message handler reads backing file ranges by inode", async () => {
   const posted: KernelWorkerOutbound[] = [];
   const deps = makeDeps(posted);

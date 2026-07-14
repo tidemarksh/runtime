@@ -7,6 +7,7 @@ import {
 } from "./process-stdio-state.js";
 import { clearWorkerMessageHandler } from "../bridge/compat.js";
 import { detachKernelShare } from "./kernel-share.js";
+import { pruneUnheldKernelShareOfdIds } from "./fork-shared.js";
 import { removeWorkerFromPool } from "./pool.js";
 import { processOnExit } from "./process-callback-state.js";
 import { processDebugCommand } from "./process-debug-state.js";
@@ -68,6 +69,7 @@ export function createWorkerDestroyHelpers(deps: WorkerDestroyDeps) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `destroy-kernel-worker-cleanup-error:${handle.pid}:${JSON.stringify(message)}`);
     });
     detachKernelShare(handle);
+    pruneUnheldKernelShareOfdIds(handle);
     if (handle.pid > 0 && deps.processHandles.get(handle.pid) === handle) {
       deps.processHandles.delete(handle.pid);
     }

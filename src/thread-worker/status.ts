@@ -57,6 +57,9 @@ const THREAD_WORKER_STAGE_DEBUG_ENABLED = ((globalThis as {
 const FD_CONTROL_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FD_CONTROL_DEBUG ?? "") === "1";
+const THREAD_WORKER_STATUS_DEBUG_ENABLED = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_THREAD_WORKER_STATUS_DEBUG ?? "") === "1";
 const SUPERVISOR_FD_CONTROL_SCRATCH_OFFSET = 0x31000;
 
 let exports: KernelExports | undefined;
@@ -953,33 +956,38 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
         { length: 6 },
         (_, index) => kernelExports.thread_blocked_syscall_arg?.(vmPtr, index) ?? 0n,
       ) as [bigint, bigint, bigint, bigint, bigint, bigint];
-  const includeDebug = status !== statusCodes.FS;
   const syncEffects = completedSyncEffects
     ?? readCompletedSyncEffects(kernelExports, statusCodes, status, vmPtr);
   publishThreadWorkerStage(101, status);
   const kernelState = readKernelRuntimeState(kernelExports);
   publishThreadWorkerStage(102, status);
-  const fdEntries = snapshotProcessFdEntries(kernelExports, vmPtr);
+  const completedPipeSlots = snapshotCompletedPipeSlots(kernelExports, kernelState);
+  const effectiveSyncEffects = completedPipeSlots.length > 0
+    ? syncEffects | SYNC_EFFECT_PIPE_STATE
+    : syncEffects;
+  const shouldSnapshotOwnedState = status !== statusCodes.SLEEP
+    || effectiveSyncEffects !== 0
+    || FD_CONTROL_DEBUG_ENABLED
+    || THREAD_WORKER_STATUS_DEBUG_ENABLED;
+  const fdEntries = shouldSnapshotOwnedState
+    ? snapshotProcessFdEntries(kernelExports, vmPtr)
+    : undefined;
   if (FD_CONTROL_DEBUG_ENABLED) {
     console.error(
       "[tidemark-fd-snapshot] "
         + `source=thread-status:vm=0x${vmPtr.toString(16)}`
         + `:status=${status}:syscall=${kernelExports.thread_a7?.(vmPtr)?.toString() ?? "n/a"}`
-        + `:${formatFocusedFdEntries(fdEntries)}`,
+        + `:${formatFocusedFdEntries(fdEntries ?? [])}`,
     );
   }
   publishThreadWorkerStage(103, status);
-  const completedPipeSlots = snapshotCompletedPipeSlots(kernelExports, kernelState);
-  const effectiveSyncEffects = completedPipeSlots.length > 0
-    ? syncEffects | SYNC_EFFECT_PIPE_STATE
-    : syncEffects;
   const shouldSnapshotPipeSlots = status === statusCodes.FAULT
     || (effectiveSyncEffects & SYNC_EFFECT_PIPE_STATE) !== 0;
   const pipeSlots = shouldSnapshotPipeSlots
     ? (() => {
         const fdPipeSlots = completedPipeSlots.length > 0
           ? completedPipeSlots
-          : snapshotNonEmptyProcessPipeSlots(kernelExports, kernelState, fdEntries);
+          : snapshotNonEmptyProcessPipeSlots(kernelExports, kernelState, fdEntries ?? []);
         const tracedPipeSlots = snapshotTracedPipeSlots(
           kernelExports,
           kernelState,
@@ -992,7 +1000,9 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
       })()
     : undefined;
   publishThreadWorkerStage(104, status);
-  const latestFdTrace = snapshotLatestFdTraceForStatus(kernelExports, vmPtr);
+  const latestFdTrace = shouldSnapshotOwnedState
+    ? snapshotLatestFdTraceForStatus(kernelExports, vmPtr)
+    : null;
   const guestMemoryWrites = [
     ...(snapshotCompletedReadGuestMemory(kernelExports, status) ?? []),
     ...snapshotPendingFsRequestGuestMemory(kernelExports),
@@ -1008,11 +1018,17 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     ),
   ];
   publishThreadWorkerStage(106, status);
-  const ofdSlots = snapshotOfdSlotsForFdEntries(kernelExports, kernelState, vmPtr, fdEntries);
+  const ofdSlots = fdEntries === undefined
+    ? undefined
+    : snapshotOfdSlotsForFdEntries(kernelExports, kernelState, vmPtr, fdEntries);
   publishThreadWorkerStage(107, status);
-  patchEventfdOfdSlotsFromTrace(kernelExports, ofdSlots, latestFdTrace);
+  if (ofdSlots !== undefined) {
+    patchEventfdOfdSlotsFromTrace(kernelExports, ofdSlots, latestFdTrace);
+  }
   publishThreadWorkerStage(108, status);
-  const socketState = snapshotSocketState(kernelExports, kernelState);
+  const socketState = shouldSnapshotOwnedState
+    ? snapshotSocketState(kernelExports, kernelState)
+    : undefined;
   publishThreadWorkerStage(109, status);
   const supervisorFdControlDebug = collectSupervisorFdControlDebug(kernelExports);
   if (supervisorFdControlDebug !== undefined) {
@@ -1022,9 +1038,13 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     collectFdTraceDebug(kernelExports, vmPtr, guestBase),
     supervisorFdControlDebug,
   ].filter((part): part is string => part !== undefined && part !== "").join(",");
-  const debug = includeDebug ? (() => {
+  const includeDetailedDebug = status === statusCodes.FAULT
+    || THREAD_WORKER_STATUS_DEBUG_ENABLED;
+  const debug = status !== statusCodes.FS ? (() => {
     publishThreadWorkerStage(120, status);
-    const parts = collectDebugParts(kernelExports, vmPtr, guestBase);
+    const parts = includeDetailedDebug
+      ? collectDebugParts(kernelExports, vmPtr, guestBase)
+      : [];
     const pipeSlotDebug = formatPipeSlotDebug(pipeSlots);
     if (pipeSlotDebug) {
       parts.push(pipeSlotDebug);

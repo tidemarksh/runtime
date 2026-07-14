@@ -32,6 +32,10 @@ import {
   fsRingRequestEntryOffset,
 } from "../layout/fs-ring.js";
 import {
+  MEMFS_INODE_OFF_DATA_CAP,
+  MEMFS_INODE_OFF_DATA_OFFSET,
+} from "../layout/memfs.js";
+import {
   clearSupervisorPendingBackingFill,
   supervisorBackingFillSpan,
   readSupervisorPendingBackingFill,
@@ -156,14 +160,26 @@ interface KernelWorkerProcessControlDeps {
   ): void;
   rebuildPageCacheFromExports(sourceExports: KernelExports): void;
   rebuildPageCacheFromCanonical(): void;
-  restorePublishedRegularFileDataFromPageCache?(targetExports?: KernelExports): void;
+  restorePublishedRegularFileDataFromPageCache?(
+    targetExports?: KernelExports,
+    options?: { metadataAlreadyCopied?: boolean; regularDataAlreadyExternalized?: boolean },
+  ): void;
   restorePublishedRegularFileDataForInode?(
     ino: number,
     targetExports?: KernelExports,
-    options?: { assumeBackingFile?: boolean },
+    options?: {
+      assumeBackingFile?: boolean;
+      metadataAlreadyCopied?: boolean;
+      regularDataAlreadyExternalized?: boolean;
+    },
   ): boolean;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   flushDirtyResidentFileByInode(ino: number): boolean;
+  ensurePublishedBackingInodeForFill?(
+    ino: number,
+    expectedSize: number,
+    sourceExports: KernelExports,
+  ): boolean;
   truncateDirtyResidentFileByInode(ino: number, size: number): number;
   writeDirtyResidentFileByInode(
     ino: number,
@@ -303,7 +319,10 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     deps.copyMemfsState(processExports, sourceState, canonicalExports, canonicalState, {
       includeData: false,
     });
-    deps.restorePublishedRegularFileDataFromPageCache?.();
+    deps.restorePublishedRegularFileDataFromPageCache?.(undefined, {
+      metadataAlreadyCopied: true,
+      regularDataAlreadyExternalized: true,
+    });
     deps.rebuildPageCacheFromCanonical();
     deps.fanoutCanonicalMemfs(false);
   }
@@ -565,6 +584,13 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       const tailPublished = publishDirectMmapReuseTail(processExports, request, span);
       debug?.("publish-backing-direct-tail-done", `published=${tailPublished ? 1 : 0}`);
       return true;
+    }
+    if (deps.ensurePublishedBackingInodeForFill?.(
+      request.ino,
+      request.expectedSize,
+      processExports,
+    ) === false) {
+      return false;
     }
     debug?.("publish-backing-resident-read-start");
     let alignedRange = deps.readBackingFileRangeByInode(request.ino, span.offset, span.length);
@@ -898,32 +924,6 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }];
   }
 
-  function snapshotCompletedExecGuestMemoryWrites(
-    processExports: KernelExports,
-    vmPtr: number,
-    opcode: number,
-    result: bigint,
-  ): GuestMemoryWriteSnapshot[] {
-    if (opcode !== FS_OP_EXECVE || result < 0n) {
-      return [];
-    }
-    const guestBase = processExports.thread_guest_base?.(vmPtr) ?? 0;
-    const memoryBytes = processExports.memory.buffer.byteLength;
-    if (guestBase <= 0 || guestBase >= memoryBytes) {
-      return [];
-    }
-    const chunkBytes = 4 * 1024 * 1024;
-    const writes: GuestMemoryWriteSnapshot[] = [];
-    for (let start = guestBase; start < memoryBytes; start += chunkBytes) {
-      const end = Math.min(memoryBytes, start + chunkBytes);
-      writes.push({
-        guestPtr: start - guestBase,
-        bytes: new Uint8Array(processExports.memory.buffer.slice(start, end)),
-      });
-    }
-    return writes;
-  }
-
   function applyPendingFsMutation(
     processExports: KernelExports,
     context: PendingFsMutationContext,
@@ -968,13 +968,14 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     };
   }
 
-  function refreshProcessMemfsBeforeTreeMutation(
+  function refreshProcessMemfsBeforePathOperation(
     pid: number,
     processExports: KernelExports,
     vmPtr: number,
     context: PendingFsMutationContext,
   ): boolean {
-    if ((context.effects & deps.fsEffectMemfsMutation) === 0) {
+    const mutatesTree = (context.effects & deps.fsEffectMemfsMutation) !== 0;
+    if (mutatesTree || context.opcode !== deps.fsOpOpenAt) {
       return false;
     }
     const dirEpoch = readDirEpoch(deps.getSabPageCache());
@@ -989,6 +990,76 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     );
     processMemfsEpochs.set(pid, dirEpoch);
     return true;
+  }
+
+  function refreshProcessMemfsForFileDataMutation(
+    processExports: KernelExports,
+    vmPtr: number,
+    context: PendingFsMutationContext,
+  ): boolean {
+    const ino = context.fileDataTargetIno;
+    if ((context.effects & deps.fsEffectMemfsFileData) === 0 || ino <= 0) {
+      return false;
+    }
+    const canonicalExports = deps.getCanonicalExports();
+    const sourceType = processExports.memfs_inode_mode(ino) & 0o170000;
+    const canonicalType = canonicalExports.memfs_inode_mode(ino) & 0o170000;
+    if (sourceType === canonicalType || canonicalType === 0) {
+      return false;
+    }
+    const maxInodes = canonicalExports.kernel_memfs_first_child_bytes() / 4;
+    const canonicalInodeBytes = canonicalExports.kernel_memfs_inodes_bytes() / maxInodes;
+    const processMaxInodes = processExports.kernel_memfs_first_child_bytes() / 4;
+    const processInodeBytes = processExports.kernel_memfs_inodes_bytes() / processMaxInodes;
+    if (
+      maxInodes <= 0
+      || processMaxInodes !== maxInodes
+      || !Number.isInteger(canonicalInodeBytes)
+      || canonicalInodeBytes !== processInodeBytes
+    ) {
+      throw new Error("incompatible MemFS inode layout");
+    }
+    const reserveResult = Number(processExports.memfs_reserve_inode_until(ino + 1));
+    if (reserveResult < 0) {
+      throw new Error(`failed to reserve process inode ${ino}: ${reserveResult}`);
+    }
+    const canonicalInodeOffset = canonicalExports.kernel_memfs_inodes_ptr() + ino * canonicalInodeBytes;
+    const processInodeOffset = processExports.kernel_memfs_inodes_ptr() + ino * processInodeBytes;
+    const metadata = new Uint8Array(
+      canonicalExports.memory.buffer,
+      canonicalInodeOffset,
+      canonicalInodeBytes,
+    ).slice();
+    new Uint8Array(processExports.memory.buffer).set(metadata, processInodeOffset);
+    const processInodeView = new DataView(processExports.memory.buffer);
+    processInodeView.setUint32(processInodeOffset + MEMFS_INODE_OFF_DATA_OFFSET, 0, true);
+    processInodeView.setUint32(processInodeOffset + MEMFS_INODE_OFF_DATA_CAP, 0, true);
+    clearSupervisorPendingBackingFill(processExports, vmPtr);
+    return true;
+  }
+
+  function synchronizeMemfsInodeAllocationFloor(context: PendingFsMutationContext): number | null {
+    if ((context.effects & deps.fsEffectMemfsMutation) === 0) {
+      return null;
+    }
+
+    const targets = new Set<KernelExports>([
+      deps.getCanonicalExports(),
+      ...deps.processKernels.values(),
+    ]);
+    let allocationFloor = 0;
+    for (const targetExports of targets) {
+      allocationFloor = Math.max(allocationFloor, targetExports.memfs_inode_count());
+    }
+    for (const targetExports of targets) {
+      const reserveResult = Number(targetExports.memfs_reserve_inode_until(allocationFloor));
+      if (reserveResult < 0) {
+        throw new Error(
+          `failed to synchronize memfs inode allocation floor ${allocationFloor}: ${reserveResult}`,
+        );
+      }
+    }
+    return allocationFloor;
   }
 
   function formatProcessFsDebug(
@@ -1432,6 +1503,11 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     attachKernelRuntimeState(processExports, kernelState);
     debug?.("attached-kernel-state");
     const pendingContext = readPendingFsMutationContext(processExports, vmPtr);
+    const refreshedFileDataMemfs = refreshProcessMemfsForFileDataMutation(
+      processExports,
+      vmPtr,
+      pendingContext,
+    );
     const pendingMmapGuestWrite = readPendingMmapGuestWriteRequest(processExports, vmPtr);
     const pendingRegularFileRequest = readPendingRegularFileFsRequest(processExports, vmPtr);
     const restoreRegularFileOfdScope = beginRegularFileRequestOfdScope(
@@ -1451,30 +1527,21 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       debug?.(
         "pending-read",
         [
+          `op=${pendingContext.opcode}`,
           `effects=${pendingContext.effects}`,
+          `path=${JSON.stringify(pendingContext.pendingPath)}`,
+          `path2=${JSON.stringify(pendingContext.pendingSecondaryPath)}`,
           formatMmapGuestWriteDebug(pendingMmapGuestWrite),
           formatBackingFillDebug(pendingBackingFill),
         ].join(":"),
       );
-      debug?.("ensure-backing-start", formatBackingFillDebug(pendingBackingFill));
-      await ensurePendingReadBackingRanges(processExports, vmPtr, debug);
-      debug?.("ensure-backing-done");
-      const refreshedMemfs = refreshProcessMemfsBeforeTreeMutation(
-        pid,
-        processExports,
-        vmPtr,
-        pendingContext,
-      );
-      debug?.("refresh-memfs-before-tree-mutation", `applied=${refreshedMemfs ? 1 : 0}`);
-      const shouldRestorePageCacheForFs =
-        pendingMmapGuestWrite !== null
-        || (pendingContext.effects & deps.fsEffectMemfsFileData) !== 0;
-      if (shouldRestorePageCacheForFs) {
+      debug?.("refresh-memfs-for-file-data", `applied=${refreshedFileDataMemfs ? 1 : 0}`);
+      const shouldRestoreFileData =
+        (pendingContext.effects & deps.fsEffectMemfsFileData) !== 0;
+      if (shouldRestoreFileData) {
         debug?.(
           "restore-page-cache-start",
-          pendingMmapGuestWrite !== null
-            ? formatMmapGuestWriteDebug(pendingMmapGuestWrite)
-            : `file-data:ino=${pendingContext.fileDataTargetIno}`,
+          `file-data:ino=${pendingContext.fileDataTargetIno}`,
         );
         const restored = restorePublishedRegularFileDataForPendingFs(
           processExports,
@@ -1484,6 +1551,31 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         );
         debug?.("restore-page-cache-done", restored);
       }
+      debug?.("ensure-backing-start", formatBackingFillDebug(pendingBackingFill));
+      await ensurePendingReadBackingRanges(processExports, vmPtr, debug);
+      debug?.("ensure-backing-done");
+      if (pendingMmapGuestWrite !== null) {
+        debug?.("restore-page-cache-start", formatMmapGuestWriteDebug(pendingMmapGuestWrite));
+        const restored = restorePublishedRegularFileDataForPendingFs(
+          processExports,
+          pendingContext,
+          pendingMmapGuestWrite,
+          pendingBackingFill,
+        );
+        debug?.("restore-page-cache-done", restored);
+      }
+      const refreshedMemfs = refreshProcessMemfsBeforePathOperation(
+        pid,
+        processExports,
+        vmPtr,
+        pendingContext,
+      );
+      debug?.("refresh-memfs-before-path-operation", `applied=${refreshedMemfs ? 1 : 0}`);
+      const inodeAllocationFloor = synchronizeMemfsInodeAllocationFloor(pendingContext);
+      debug?.(
+        "synchronize-inode-allocation-floor",
+        inodeAllocationFloor === null ? "applied=0" : `applied=1:floor=${inodeAllocationFloor}`,
+      );
       debug?.("process-fs-kernel-start");
       execveRetryStats = await processFsWithExecveBackingRetry(processExports, vmPtr, debug);
       debug?.("process-fs-kernel-done", `attempts=${execveRetryStats.attempts}:misses=${execveRetryStats.misses}`);
@@ -1502,17 +1594,9 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
         processExports,
         vmPtr,
       ) ?? [];
-      const completedExecGuestMemoryWrites = snapshotCompletedExecGuestMemoryWrites(
-        processExports,
-        vmPtr,
-        pendingContext.opcode,
-        result,
-      );
       guestMemoryWrites = mmapGuestMemoryWrites.length
-        + completedReadGuestMemoryWrites.length
-        + completedExecGuestMemoryWrites.length > 0
+        + completedReadGuestMemoryWrites.length > 0
         ? [
-            ...completedExecGuestMemoryWrites,
             ...mmapGuestMemoryWrites,
             ...completedReadGuestMemoryWrites,
           ]

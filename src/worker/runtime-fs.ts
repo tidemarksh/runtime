@@ -2,7 +2,10 @@ import { attachKernelRuntimeState } from "../abi.js";
 import type { FsSnapshotEntry } from "../fs/types.js";
 import { detachedKernelScratchBase } from "./kernel-scratch.js";
 import { normalizePath, preloadSnapshotEntries } from "./process-fs.js";
-import { isProcessMemfsDirty } from "./process-memfs-state.js";
+import {
+  processMemfsNeedsPublication,
+  setProcessMemfsPublishPending,
+} from "./process-memfs-state.js";
 import { processKernelShareGroup } from "./kernel-share.js";
 import { workerDebugLog } from "./worker-debug-log.js";
 import type {
@@ -121,7 +124,7 @@ export function flushRuntimeFsStateFromDirtyHandle(
 
   const liveRepresentatives = new Map<KernelShareGroup, ProcessHandle>();
   for (const handle of dirtyHandles) {
-    if (!isProcessMemfsDirty(handle)) {
+    if (!processMemfsNeedsPublication(handle)) {
       continue;
     }
     if (handle.pid > 0 && context.processHandles.get(handle.pid) !== handle) {
@@ -155,6 +158,9 @@ export function flushRuntimeFsStateFromDirtyHandle(
   }
 
   const version = publishRuntimeFsState(runtimeId, entries, context);
+  for (const representative of liveRepresentatives.values()) {
+    setProcessMemfsPublishPending(representative, false);
+  }
   return { version, entries };
 }
 

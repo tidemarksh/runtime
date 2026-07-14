@@ -194,6 +194,14 @@ export function supervisorProcessFdIsOpen(handle: ProcessHandle, vmPtr: number, 
   return requireSupervisorProcessFdIsOpen(handle)(vmPtr, fd) === 1;
 }
 
+export function supervisorProcessFdTableIsCoherent(handle: ProcessHandle, vmPtr: number): boolean {
+  const processFdTableIsCoherent = handle.kernel.supervisor_process_fd_table_is_coherent;
+  if (!processFdTableIsCoherent) {
+    throw new Error("kernel supervisor ABI missing supervisor_process_fd_table_is_coherent");
+  }
+  return vmPtr !== 0 && processFdTableIsCoherent.call(handle.kernel, vmPtr) === 1;
+}
+
 function supervisorFdEntryRestoreFlags(handle: ProcessHandle, options: ApplyThreadFdEntriesOptions): number {
   let flags = 0;
   if (options.preserveLiveRegularFileDescriptors === true) {

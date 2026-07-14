@@ -90,6 +90,10 @@ interface WorkerExitDeps {
         sourceVmPtr?: number;
       },
   ): Promise<void>;
+  syncProcessMemfsViaKernelWorker?(
+    handle: ProcessHandle,
+    cause: SyncCause,
+  ): Promise<void>;
   unregisterProcessWithKernelWorker(handle: ProcessHandle): Promise<void>;
 }
 
@@ -1711,123 +1715,7 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     ].join(":");
   }
 
-  function exitProcessThreadsAreGone(handle: ProcessHandle): boolean {
-    try {
-      const threadCount = handle.kernel.thread_process_thread_count?.(handle.vmPtr);
-      return threadCount !== undefined && Number(threadCount) <= 0;
-    } catch {
-      return false;
-    }
-  }
-
-  function exitProcessThreadCount(handle: ProcessHandle): number | null {
-    try {
-      const threadCount = handle.kernel.thread_process_thread_count?.(handle.vmPtr);
-      if (threadCount === undefined) {
-        return null;
-      }
-      const numeric = Number(threadCount);
-      return Number.isFinite(numeric) ? numeric : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function exitProcessHasActiveOwnerWork(handle: ProcessHandle): boolean {
-    return hostExecutionState(handle).runningWorker !== null
-      || hostExecutionState(handle).vforkReadyWorkers.length > 0
-      || hostExecutionState(handle).hostBlockedWorkers.size > 0;
-  }
-
-  function exitProcessHasNoLiveThreadSlots(handle: ProcessHandle): boolean {
-    if (exitProcessHasActiveOwnerWork(handle)) {
-      return false;
-    }
-    const threadCount = exitProcessThreadCount(handle);
-    if (threadCount === null || threadCount <= 0) {
-      return false;
-    }
-    let maxThreads = 0;
-    try {
-      maxThreads = Number(handle.kernel.abi_max_threads?.() ?? 0);
-    } catch {
-      return false;
-    }
-    if (!Number.isFinite(maxThreads) || maxThreads <= 0) {
-      return false;
-    }
-    for (let slot = 0; slot < maxThreads; slot += 1) {
-      try {
-        if ((handle.kernel.process_thread_vm_ptr?.(handle.vmPtr, slot) ?? 0) !== 0) {
-          return false;
-        }
-      } catch {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  function exitProcessThreadSlotsAreTerminal(handle: ProcessHandle): boolean {
-    if (exitProcessHasActiveOwnerWork(handle)) {
-      return false;
-    }
-
-    let faultStatus: number;
-    try {
-      faultStatus = handle.kernel.abi_status_fault?.() ?? -1;
-    } catch {
-      return false;
-    }
-    if (faultStatus < 0) {
-      return false;
-    }
-
-    let anchorFaulted = false;
-    try {
-      anchorFaulted = handle.kernel.thread_status?.(handle.vmPtr) === faultStatus;
-    } catch {
-      return false;
-    }
-    if (!anchorFaulted) {
-      return false;
-    }
-
-    let maxThreads = 0;
-    try {
-      maxThreads = Number(handle.kernel.abi_max_threads?.() ?? 0);
-    } catch {
-      return false;
-    }
-    if (!Number.isFinite(maxThreads) || maxThreads <= 0) {
-      return false;
-    }
-
-    let sawThreadSlot = false;
-    for (let slot = 0; slot < maxThreads; slot += 1) {
-      let threadVmPtr = 0;
-      try {
-        threadVmPtr = handle.kernel.process_thread_vm_ptr?.(handle.vmPtr, slot) ?? 0;
-      } catch {
-        return false;
-      }
-      if (threadVmPtr === 0) {
-        continue;
-      }
-      sawThreadSlot = true;
-      try {
-        if (handle.kernel.thread_status?.(threadVmPtr) !== faultStatus) {
-          return false;
-        }
-      } catch {
-        return false;
-      }
-    }
-
-    return sawThreadSlot;
-  }
-
-  async function publishProcessFsStateOnExit(handle: ProcessHandle, targets: ProcessHandle[] = []): Promise<void> {
+  async function publishProcessFsStateOnExit(handle: ProcessHandle): Promise<void> {
     if (!deps.snapshotProcessFs || !deps.publishRuntimeFsState) {
       return;
     }
@@ -1836,30 +1724,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     }
     try {
       if (processHasKernelWorkerOwnership(handle)) {
-        if (exitProcessThreadsAreGone(handle)) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `exit-fs-publish-local-no-threads:${handle.pid}`,
-          );
-        } else if (exitProcessHasNoLiveThreadSlots(handle)) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `exit-fs-publish-local-no-live-thread-slots:${handle.pid}`,
-          );
-        } else if (exitProcessThreadSlotsAreTerminal(handle)) {
-          deps.appendRuntimeLifecycleEvent(
-            handle.runtimeId,
-            `exit-fs-publish-local-terminal-threads:${handle.pid}`,
-          );
-        } else {
-          await deps.syncForkSharedStateViaKernelWorker?.(handle, targets, {
-            cause: { kind: "syscall", nr: -1n, name: "process-exit-memfs-publication" },
-            includeMemfs: true,
-            memfsOnly: true,
-            trackHeldOfds: false,
-            sourceVmPtr: handle.vmPtr,
-          });
-        }
+        await deps.syncProcessMemfsViaKernelWorker?.(
+          handle,
+          { kind: "syscall", nr: -1n, name: "process-exit-memfs-snapshot" },
+        );
       }
       const entries = deps.snapshotProcessFs(handle);
       deps.publishRuntimeFsState(handle.runtimeId, entries);
@@ -1892,11 +1760,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     const hasInheritedParentOutput = usesInheritedParentOutput(handle, parent);
     if (!hasInheritedParentOutput) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-start:${parent.pid}:${handle.pid}`);
-      await deps.requestPipeStateSync(parent, true);
-      deps.drainProcessOutput(parent);
+      await deps.requestPipeStateSync(parent, false);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-before-child-exit-done:${parent.pid}:${handle.pid}`);
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-start:${handle.pid}`);
-      const childPipeSyncPromise = deps.requestPipeStateSync(handle, true)
+      const childPipeSyncPromise = deps.requestPipeStateSync(handle, false)
         .then(() => {
           deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-pipe-sync-done:${handle.pid}`);
         })
@@ -1911,6 +1778,10 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       } catch {
         // Errors are recorded by childPipeSyncPromise so exit teardown can continue.
       }
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-after-child-publish-start:${parent.pid}:${handle.pid}`);
+      await deps.requestPipeStateSync(parent, true);
+      deps.drainProcessOutput(parent);
+      deps.appendRuntimeLifecycleEvent(handle.runtimeId, `parent-pipe-sync-after-child-publish-done:${parent.pid}:${handle.pid}`);
     }
     if (processStdioOwner(handle) === null) {
       deps.drainProcessOutput(handle);
@@ -1922,12 +1793,23 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-parent-pipe-refresh:${parent.pid}:${handle.pid}`);
       notifyParentProgress(parent);
     }
-    await publishProcessFsStateOnExit(handle, [parent]);
+    await publishProcessFsStateOnExit(handle);
     if (processHasKernelWorkerOwnership(handle)) {
       deps.appendRuntimeLifecycleEvent(handle.runtimeId, `child-unregister-before-parent-record:${handle.pid}`);
       await deps.unregisterProcessWithKernelWorker(handle);
       unregisteredKernelWorkerHandles.add(handle);
       setProcessKernelWorkerRequest(handle, undefined);
+
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `parent-pipe-sync-after-child-unregister-start:${parent.pid}:${handle.pid}`,
+      );
+      await deps.requestPipeStateSync(parent, true);
+      deps.drainProcessOutput(parent);
+      deps.appendRuntimeLifecycleEvent(
+        handle.runtimeId,
+        `parent-pipe-sync-after-child-unregister-done:${parent.pid}:${handle.pid}`,
+      );
     }
 
     deps.appendWorkerDebugLog(

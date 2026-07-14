@@ -143,6 +143,7 @@ export function makeHostBoundaryKernel() {
       const ofdId = this.process_fd_ofd_id(vmPtr, fd);
       return ofdId > 0 && ofdId < this.abi_max_fds() ? 1 : 0;
     },
+    supervisor_process_fd_table_is_coherent: () => 1,
   } as unknown as ProcessHandle["kernel"]);
 }
 

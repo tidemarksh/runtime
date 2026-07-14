@@ -14,9 +14,11 @@ import {
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
+  publishedInodeUpperBound,
   publishResidentPage,
   readDirtyResidentFileData,
   readDirtyResidentFileRangeData,
+  readInodeMeta,
   readInodeRecord,
   readResidentFileData,
   truncateDirtyResidentFileData,
@@ -1071,6 +1073,54 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return readCleanBackingFileRangeByInode(ino, offset, length);
   }
 
+  function ensurePublishedBackingInodeForFill(
+    ino: number,
+    expectedSize: number,
+    sourceExports: KernelExports,
+  ): boolean {
+    if (
+      !Number.isInteger(ino)
+      || ino <= 0
+      || ino >= MAX_INODES
+      || !Number.isSafeInteger(expectedSize)
+      || expectedSize < 0
+    ) {
+      return false;
+    }
+    const existing = readInodeMeta(deps.getSabPageCache(), ino);
+    if (existing && existing.fileObjectId > 0 && existing.generation > 0) {
+      return true;
+    }
+    const mode = sourceExports.memfs_inode_mode(ino);
+    const size = Number(sourceExports.memfs_file_size(ino));
+    let backingMeta = backingMetaForInode(ino);
+    if (!backingMeta && createSourceBackedFileForInode(ino, expectedSize) !== null) {
+      backingMeta = backingMetaForInode(ino);
+    }
+    if (
+      (mode & MEMFS_S_IFMT) !== MEMFS_S_IFREG
+      || size !== expectedSize
+      || !backingMeta
+    ) {
+      return false;
+    }
+    publishInode(deps.getSabPageCache(), ino, {
+      mode,
+      size,
+      parentIno: 0,
+      name: new Uint8Array(),
+      nextSibling: 0,
+      ...backingMeta,
+    });
+    const published = readInodeMeta(deps.getSabPageCache(), ino);
+    return !!(
+      published
+      && published.fileObjectId === backingMeta.fileObjectId
+      && published.generation === backingMeta.generation
+      && published.size === size
+    );
+  }
+
   function prewarmMaterializedBackingHeader(ino: number, expectedSize: number): void {
     if (
       materializedBackingHeaderPrewarmRemainingBytes <= 0
@@ -1708,11 +1758,6 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       });
       if (action === "externalize") {
         clearSeedBackingExtentForInode(ino);
-        const needsBackingFlush = trackedHasDirtyResidentPages(ino)
-          || (residentPageMapIsNewerThanBacking(ino) && size === 0);
-        if (needsBackingFlush && !flushDirtyResidentFileByInode(ino)) {
-          return false;
-        }
         const refreshedPublished = readInodeRecord(deps.getSabPageCache(), ino) ?? published;
         ensurePublishedInodeInTarget(canonicalExports, ino, refreshedPublished);
         syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, refreshedPublished);
@@ -1736,16 +1781,27 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     return syncFileDataMutation(sourceExports, ino);
   }
 
-  function restorePublishedRegularFileDataFromPageCache(targetExports = deps.getCanonicalExports()): void {
-    for (let ino = 1; ino < MAX_INODES; ino += 1) {
-      restorePublishedRegularFileDataForInode(ino, targetExports);
+  function restorePublishedRegularFileDataFromPageCache(
+    targetExports = deps.getCanonicalExports(),
+    options?: { metadataAlreadyCopied?: boolean; regularDataAlreadyExternalized?: boolean },
+  ): void {
+    if (options?.metadataAlreadyCopied && options.regularDataAlreadyExternalized) {
+      return;
+    }
+    const upperBound = publishedInodeUpperBound(deps.getSabPageCache());
+    for (let ino = 1; ino < upperBound; ino += 1) {
+      restorePublishedRegularFileDataForInode(ino, targetExports, options);
     }
   }
 
   function restorePublishedRegularFileDataForInode(
     ino: number,
     targetExports = deps.getCanonicalExports(),
-    options?: { assumeBackingFile?: boolean },
+    options?: {
+      assumeBackingFile?: boolean;
+      metadataAlreadyCopied?: boolean;
+      regularDataAlreadyExternalized?: boolean;
+    },
   ): boolean {
     const sab = deps.getSabPageCache();
     const published = readInodeRecord(sab, ino);
@@ -1772,11 +1828,32 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       return false;
     }
 
+    if (options?.metadataAlreadyCopied) {
+      if (
+        options.regularDataAlreadyExternalized
+        && Number(targetExports.memfs_file_size(ino)) === published.size
+      ) {
+        return true;
+      }
+      try {
+        const externalized = Number(targetExports.memfs_set_file_external(ino, BigInt(published.size)));
+        if (externalized < 0) {
+          return false;
+        }
+        const modeResult = Number(targetExports.memfs_set_mode(ino, mode));
+        return modeResult >= 0;
+      } catch {
+        return false;
+      }
+    }
     return trySyncExternalFileDataIntoTarget(targetExports, ino, mode, published.size, published);
   }
 
   function syncMetadataMutation(sourceExports: KernelExports, path: string): boolean {
     if (!path.startsWith("/")) {
+      if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+        console.error(`[tidemark-fs-metadata-skip] path=${JSON.stringify(path)}:reason=non-absolute`);
+      }
       return false;
     }
 
@@ -1785,6 +1862,12 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     const parts = pathParts(normalized);
     const name = parts.pop();
     if (!name) {
+      if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+        console.error(
+          `[tidemark-fs-metadata-skip] path=${JSON.stringify(normalized)}`
+            + `:ino=${ino}:reason=missing-name`,
+        );
+      }
       return false;
     }
     const parentPath = parts.length === 0 ? "/" : `/${parts.join("/")}`;
@@ -1834,10 +1917,34 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     const mode = sourceExports.memfs_inode_mode(ino);
     const fileType = mode & MEMFS_S_IFMT;
     if (fileType !== MEMFS_S_IFDIR && fileType !== MEMFS_S_IFREG) {
+      if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+        console.error(
+          `[tidemark-fs-metadata-skip] path=${JSON.stringify(normalized)}`
+            + `:ino=${ino}:mode=${mode.toString(8)}:reason=unsupported-type`,
+        );
+      }
       return false;
     }
-    const parentIno = deps.resolvePathIn(sourceExports, parentPath);
-    if (parentIno === 0) {
+    const sourceParentIno = deps.resolvePathIn(sourceExports, parentPath);
+    const canonicalExports = deps.getCanonicalExports();
+    let canonicalParentIno = deps.resolvePathIn(canonicalExports, parentPath);
+    if (
+      sourceParentIno > 0
+      && canonicalParentIno === 0
+      && parentPath !== "/"
+      && syncMetadataMutation(sourceExports, parentPath)
+    ) {
+      canonicalParentIno = deps.resolvePathIn(canonicalExports, parentPath);
+    }
+    if (sourceParentIno === 0 || canonicalParentIno === 0) {
+      if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+        console.error(
+          `[tidemark-fs-metadata-skip] path=${JSON.stringify(normalized)}`
+            + `:ino=${ino}:parentPath=${JSON.stringify(parentPath)}`
+            + `:sourceParent=${sourceParentIno}:canonicalParent=${canonicalParentIno}`
+            + `:reason=missing-parent`,
+        );
+      }
       return false;
     }
     let published = readInodeRecord(deps.getSabPageCache(), ino);
@@ -1850,12 +1957,25 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       sourceMode: mode,
       sourceSize,
       parentPresent: true,
-      parentIno,
+      parentIno: canonicalParentIno,
       published,
       publishedNameMatches: published ? deps.decoder.decode(published.name) === name : false,
       hasDirtyResidentPages,
       backingPresent: backingMeta !== undefined,
     });
+    if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+      console.error(
+        `[tidemark-fs-metadata-decision] ino=${ino}`
+          + `:path=${JSON.stringify(normalized)}`
+          + `:sourceParent=${sourceParentIno}`
+          + `:canonicalParent=${canonicalParentIno}`
+          + `:published=${published ? 1 : 0}`
+          + `:publishedNameMatches=${published ? Number(deps.decoder.decode(published.name) === name) : 0}`
+          + `:backing=${backingMeta ? 1 : 0}`
+          + `:action=${decision.action}`
+          + `:backingSource=${decision.backingSource}`,
+      );
+    }
     if (decision.action !== "ensure" && decision.action !== "publish-ensure") {
       return false;
     }
@@ -1869,7 +1989,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       publishInode(deps.getSabPageCache(), ino, {
         mode,
         size: decision.size,
-        parentIno,
+        parentIno: canonicalParentIno,
         name: nameBytes,
         nextSibling: published?.nextSibling ?? 0,
         ...selectedBackingMeta,
@@ -2058,6 +2178,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     ensureBackingSourceRangeForInode,
     readBackingFileByInode,
     readBackingFileRangeByInode,
+    ensurePublishedBackingInodeForFill,
     flushDirtyResidentFileByInode,
     truncateDirtyResidentFileByInode,
     writeDirtyResidentFileByInode,

@@ -5,6 +5,8 @@ import {
   MEMFS_INODE_OFF_DATA_OFFSET,
   MEMFS_INODE_OFF_MODE,
   MEMFS_INODE_OFF_SIZE,
+  readMemfsHeaderPointer,
+  writeMemfsHeaderPointer,
 } from "../../layout/memfs.js";
 import { clearKernelRegion, copyKernelRegion } from "./common.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
@@ -96,15 +98,17 @@ export function restoreProcSelfExe(handle: KernelSyncHandle, target: Uint8Array 
 }
 
 function readMemfsLayout(handle: KernelSyncHandle): MemfsLayout {
-  const view = new DataView(handle.memory.buffer, handle.kernelState.memfsPtr, 32);
+  const headerBytes = handle.kernel.kernel_memfs_header_bytes();
+  const view = new DataView(handle.memory.buffer, handle.kernelState.memfsPtr, headerBytes);
+  const kernel = handle.kernel as Partial<KernelExports>;
   return {
     inodeCount: view.getUint32(0, true),
     dataUsed: view.getUint32(8, true),
     dataCap: view.getUint32(12, true),
-    inodesPtr: view.getUint32(16, true),
-    firstChildPtr: view.getUint32(20, true),
-    dirEntriesPtr: view.getUint32(24, true),
-    dataPtr: view.getUint32(28, true),
+    inodesPtr: kernel.kernel_memfs_inodes_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 0),
+    firstChildPtr: kernel.kernel_memfs_first_child_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 1),
+    dirEntriesPtr: kernel.kernel_memfs_dir_entries_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 2),
+    dataPtr: kernel.kernel_memfs_data_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 3),
   };
 }
 
@@ -240,13 +244,14 @@ export function syncMemfsState(source: KernelSyncHandle, target: KernelSyncHandl
     target.kernelState.memfsPtr,
     source.kernel.kernel_memfs_header_bytes(),
   );
-  const targetHeader = new DataView(target.memory.buffer, target.kernelState.memfsPtr, 32);
+  const headerBytes = target.kernel.kernel_memfs_header_bytes();
+  const targetHeader = new DataView(target.memory.buffer, target.kernelState.memfsPtr, headerBytes);
   targetHeader.setUint32(0, sourceLayout.inodeCount, true);
   targetHeader.setUint32(8, dataUsed, true);
   targetHeader.setUint32(12, targetLayout.dataCap, true);
-  targetHeader.setUint32(16, targetLayout.inodesPtr, true);
-  targetHeader.setUint32(20, targetLayout.firstChildPtr, true);
-  targetHeader.setUint32(24, targetLayout.dirEntriesPtr, true);
-  targetHeader.setUint32(28, targetLayout.dataPtr, true);
+  writeMemfsHeaderPointer(targetHeader, headerBytes, 0, targetLayout.inodesPtr);
+  writeMemfsHeaderPointer(targetHeader, headerBytes, 1, targetLayout.firstChildPtr);
+  writeMemfsHeaderPointer(targetHeader, headerBytes, 2, targetLayout.dirEntriesPtr);
+  writeMemfsHeaderPointer(targetHeader, headerBytes, 3, targetLayout.dataPtr);
   restoreProcSelfExe(target, procSelfExe);
 }

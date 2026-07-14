@@ -3,13 +3,11 @@ import type { FsSnapshotEntry } from "../fs/types.js";
 import { growKernelMemory } from "../wasm/kernel-memory.js";
 import {
   MEMFS_HEADER_OFF_DATA_CAP,
-  MEMFS_HEADER_OFF_DATA_PTR,
   MEMFS_HEADER_OFF_DATA_USED,
-  MEMFS_HEADER_OFF_DIR_ENTRIES_PTR,
   MEMFS_HEADER_OFF_DIR_ENTRY_COUNT,
-  MEMFS_HEADER_OFF_FIRST_CHILD_PTR,
-  MEMFS_HEADER_OFF_INODES_PTR,
   MEMFS_HEADER_OFF_INODE_COUNT,
+  readMemfsHeaderPointer,
+  writeMemfsHeaderPointer,
   MEMFS_INODE_OFF_DATA_CAP,
   MEMFS_INODE_OFF_DATA_OFFSET,
   MEMFS_INODE_OFF_MODE,
@@ -130,23 +128,35 @@ export function clearMemoryRange(
   new Uint8Array(targetMemory.buffer, targetOffset, byteLength).fill(0);
 }
 
-export function readMemfsLayout(memory: WebAssembly.Memory, memfsPtr: number): MemfsLayout {
-  const view = new DataView(memory.buffer, memfsPtr, 32);
+export function readMemfsLayout(
+  memory: WebAssembly.Memory,
+  memfsPtr: number,
+  exports?: Partial<Pick<
+    KernelExports,
+    | "kernel_memfs_header_bytes"
+    | "kernel_memfs_inodes_ptr"
+    | "kernel_memfs_first_child_ptr"
+    | "kernel_memfs_dir_entries_ptr"
+    | "kernel_memfs_data_ptr"
+  >>,
+): MemfsLayout {
+  const headerBytes = exports?.kernel_memfs_header_bytes?.() ?? 32;
+  const view = new DataView(memory.buffer, memfsPtr, headerBytes);
   return {
     inodeCount: view.getUint32(0, true),
     dirEntryCount: view.getUint32(4, true),
     dataUsed: view.getUint32(8, true),
     dataCap: view.getUint32(12, true),
-    inodesPtr: view.getUint32(16, true),
-    firstChildPtr: view.getUint32(20, true),
-    dirEntriesPtr: view.getUint32(24, true),
-    dataPtr: view.getUint32(28, true),
+    inodesPtr: exports?.kernel_memfs_inodes_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 0),
+    firstChildPtr: exports?.kernel_memfs_first_child_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 1),
+    dirEntriesPtr: exports?.kernel_memfs_dir_entries_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 2),
+    dataPtr: exports?.kernel_memfs_data_ptr?.() ?? readMemfsHeaderPointer(view, headerBytes, 3),
   };
 }
 
 export function computeReferencedMemfsDataUsed(
   targetExports: KernelExports,
-  layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr()),
+  layout = readMemfsLayout(targetExports.memory, targetExports.kernel_memfs_ptr(), targetExports),
 ): number {
   const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
   if (maxInodes <= 0) {
@@ -184,15 +194,16 @@ export function normalizeMetadataOnlyMemfsState(
   dataUsed = 8,
   options: { clearRegularData?: boolean } = {},
 ): void {
-  const header = new DataView(targetExports.memory.buffer, targetState.memfsPtr, 32);
+  const headerBytes = targetExports.kernel_memfs_header_bytes();
+  const header = new DataView(targetExports.memory.buffer, targetState.memfsPtr, headerBytes);
   header.setUint32(MEMFS_HEADER_OFF_INODE_COUNT, sourceLayout.inodeCount, true);
   header.setUint32(MEMFS_HEADER_OFF_DIR_ENTRY_COUNT, sourceLayout.dirEntryCount, true);
   header.setUint32(MEMFS_HEADER_OFF_DATA_USED, Math.min(Math.max(dataUsed, 8), targetLayout.dataCap), true);
   header.setUint32(MEMFS_HEADER_OFF_DATA_CAP, targetLayout.dataCap, true);
-  header.setUint32(MEMFS_HEADER_OFF_INODES_PTR, targetLayout.inodesPtr, true);
-  header.setUint32(MEMFS_HEADER_OFF_FIRST_CHILD_PTR, targetLayout.firstChildPtr, true);
-  header.setUint32(MEMFS_HEADER_OFF_DIR_ENTRIES_PTR, targetLayout.dirEntriesPtr, true);
-  header.setUint32(MEMFS_HEADER_OFF_DATA_PTR, targetLayout.dataPtr, true);
+  writeMemfsHeaderPointer(header, headerBytes, 0, targetLayout.inodesPtr);
+  writeMemfsHeaderPointer(header, headerBytes, 1, targetLayout.firstChildPtr);
+  writeMemfsHeaderPointer(header, headerBytes, 2, targetLayout.dirEntriesPtr);
+  writeMemfsHeaderPointer(header, headerBytes, 3, targetLayout.dataPtr);
 
   const maxInodes = targetExports.kernel_memfs_first_child_bytes() / 4;
   const inodeBytes = targetExports.kernel_memfs_inodes_bytes() / maxInodes;

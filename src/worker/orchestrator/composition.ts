@@ -272,6 +272,7 @@ const workerExitHelpers = createWorkerExitHelpers({
   requestPipeStateSync,
   snapshotProcessFs: snapshotProcessFsCtx,
   syncForkSharedStateViaKernelWorker,
+  syncProcessMemfsViaKernelWorker,
   unregisterProcessWithKernelWorker,
 });
 workerLifecycleHelpers = createWorkerLifecycleHelpers({

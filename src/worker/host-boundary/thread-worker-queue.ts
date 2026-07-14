@@ -34,6 +34,7 @@ import {
 import {
   snapshotAuthoritativeProcessFdEntriesForThread,
   snapshotProcessFdEntriesForThread,
+  supervisorProcessFdTableIsCoherent,
 } from "../ownership/fd-table.js";
 import {
   restoreRegularFileOffsetsForStep,
@@ -58,6 +59,7 @@ import {
   setThreadRunningGeneration,
 } from "../thread-host-state.js";
 import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
+import { isBlockedRpcPending } from "../host-blocked-state.js";
 import {
   getThreadActivityState,
   incrementBoundedActivityCounter,
@@ -92,6 +94,7 @@ const DEFAULT_NODE_SCHEDULER_STEP_BUDGET = DEFAULT_NODE_EXECUTION_STEP_BUDGET;
 const DEFAULT_BROWSER_SCHEDULER_STEP_BUDGET = DEFAULT_NODE_EXECUTION_STEP_BUDGET;
 const MIN_SCHEDULER_STEP_BUDGET = 1_000;
 const MAX_SCHEDULER_STEP_BUDGET = 100_000_000;
+const FD_TABLE_COHERENCE_RETRY_MS = 1;
 const SCHEDULER_STEP_BUDGET = readSchedulerStepBudget();
 const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
@@ -183,6 +186,7 @@ interface WorkerSchedulerQueueDeps {
   completeProcessExit(handle: ProcessHandle, exitCode: number, termSignal: number, exitVmPtr?: number): Promise<void>;
   failProcess(handle: ProcessHandle, error: Error): void;
   handleWorkerMessage(handle: ProcessHandle, worker: Worker, msg: ThreadWorkerOutbound): void;
+  includeDetailedSupervisorDiagnostics?: boolean;
 }
 
 function appendSchedulerFsTiming(
@@ -221,11 +225,14 @@ export function createWorkerSchedulerQueueHelpers(
   deps: WorkerSchedulerQueueDeps,
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
+  const fdTableCoherenceRetryTimers = new WeakMap<ProcessHandle, ReturnType<typeof setTimeout>>();
   const supervisorResumeHostBoundary = createSupervisorResumeHostBoundary({
     threadWorkerStates: deps.threadWorkerStates,
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     clearBlockedWorker: (handle, worker) => clearBlockedWorker(deps, handle, worker),
     removeVforkReadyWorker,
+    retryDeferredResumes: (handle) => pumpProcess(handle),
+    includeDetailedDiagnostics: deps.includeDetailedSupervisorDiagnostics,
   });
 
   function observeForkSharedSyncGate(handle: ProcessHandle, promise: Promise<void>): void {
@@ -720,6 +727,13 @@ export function createWorkerSchedulerQueueHelpers(
       if (!deps.takeThreadWorkerBlockedResume(handle, worker)) {
         continue;
       }
+      if (deps.isSupervisorFutexWaiter(handle, worker)) {
+        deps.appendWorkerDebugLog(
+          handle,
+          `supervisor-resume:runnable:discard-blocked-resume-futex-waiter:0x${thread.vmPtr.toString(16)}`,
+        );
+        continue;
+      }
       deps.appendWorkerDebugLog(
         handle,
         `supervisor-resume:runnable:blocked-resume:0x${thread.vmPtr.toString(16)}`
@@ -782,6 +796,29 @@ export function createWorkerSchedulerQueueHelpers(
           + (thread ? `:vm=0x${thread.vmPtr.toString(16)}:status=${handle.kernel.thread_status(thread.vmPtr)}` : ""),
       );
       return;
+    }
+    if (
+      [...hostExecutionState(handle).hostBlockedWorkers.values()]
+        .some((blocked) => isBlockedRpcPending(blocked))
+    ) {
+      appendSchedulerQueueDebugLog(handle, "pump-held:blocked-rpc-pending");
+      return;
+    }
+    if (!supervisorProcessFdTableIsCoherent(handle, handle.vmPtr)) {
+      appendSchedulerQueueDebugLog(handle, "pump-held:fd-table-incoherent");
+      if (!fdTableCoherenceRetryTimers.has(handle)) {
+        const timer = setTimeout(() => {
+          fdTableCoherenceRetryTimers.delete(handle);
+          pumpProcess(handle);
+        }, FD_TABLE_COHERENCE_RETRY_MS);
+        fdTableCoherenceRetryTimers.set(handle, timer);
+      }
+      return;
+    }
+    const coherenceRetryTimer = fdTableCoherenceRetryTimers.get(handle);
+    if (coherenceRetryTimer !== undefined) {
+      clearTimeout(coherenceRetryTimer);
+      fdTableCoherenceRetryTimers.delete(handle);
     }
     const supervisorResumeSelected = supervisorResumeHostBoundary.drainSupervisorResumeQueue(handle);
     if (completeFaultedWaitingWorker(handle)) {

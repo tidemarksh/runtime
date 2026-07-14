@@ -394,9 +394,10 @@ function applyFdEntries(
     }
     const restoreAction = kernelExports.supervisor_fd_entry_restore_action;
     const restoreSkip = kernelExports.supervisor_fd_entry_restore_action_skip?.();
+    const authoritativeRefresh = entry.generation === undefined;
     const regularFileFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_regular_file?.() ?? 0;
     const epollDependentFlag = kernelExports.supervisor_fd_entry_restore_flag_preserve_live_epoll_dependent?.() ?? 0;
-    const restoreFlags = regularFileFlag | epollDependentFlag;
+    const restoreFlags = authoritativeRefresh ? 0 : regularFileFlag | epollDependentFlag;
     let restoreDecision: number | undefined;
     if (
       restoreAction

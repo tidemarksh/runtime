@@ -69,6 +69,8 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
       forkSharedHasTrackedState,
     );
     const kernelWorkerAvailable = processHasKernelWorkerOwnership(handle);
+    const kernelWorkerOwnsCompletedFs = kernelWorkerAvailable
+      && status === handle.kernel.abi_status_fs?.();
     const epollStateKernelOwns = kernelWorkerOwnsEpollState(handle);
     const activeVforkChildOwnerMismatch = hostExecutionState(handle).vforkWorker === worker
       && supervisorVforkChildOwnerMismatch(handle.kernel, thread.vmPtr, handle.pid);
@@ -91,14 +93,15 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
         wroteOrDrainedPipe: wroteToPipe || drainedPipe,
       },
     );
-    if (ownedStateSyncActions.markProcessMemfsDirty) {
+    if (ownedStateSyncActions.markProcessMemfsDirty && !kernelWorkerOwnsCompletedFs) {
       setProcessMemfsDirty(handle, true);
     }
     const shouldSyncForkSharedState = ownedStateSyncActions.syncForkSharedState;
     const shouldSyncEpollDependentOfds = ownedStateSyncActions.syncEpollDependentOfds;
     const shouldSyncSocketState = ownedStateSyncActions.syncSocketState;
     const shouldWakeSocketWaiters = ownedStateSyncActions.wakeSocketWaiters;
-    const shouldSyncProcessMemfs = ownedStateSyncActions.syncProcessMemfs;
+    const shouldSyncProcessMemfs = ownedStateSyncActions.syncProcessMemfs
+      && !kernelWorkerOwnsCompletedFs;
     const shouldSyncEpollState = ownedStateSyncActions.syncEpollState;
     if (
       !shouldSyncProcessMemfs

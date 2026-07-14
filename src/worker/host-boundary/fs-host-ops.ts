@@ -74,6 +74,7 @@ import type {
   KernelWorkerPidBytesSnapshot,
 } from "../../messages.js";
 import type { SyncCause } from "../contracts/sync.js";
+import { FS_EFFECT_SHARED_OFD_STATE } from "../../layout/fs-effects.js";
 import {
   FS_OP_CLOSE,
   FS_OP_EXECVE,
@@ -145,6 +146,12 @@ const FS_TRACE_INO = Number((globalThis as {
 const FS_TRACE_STALE_READ = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FS_TRACE_STALE_READ ?? "") === "1";
+const FS_TRACE_FAILED_WRITE = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_TRACE_FAILED_WRITE ?? "") === "1";
+const FS_TRACE_WRITE_RESUME = ((globalThis as {
+  process?: { env?: Record<string, string | undefined> };
+}).process?.env?.TIDEMARK_FS_TRACE_WRITE_RESUME ?? "") === "1";
 const FS_FD_STATE_DETAIL_ENABLED = FS_LIFECYCLE_DEBUG_ENABLED || FS_FD_STATE_DEBUG_ENABLED;
 const MAX_CHAINED_FS_RESUME_ATTEMPTS = 64;
 
@@ -180,6 +187,11 @@ interface FsFdStateSnapshot {
   ofdTablePtr: number;
   ofdTable: Uint8Array | null;
 }
+
+type FsFdStateSnapshotScope =
+  | { kind: "none" }
+  | { kind: "fds"; fds: readonly number[] }
+  | { kind: "all" };
 
 interface FilteredFsFdState {
   fdEntries?: KernelWorkerFdEntrySnapshot[];
@@ -991,6 +1003,54 @@ function traceRegularFileRead(
   );
 }
 
+function traceFailedRegularFileWrite(
+  handle: ProcessHandle,
+  vmPtr: number,
+  request: PendingRegularFileFsRequest | null,
+  ringRequest: PendingFsRingRequest | null,
+  result: bigint,
+): void {
+  if (
+    !FS_TRACE_FAILED_WRITE
+    || ringRequest?.opcode !== FS_OP_WRITE
+    || BigInt.asIntN(64, result) >= 0n
+  ) {
+    return;
+  }
+  const currentIdentity = request === null ? null : readRegularFileIdentity(handle, request.ofdId);
+  console.error(
+    `[tidemark-fs-failed-write] pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`
+      + `:result=${BigInt.asIntN(64, result).toString()}`
+      + `:ring-fd=${ringRequest.fd}:ring-ofd=${ringRequest.ofdId}:ring-ino=${ringRequest.ino}`
+      + `:request-fd=${request?.fd ?? -1}:request-ofd=${request?.ofdId ?? 0}`
+      + `:request-ring-ofd=${request?.ringOfdId ?? 0}:request-ino=${request?.ino ?? 0}`
+      + `:live-type=${currentIdentity?.fileType ?? 0}:live-ino=${currentIdentity?.ino ?? 0}`
+      + `:live-flags=${currentIdentity?.statusFlags ?? 0}:live-offset=${currentIdentity?.offset.toString() ?? "0"}`,
+  );
+}
+
+function traceRegularFileWriteResume(
+  phase: "response" | "ready",
+  handle: ProcessHandle,
+  vmPtr: number,
+  request: PendingRegularFileFsRequest | null,
+  ringRequest: PendingFsRingRequest | null,
+  result: bigint,
+): void {
+  if (!FS_TRACE_WRITE_RESUME || ringRequest?.opcode !== FS_OP_WRITE) {
+    return;
+  }
+  console.error(
+    `[tidemark-fs-write-resume] ${phase}:pid=${handle.pid}:vm=0x${vmPtr.toString(16)}`
+      + `:result=${BigInt.asIntN(64, result).toString()}`
+      + `:a0=${BigInt.asIntN(64, handle.kernel.thread_a0(vmPtr)).toString()}`
+      + `:status=${handle.kernel.thread_status(vmPtr)}`
+      + `:ring-fd=${ringRequest.fd}:ring-ofd=${ringRequest.ofdId}:ring-ino=${ringRequest.ino}`
+      + `:request-fd=${request?.fd ?? -1}:request-ofd=${request?.ofdId ?? 0}`
+      + `:request-ino=${request?.ino ?? 0}`,
+  );
+}
+
 function pendingFsRequestFd(handle: ProcessHandle, vmPtr: number): number | null {
   return readPendingFsRingRequest(handle, vmPtr)?.fd ?? null;
 }
@@ -1745,13 +1805,39 @@ function clearStaleFsStatusAfterResume(handle: ProcessHandle, vmPtr: number, fsR
   );
 }
 
-function snapshotFsFdState(handle: ProcessHandle, vmPtr: number): FsFdStateSnapshot | null {
+function fsFdStateSnapshotScope(
+  handle: ProcessHandle,
+  pendingFs: PendingFsContext,
+  regularFileRequest: PendingRegularFileFsRequest | null,
+): FsFdStateSnapshotScope {
+  if (regularFileRequest !== null) {
+    return { kind: "fds", fds: [regularFileRequest.fd] };
+  }
+  if ((pendingFs.effects & FS_EFFECT_SHARED_OFD_STATE) !== 0) {
+    return { kind: "all" };
+  }
+  return fsRequestRequiresProcessWidePumpGate(handle, pendingFs)
+    ? { kind: "none" }
+    : { kind: "all" };
+}
+
+function snapshotFsFdState(
+  handle: ProcessHandle,
+  vmPtr: number,
+  scope: FsFdStateSnapshotScope,
+): FsFdStateSnapshot | null {
   const maxFds = handle.kernel.abi_max_fds?.() ?? 0;
-  if (vmPtr === 0 || maxFds <= 0) {
+  if (vmPtr === 0 || maxFds <= 0 || scope.kind === "none") {
+    return null;
+  }
+  const fds = scope.kind === "all"
+    ? Array.from({ length: maxFds }, (_value, fd) => fd)
+    : scope.fds.filter((fd) => fd >= 0 && fd < maxFds);
+  if (fds.length === 0) {
     return null;
   }
   const fdEntries: FsFdStateSnapshot["fdEntries"] = [];
-  for (let fd = 0; fd < maxFds; fd += 1) {
+  for (const fd of fds) {
     fdEntries.push({
       fd,
       ofdId: supervisorProcessOfdForFd(handle, vmPtr, fd),
@@ -2154,11 +2240,13 @@ async function resumeFsViaKernelWorkerOnce(
     appendFsLifecycleEvent(handle, "start", vmPtr, `${fsDebugSuffix}${formatFsRingDebug(handle, vmPtr)}`);
     appendFsTimingSince(handle, "inner-entry", vmPtr, resumeStartMs, fsDebugSuffix);
     const forkShareMembers = deps.kernelShareOtherMembers(handle);
-    const heldOfdIds = collectProcessHeldOfds(handle);
+    const heldOfdIds = forkShareMembers.length > 0
+      ? collectProcessHeldOfds(handle)
+      : null;
     const missingSharedOfdIds = forkShareMembers.length === 0
       ? []
       : pendingFsSharedOfdIds(handle, vmPtr)
-        .filter((ofdId) => !heldOfdIds.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
+        .filter((ofdId) => !heldOfdIds?.has(ofdId) || !hasPlausibleOfdState(handle, ofdId));
     if (missingSharedOfdIds.length > 0) {
       await deps.rehydrateForkSharedStateViaKernelWorker([handle], missingSharedOfdIds, {
         cause: { kind: "syscall", nr: -1n, name: "fs-rehydrate-shared-ofd" },
@@ -2194,7 +2282,8 @@ async function resumeFsViaKernelWorkerOnce(
       deps.assertProcessStandardFdIntegrity(handle, "resume-fs-before");
     }
     handle.kernelState = readKernelRuntimeState(handle.kernel);
-    const requestFsFdState = snapshotFsFdState(handle, vmPtr);
+    const fdStateSnapshotScope = fsFdStateSnapshotScope(handle, pendingFs, regularFilePendingFs);
+    const requestFsFdState = snapshotFsFdState(handle, vmPtr, fdStateSnapshotScope);
     const requestRingState = readPendingFsRingRequest(handle, vmPtr);
     const regularFileRequest = snapshotPendingRegularFileRequestOfd(handle, vmPtr, regularFilePendingFs);
     const regularFileReadBuffer = regularFilePendingFs === null
@@ -2229,6 +2318,15 @@ async function resumeFsViaKernelWorkerOnce(
     }
     const fsResult = normalizeFsResult(fsProcessedResponse.result);
     traceRegularFileRead(handle, "response", vmPtr, regularFilePendingFs, requestRingState, fsResult);
+    traceFailedRegularFileWrite(handle, vmPtr, regularFilePendingFs, requestRingState, fsResult);
+    traceRegularFileWriteResume(
+      "response",
+      handle,
+      vmPtr,
+      regularFilePendingFs,
+      requestRingState,
+      fsResult,
+    );
     const fsSucceeded = Number(BigInt.asIntN(64, fsResult)) >= 0;
     const responseCreatedFd = fsCreatedFdFromResult(handle, pendingFs, fsResult, fsSucceeded);
     if (FS_CREATED_FD_DEBUG_ENABLED && responseCreatedFd !== null) {
@@ -2479,7 +2577,7 @@ async function resumeFsViaKernelWorkerOnce(
     const ofdStateChanged = fsCompletion.ofdStateChanged;
     recordFsTransferStats(handle, pendingFs, fsResult, fsSucceeded, true, fsCompletion);
     const postFsRingProgress = snapshotFsRingProgress(handle, vmPtr);
-    const postFsFdState = snapshotFsFdState(handle, vmPtr);
+    const postFsFdState = snapshotFsFdState(handle, vmPtr, fdStateSnapshotScope);
     if (fsResponseDisposition.adoptKernelState) {
       handle.kernelState = readKernelRuntimeState(handle.kernel);
     }
@@ -2528,7 +2626,7 @@ async function resumeFsViaKernelWorkerOnce(
     const dirtyMemfsHandles: ProcessHandle[] = [];
     if (memfsMutated) {
       rememberPendingFsMemfsChange(handle, pendingFs);
-      setProcessMemfsDirty(handle, true);
+      setProcessMemfsDirty(handle, false);
       setProcessMemfsPublishPending(handle, true);
       if (fsResponseDisposition.processOwnerMatches) {
         if (memfsPublishReady && forkShareMembers.length > 0) {
@@ -2579,6 +2677,14 @@ async function resumeFsViaKernelWorkerOnce(
       );
     };
     const completeStartMs = fsTimingStart();
+    traceRegularFileWriteResume(
+      "ready",
+      handle,
+      vmPtr,
+      regularFilePendingFs,
+      requestRingState,
+      fsResult,
+    );
     const completeResult = await completeFsResumeFromSupervisorDecision(handle, worker, vmPtr, fsResult, {
       source: "kernel-worker",
       applyPostFsWake,

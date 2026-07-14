@@ -175,6 +175,11 @@ function addSupervisorRuntimeExportStubs(exports: KernelExports): void {
   target.supervisor_thread_event_kind_blocked = () => 1;
   target.supervisor_thread_event_kind_ready = () => 2;
   target.supervisor_thread_event_kind_faulted = () => 3;
+  target.supervisor_process_fd_table_is_coherent = () => 1;
+  target.supervisor_stdio_output_settle_kind_visible = () => 1;
+  target.supervisor_stdio_output_settle_kind_inherited_child = () => 2;
+  target.supervisor_stdio_output_settle_max_passes = () => 4;
+  target.supervisor_stdio_output_settle_stable_passes = () => 2;
   target.supervisor_resume_record_bytes = () => 48;
   target.supervisor_resume_kind_runnable_thread = () => 2;
   target.supervisor_process_resume = (...args: unknown[]) => {
@@ -768,13 +773,13 @@ test("STATUS_WAIT4 delegates retries through kernel-worker when available", asyn
   expect(requests.some((msg) => msg.type === "sync-pipe-state")).toBe(true);
   expect(resumeWait4).not.toHaveBeenCalled();
   expect(resumeBlocked).not.toHaveBeenCalled();
-  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr);
+  expect(handle.kernelState.heapPtr).toBe(makeKernelState().heapPtr + 0x30);
   expect(worker.postedMessages).toEqual([
     {
       type: "step",
       budget: 20_000,
       kernelState: expect.objectContaining({
-        heapPtr: makeKernelState().heapPtr,
+        heapPtr: makeKernelState().heapPtr + 0x30,
       }),
     },
   ]);
