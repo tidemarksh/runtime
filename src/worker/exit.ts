@@ -1638,8 +1638,8 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
       return false;
     }
     const recordedInheritance = processInheritedParentOutput(handle);
-    if (recordedInheritance !== null) {
-      return recordedInheritance;
+    if (recordedInheritance === false) {
+      return false;
     }
     const inheritedSlots = new Set(
       [

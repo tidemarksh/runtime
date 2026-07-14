@@ -6,6 +6,10 @@ import {
 } from "../../../../src/layout/ofd.js";
 import { addProcessWorker } from "../../../../src/worker/process-worker-state.js";
 import {
+  processInheritedParentOutput,
+  setProcessInheritedParentOutput,
+} from "../../../../src/worker/process-stdio-state.js";
+import {
   applyStatusFdEntries,
   markStatusFdChangesForNextStep,
 } from "../../../../src/worker/message-handler/status/fd-entries.js";
@@ -82,6 +86,28 @@ test("authoritative status fd changes propagate after shared memory already refl
   }) as never, new Set([11]));
 
   expect(changedFds).toEqual([11]);
+});
+
+test("status fd output redirection invalidates fork-time inherited output", () => {
+  const fdEntries = new Map<number, number>([[1, 2]]);
+  const handle = makeHandle({
+    kernel: makeKernel({
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      supervisor_process_ofd_for_fd: (_vmPtr: number, fd: number) => fdEntries.get(fd) ?? 0,
+      process_set_fd_entry: (_vmPtr: number, fd: number, ofdId: number) => {
+        fdEntries.set(fd, ofdId);
+      },
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 2 || ofdId === 7 ? 3 : 0,
+    }),
+  });
+  setProcessInheritedParentOutput(handle as never, true);
+
+  const changedFds = applyStatusFdEntries(handle as never, makeStatusMessage({
+    fdEntries: [{ fd: 1, ofdId: 7, fdFlags: 0 }],
+  }) as never);
+
+  expect(changedFds).toEqual([1]);
+  expect(processInheritedParentOutput(handle as never)).toBe(false);
 });
 
 test("authoritative stale close does not clear a descriptor reused after the posted step", () => {

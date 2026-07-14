@@ -223,6 +223,7 @@ test("requestPipeStateSync falls back to visible stdio owner when hidden-child i
 
 test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async () => {
   const retryHostBlockedWorker = vi.fn();
+  const disarmSupervisorTimerForWake = vi.fn();
   const handle = makeHandle({
     pid: 1,
     kernelWorkerRequest: vi.fn(async (msg) => {
@@ -259,6 +260,7 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
     appendRuntimeLifecycleEvent: () => {},
     drainProcessOutput: vi.fn(() => false),
     drainHiddenProcessOutput: vi.fn(() => false),
+    disarmSupervisorTimerForWake,
     threadWorkerStates: new WeakMap(),
     retryHostBlockedWorker,
   });
@@ -270,6 +272,7 @@ test("requestSocketStateSync wakes socket-backed poll and epoll waiters", async 
   expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, pipeWorker);
   expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, epollWorker);
   expect(retryHostBlockedWorker).toHaveBeenCalledWith(handle, recvWorker);
+  expect(disarmSupervisorTimerForWake).toHaveBeenCalledTimes(3);
   expect(clearPipeSyncBeforeRetry).toHaveBeenCalledWith(0x1234);
 });
 

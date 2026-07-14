@@ -46,6 +46,7 @@ export interface BlockedWaitTimers {
     flags?: SupervisorBlockedWaitRetryFlags,
   ): void;
   markSupervisorTimerArmed(blocked: HostBlockedWorkerState): void;
+  disarmSupervisorTimerForWake(blocked: HostBlockedWorkerState): void;
   isSupervisorTimerArmed(blocked: HostBlockedWorkerState): boolean;
   armBlockedSupervisorTimerForBlocked(
     handle: ProcessHandle,
@@ -313,6 +314,10 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     supervisorArmedBlockedTimers.add(blocked);
   }
 
+  function disarmSupervisorTimerForWake(blocked: HostBlockedWorkerState): void {
+    supervisorArmedBlockedTimers.delete(blocked);
+  }
+
   function isSupervisorTimerArmed(blocked: HostBlockedWorkerState): boolean {
     return supervisorArmedBlockedTimers.has(blocked);
   }
@@ -335,6 +340,7 @@ export function createBlockedWaitTimers(deps: BlockedWaitTimersDeps): BlockedWai
     clearHostBlockedRetryTimer,
     scheduleSupervisorBlockedRetry,
     markSupervisorTimerArmed,
+    disarmSupervisorTimerForWake,
     isSupervisorTimerArmed,
     armBlockedSupervisorTimerForBlocked,
   };

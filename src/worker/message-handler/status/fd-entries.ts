@@ -5,6 +5,7 @@ import {
   supervisorProcessOfdForFd,
 } from "../../ownership/fd-table.js";
 import { processWorkers } from "../../process-worker-state.js";
+import { setProcessInheritedParentOutput } from "../../process-stdio-state.js";
 import { appendPendingAuthoritativeFdForNextStep } from "../../thread-step-payload.js";
 import type { ProcessHandle, ThreadWorkerState } from "../../types.js";
 import type { ThreadWorkerStatusMessage } from "../types.js";
@@ -121,6 +122,9 @@ export function applyStatusFdEntries(
       });
   for (const fd of changedFds) {
     publishRuntimeFdAuthorityEpoch(handle.runtimeBridge, fd);
+  }
+  if (changedFds.some((fd) => fd === 1 || fd === 2)) {
+    setProcessInheritedParentOutput(handle, false);
   }
   return changedFds;
 }

@@ -91,6 +91,7 @@ interface WorkerSchedulerStateSyncDeps {
   drainHiddenProcessOutput(handle: ProcessHandle): boolean;
   threadWorkerStates: WeakMap<Worker, ThreadWorkerState>;
   pumpProcess?(handle: ProcessHandle): void;
+  disarmSupervisorTimerForWake?(blocked: { status: number; vmPtr: number }): void;
   retryHostBlockedWorker(handle: ProcessHandle, worker: Worker): void;
 }
 
@@ -328,6 +329,7 @@ export function createWorkerSchedulerStateSyncHelpers(
         if (isIndefiniteEpollWait(member, blocked)) {
           setEpollWakeRetryPending(blocked, true);
         }
+        deps.disarmSupervisorTimerForWake?.(blocked);
         setEpollPassiveUntilWake(blocked, false);
         const runningBeforePump = hostExecutionState(member).runningWorker;
         deps.pumpProcess?.(member);

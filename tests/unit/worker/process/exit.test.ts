@@ -2107,7 +2107,7 @@ test("recordExitOnParent preserves child fault state in parent debug", async () 
   expect(lastDebug(parent)).toContain("deliver_pc=0x7788");
 });
 
-test("completeProcessExit does not treat redirected child pipes as inherited parent output", async () => {
+test("completeProcessExit rechecks fork-time inherited output after child redirection", async () => {
   const lifecycle: string[] = [];
   const syncs: string[] = [];
   const parent = makeHandle({
@@ -2125,7 +2125,7 @@ test("completeProcessExit does not treat redirected child pipes as inherited par
     parentPid: 1,
     stdioOwner: parent,
   });
-  setProcessInheritedParentOutput(child, false);
+  setProcessInheritedParentOutput(child, true);
   const processHandles = new Map<number, ProcessHandle>([
     [1, parent],
     [3, child],

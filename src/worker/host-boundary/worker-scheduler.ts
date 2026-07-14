@@ -386,6 +386,10 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockedWaitTimers.markSupervisorTimerArmed(blocked);
   }
 
+  function disarmSupervisorTimerForWake(blocked: HostBlockedWorkerState): void {
+    blockedWaitTimers.disarmSupervisorTimerForWake(blocked);
+  }
+
   function isSupervisorTimerArmed(blocked: HostBlockedWorkerState): boolean {
     return blockedWaitTimers.isSupervisorTimerArmed(blocked);
   }
@@ -401,6 +405,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
     drainHiddenProcessOutput,
     drainProcessOutput,
+    disarmSupervisorTimerForWake,
     pumpProcess,
     threadWorkerStates,
     retryHostBlockedWorker,
