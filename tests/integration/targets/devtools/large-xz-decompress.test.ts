@@ -16,6 +16,7 @@ const devtoolsToolsetDir = process.env.TIDEMARK_TEST_DEVTOOLS_TOOLSET_DIR ?? "";
 const packageCount = Number(process.env.TIDEMARK_TEST_LARGE_XZ_PACKAGE_COUNT ?? 20_000);
 const packageXzInput = process.env.TIDEMARK_TEST_LARGE_XZ_INPUT ?? "";
 const outputMode = process.env.TIDEMARK_TEST_LARGE_XZ_OUTPUT_MODE === "file" ? "file" : "stdout";
+const executionTimeoutMs = Number(process.env.TIDEMARK_TEST_LARGE_XZ_TIMEOUT_MS ?? 180_000);
 const packagesXzPath = "/work/Packages.xz";
 const packagesOutputPath = "/work/Packages";
 
@@ -174,7 +175,9 @@ async function spawnWithOutputAndStats(
     const exitCode = await Promise.race([
       proc.waitForExit(),
       new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+        timeoutId = setTimeout(() => reject(new Error(
+          `timeout after ${timeoutMs}ms outputBytes=${outputByteLength} execution=${execution}`,
+        )), timeoutMs);
         if (typeof timeoutId === "object" && timeoutId !== null && "unref" in timeoutId) {
           timeoutId.unref();
         }
@@ -249,7 +252,7 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
       new Uint8Array(readFileSync(xzHostPath)),
       argv,
       ["PATH=/usr/bin:/bin", "HOME=/tmp", "LD_LIBRARY_PATH=/usr/lib/riscv64-linux-gnu:/lib"],
-      180_000,
+      executionTimeoutMs,
       { cwd: "/work", stdin: "closed" },
     );
     const spawnDurationMs = Date.now() - spawnStartedMs;
@@ -289,4 +292,4 @@ test("large xz local gate: guest xz decompresses package-index sized input", asy
   } finally {
     runtime.destroy();
   }
-}, 210_000);
+}, Math.max(210_000, executionTimeoutMs + 30_000));
