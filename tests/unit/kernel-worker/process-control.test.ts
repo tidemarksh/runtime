@@ -1520,6 +1520,95 @@ test("processFs rejects mmap backing fills that cannot keep requested pages resi
   expect(processExports.opLog).toEqual([]);
 });
 
+test("processFs republishes the requested read page after aligned-span eviction", async () => {
+  const canonicalExports = makeKernelExports();
+  const processExports = makeKernelExports({
+    resumeResult: DEFAULT_RESIDENT_PAGE_SIZE,
+    fdEntries: [{ fd: 5, ofdId: 7 }],
+    readRequest: {
+      fd: 5,
+      offset: 0,
+      length: DEFAULT_RESIDENT_PAGE_SIZE,
+      ino: 24,
+      size: DEFAULT_RESIDENT_PAGE_SIZE * 2,
+      pwrite: true,
+    },
+  });
+  const processKernels = new Map<number, KernelExports>([[7, processExports]]);
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + DEFAULT_RESIDENT_PAGE_SIZE + 40);
+  const backing = Uint8Array.from(
+    { length: DEFAULT_RESIDENT_PAGE_SIZE * 2 },
+    (_value, index) => index & 0xff,
+  );
+  publishInode(sab, 24, {
+    mode: 0o100644,
+    size: backing.length,
+    parentIno: 1,
+    name: new TextEncoder().encode("read-small-cache"),
+    nextSibling: 0,
+    fileObjectId: 24,
+    generation: 1,
+  });
+
+  const processControl = createKernelWorkerProcessControl({
+    getCanonicalExports: () => canonicalExports,
+    setCanonicalExports: () => {},
+    getWasmModule: () => null,
+    setWasmModule: () => {},
+    getSabPageCache: () => sab,
+    setSabPageCache: () => {},
+    processKernels,
+    lastProcessPipeSlotModes: new Map(),
+    canonicalProcesses: new Map(),
+    seedEntries: new Map(),
+    getCanonicalNextPid: () => 3,
+    setCanonicalNextPid: () => {},
+    publishRootInode: () => {},
+    copyOfdState: () => {},
+    copyMemfsState: () => {},
+    rebuildPageCacheFromExports: () => {},
+    rebuildPageCacheFromCanonical: () => {},
+    syncPipeState: (_pid, kernelState) => kernelState,
+    syncEpollState: (_pid, kernelState) => kernelState,
+    syncSocketState: (_pid, kernelState) => kernelState,
+    copyCanonicalMemfsToProcess: () => {},
+    snapshotProcSelfExe: () => null,
+    restoreProcSelfExe: () => {},
+    composeProcessPipeUsed: () => 0n,
+    collectProcessHeldEpollOfdIds: () => [],
+    collectProcessHeldPipeSlots: () => new Set(),
+    mergePipeSlotsFromCanonical: () => {},
+    recomputeCanonicalPipeControlState: () => ({
+      kernelState: makeKernelState(),
+      readOpen: new Int32Array(0),
+      writeOpen: new Int32Array(0),
+    }),
+    applyPipeControlState: () => {},
+    copyEpollState: () => {},
+    copySelectedEpollState: () => {},
+    copySocketState: () => {},
+    syncFileDataMutation: () => false,
+    syncFileDataMutationByPath: () => false,
+    syncMetadataMutation: () => false,
+    readBackingFileRangeByInode: (_ino, offset, length) => backing.subarray(offset, offset + length),
+    ensureBackingSourceRangeForInode: async () => true,
+    fanoutCanonicalMemfs: () => {},
+    fsEffectMemfsMutation: 1 << 0,
+    fsEffectSharedOfdState: 1 << 1,
+    fsEffectMemfsFileData: 1 << 2,
+    fsOpOpenAt: 3,
+    fsOpMkdir: 6,
+    fsOpUnlink: 7,
+  });
+
+  const result = await processControl.processFs(7, 0x1234, makeKernelState());
+
+  expect(result.result).toBe(BigInt(DEFAULT_RESIDENT_PAGE_SIZE));
+  expect(readResidentFileData(sab, 24, 0, DEFAULT_RESIDENT_PAGE_SIZE))
+    .toEqual(backing.subarray(0, DEFAULT_RESIDENT_PAGE_SIZE));
+  expect(processExports.opLog).toEqual(["process-fs", "resume-fs"]);
+});
+
 test("processFs fails explicitly when backing source progress cannot satisfy a read fill", async () => {
   const canonicalExports = makeKernelExports();
   const processExports = makeKernelExports({
@@ -2011,6 +2100,13 @@ test("processFs demand-fills source-backed append writes before processing fs", 
   let backingReady = false;
   let publishedDataRestored = false;
   const ensureBackingSourceRangeForInode = vi.fn(async () => true);
+  const readBackingFileRangeByInode = vi.fn((_ino: number, offset: number, length: number) => {
+    expect(publishedDataRestored).toBe(true);
+    if (!backingReady) {
+      return null;
+    }
+    return backing.subarray(offset, offset + length);
+  });
   publishInode(sab, 15, {
     mode: 0o100644,
     size: backing.length,
@@ -2065,13 +2161,7 @@ test("processFs demand-fills source-backed append writes before processing fs", 
     syncFileDataMutation: () => false,
     syncFileDataMutationByPath: () => false,
     syncMetadataMutation: () => false,
-    readBackingFileRangeByInode: (_ino, offset, length) => {
-      expect(publishedDataRestored).toBe(true);
-      if (!backingReady) {
-        return null;
-      }
-      return backing.subarray(offset, offset + length);
-    },
+    readBackingFileRangeByInode,
     ensureBackingSourceRangeForInode: async (...args) => {
       const result = await ensureBackingSourceRangeForInode(...args);
       backingReady = true;
@@ -2092,6 +2182,12 @@ test("processFs demand-fills source-backed append writes before processing fs", 
   expect(publishedDataRestored).toBe(true);
   expect(ensureBackingSourceRangeForInode).toHaveBeenCalledWith(15, 4096, 4096, 8192);
   expect(readResidentFileData(sab, 15, 4096, 4096)).toEqual(backing.subarray(4096, 8192));
+
+  ensureBackingSourceRangeForInode.mockClear();
+  readBackingFileRangeByInode.mockClear();
+  expect((await processControl.processFs(7, 0x1234, makeKernelState())).result).toBe(4n);
+  expect(ensureBackingSourceRangeForInode).not.toHaveBeenCalled();
+  expect(readBackingFileRangeByInode).not.toHaveBeenCalled();
 });
 
 test("processFs demand-fills source-backed truncate boundary before processing fs", async () => {

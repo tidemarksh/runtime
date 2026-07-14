@@ -4,6 +4,7 @@ import {
   debugResidentPageCountForInode,
   DEFAULT_RESIDENT_PAGE_SIZE,
   evictResidentPage,
+  hasDirtyResidentPagesForInode,
   MAX_INODES,
   MemoryFileBackingStore,
   publishInode,
@@ -628,7 +629,9 @@ test("page-cache write publishes dirty resident data without updating backing da
     ),
   });
 
+  expect(hasDirtyResidentPagesForInode(sab, 2)).toBe(false);
   expect(env.tidemark_page_cache_write(2, 32n, 256, source.length)).toBe(BigInt(source.length));
+  expect(hasDirtyResidentPagesForInode(sab, 2)).toBe(true);
   expect(env.tidemark_page_cache_read(2, 32n, 512, source.length)).toBe(-2n);
   expect(readResidentFileData(sab, 2, 32, source.length)).toEqual(source);
   const ownerEnv = createKernelEnv(memory, {

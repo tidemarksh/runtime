@@ -175,6 +175,7 @@ interface KernelWorkerProcessControlDeps {
   ): boolean;
   readBackingFileRangeByInode(ino: number, offset: number, length: number): Uint8Array | null;
   flushDirtyResidentFileByInode(ino: number): boolean;
+  flushDirtyResidentFilesUnderPressure?(): boolean;
   ensurePublishedBackingInodeForFill?(
     ino: number,
     expectedSize: number,
@@ -564,6 +565,62 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     );
   }
 
+  function publishResidentPageWithPressure(
+    processExports: KernelExports,
+    ino: number,
+    pageIndex: number,
+    page: Uint8Array,
+  ): boolean {
+    const sab = deps.getSabPageCache();
+    const authority = supervisorResidentPageTableAuthority(processExports);
+    if (publishResidentPage(sab, ino, pageIndex, page, { authority })) {
+      return true;
+    }
+    return deps.flushDirtyResidentFilesUnderPressure?.() === true
+      && publishResidentPage(sab, ino, pageIndex, page, { authority });
+  }
+
+  function ensureRequestedResidentRange(
+    processExports: KernelExports,
+    request: PendingBackingFillRequest,
+    sourceOffset: number,
+    sourceRange: Uint8Array,
+  ): boolean {
+    const requestedLength = Math.min(
+      request.length,
+      Math.max(0, request.expectedSize - request.offset),
+    );
+    if (requestedLength <= 0) {
+      return false;
+    }
+    const sab = deps.getSabPageCache();
+    if (readResidentFileData(sab, request.ino, request.offset, requestedLength) !== null) {
+      return true;
+    }
+    const firstPage = Math.floor(request.offset / DEFAULT_RESIDENT_PAGE_SIZE)
+      * DEFAULT_RESIDENT_PAGE_SIZE;
+    const requestedEnd = request.offset + requestedLength;
+    for (let pageStart = firstPage; pageStart < requestedEnd; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+      const pageLength = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
+      const backingOffset = pageStart - sourceOffset;
+      const page = sourceRange.subarray(backingOffset, backingOffset + pageLength);
+      if (
+        pageLength <= 0
+        || backingOffset < 0
+        || page.length !== pageLength
+        || !publishResidentPageWithPressure(
+          processExports,
+          request.ino,
+          pageStart / DEFAULT_RESIDENT_PAGE_SIZE,
+          page,
+        )
+      ) {
+        return false;
+      }
+    }
+    return readResidentFileData(sab, request.ino, request.offset, requestedLength) !== null;
+  }
+
   async function publishBackingRange(
     processExports: KernelExports,
     request: PendingBackingFillRequest,
@@ -576,6 +633,22 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       return false;
     }
     debug?.("publish-backing-span", `off=${span.offset}:end=${span.end}:len=${span.length}`);
+    const requestedLength = Math.min(
+      request.length,
+      Math.max(0, request.expectedSize - request.offset),
+    );
+    if (
+      requestedLength > 0
+      && readResidentFileData(
+        deps.getSabPageCache(),
+        request.ino,
+        request.offset,
+        requestedLength,
+      ) !== null
+    ) {
+      debug?.("publish-backing-resident-hit");
+      return true;
+    }
     debug?.("publish-backing-direct-check-start");
     const direct = hasDirectBackingForFill(processExports, request, span);
     debug?.("publish-backing-direct-check-done", `direct=${direct ? 1 : 0}`);
@@ -624,14 +697,16 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       if (page.length !== pageLen) {
         return false;
       }
-      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page, {
-        authority: supervisorResidentPageTableAuthority(processExports),
-      })) {
+      if (!publishResidentPageWithPressure(
+        processExports,
+        request.ino,
+        pageStart / DEFAULT_RESIDENT_PAGE_SIZE,
+        page,
+      )) {
         return false;
       }
     }
-    const satisfiedLength = Math.min(request.length, Math.max(0, request.expectedSize - request.offset));
-    if (satisfiedLength <= 0 || readResidentFileData(sab, request.ino, request.offset, satisfiedLength) === null) {
+    if (!ensureRequestedResidentRange(processExports, request, span.offset, alignedRange)) {
       return false;
     }
     debug?.("publish-backing-resident-publish-done");
@@ -659,13 +734,16 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
       if (page.length !== pageLen) {
         return false;
       }
-      if (!publishResidentPage(sab, request.ino, pageStart / DEFAULT_RESIDENT_PAGE_SIZE, page, {
-        authority: supervisorResidentPageTableAuthority(processExports),
-      })) {
+      if (!publishResidentPageWithPressure(
+        processExports,
+        request.ino,
+        pageStart / DEFAULT_RESIDENT_PAGE_SIZE,
+        page,
+      )) {
         return false;
       }
     }
-    return readResidentFileData(sab, request.ino, offset, length) !== null;
+    return ensureRequestedResidentRange(processExports, request, offset, alignedRange);
   }
 
   function publishDirectMmapReuseTail(

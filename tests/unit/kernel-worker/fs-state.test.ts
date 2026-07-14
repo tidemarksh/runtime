@@ -1506,6 +1506,43 @@ test("kernel-worker writes back dirty pages when sequential output exceeds resid
   expectBytesEqual(fsState.readFile("/work/output.bin"), expected);
 });
 
+test("kernel-worker pressure flush makes dirty resident pages clean and evictable", () => {
+  const pageSize = 4096;
+  const { canonicalExports, fsState, sabPageCache } = makeFsState(pageSize * 2);
+  fsState.mkdir("/work", 0o755, false);
+  const parentIno = canonicalExports.fileIno("/work");
+  const name = encoder.encode("output.bin");
+  const namePtr = canonicalExports.kernel_heap_ptr() + 0x12000;
+  new Uint8Array(canonicalExports.memory.buffer).set(name, namePtr);
+  const ino = canonicalExports.memfs_create_file(parentIno, namePtr, name.length);
+  expect(Number(canonicalExports.memfs_set_mode(ino, 0o644))).toBe(0);
+  publishInode(sabPageCache, ino, {
+    mode: 0o100644,
+    size: 0,
+    parentIno,
+    name,
+    nextSibling: 0,
+  });
+
+  const first = new Uint8Array(pageSize).fill(0x31);
+  const second = new Uint8Array(pageSize).fill(0x32);
+  expect(fsState.writeDirtyResidentFileByInode(ino, 0, first)).toBe(pageSize);
+  expect(canonicalExports.memfs_set_file_size_shallow(ino, BigInt(pageSize))).toBe(BigInt(pageSize));
+  expect(fsState.writeDirtyResidentFileByInode(ino, pageSize, second)).toBe(pageSize);
+  expect(canonicalExports.memfs_set_file_size_shallow(ino, BigInt(pageSize * 2)))
+    .toBe(BigInt(pageSize * 2));
+
+  expect(evictResidentPage(sabPageCache, ino, 1, fakeSupervisorPageTableAuthority))
+    .toBe("dirty-pinned");
+  expect(fsState.flushDirtyResidentFilesUnderPressure()).toBe(true);
+  expect(evictResidentPage(sabPageCache, ino, 1, fakeSupervisorPageTableAuthority))
+    .toBe("evicted");
+  const expected = new Uint8Array(pageSize * 2);
+  expected.set(first);
+  expected.set(second, pageSize);
+  expectBytesEqual(fsState.readFile("/work/output.bin"), expected);
+});
+
 test("kernel-worker applies supervisor dirty write denial without dirtying resident pages", () => {
   const { canonicalExports, fsState, sabPageCache } = makeFsState();
 
@@ -2431,13 +2468,21 @@ test("kernel-worker syncFileDataMutation externalizes matching published residen
   expect(memberExports.memfs_set_file_size_shallow(ino, BigInt(size))).toBe(BigInt(size));
   canonicalExports.opLog.length = 0;
   memberExports.opLog.length = 0;
+  const canonicalLookup = vi.spyOn(canonicalExports, "memfs_lookup");
+  const memberLookup = vi.spyOn(memberExports, "memfs_lookup");
 
+  expect(fsState.syncFileDataMutation(memberExports, ino)).toBe(true);
+  expect(fsState.syncFileDataMutation(memberExports, ino)).toBe(true);
+  canonicalLookup.mockClear();
+  memberLookup.mockClear();
   expect(fsState.syncFileDataMutation(memberExports, ino)).toBe(true);
 
   expect(canonicalExports.opLog).toContain(`external:/work/out.txt:${size}`);
   expect(memberExports.opLog).toContain(`external:/work/out.txt:${size}`);
   expect(canonicalExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
   expect(memberExports.opLog.some((entry) => entry.startsWith("write:/work/out.txt:"))).toBe(false);
+  expect(canonicalLookup).not.toHaveBeenCalled();
+  expect(memberLookup).not.toHaveBeenCalled();
 });
 
 test("kernel-worker backing publication follows supervisor object identity", () => {

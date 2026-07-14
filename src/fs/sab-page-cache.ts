@@ -1363,7 +1363,23 @@ function readExistingPageBytes(
 
 export function hasDirtyResidentPagesForInode(sab: SharedArrayBuffer, ino: number): boolean {
   const meta = readInodeMeta(sab, ino);
-  return !!(meta && collectResidentPageSnapshots(sab, meta, true).length > 0);
+  if (!meta || meta.fileObjectId === 0) {
+    return false;
+  }
+  const count = residentPageRecordCount(sab);
+  for (let index = 0; index < count; index += 1) {
+    const record = readStableResidentPageRecord(sab, index);
+    if (
+      record
+      && (record.flags & RESIDENT_PAGE_RECORD_FLAG_VALID) !== 0
+      && (record.flags & RESIDENT_PAGE_RECORD_FLAG_DIRTY) !== 0
+      && record.fileObjectId === meta.fileObjectId
+      && record.generation === meta.generation
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function markDirtyResidentFileDataClean(

@@ -16,6 +16,7 @@ import {
   publishInode,
   publishedInodeUpperBound,
   publishResidentPage,
+  readDirEpoch,
   readDirtyResidentFileData,
   readDirtyResidentFileRangeData,
   readInodeMeta,
@@ -92,6 +93,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
   const backingExtentsByIno = new Map<number, FsSnapshotBackingExtent>();
   const backingExtentInodesBySourceIdentity = new Map<string, Set<number>>();
   const dirtyResidentInodes = new Set<number>();
+  const validatedTargetInodeEpochs = new WeakMap<KernelExports, Map<number, number>>();
   let sourceBackingSmallFilePrewarmRemainingBytes = SOURCE_BACKING_SMALL_FILE_PREWARM_TOTAL_BYTES;
   let materializedBackingHeaderPrewarmRemainingBytes = MATERIALIZED_BACKING_HEADER_PREWARM_TOTAL_BYTES;
 
@@ -1220,17 +1222,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         supervisorDirtyPageAuthority(sourceExports),
       );
       if (written === -28) {
-        const pressureInodes = [
-          ino,
-          ...[...dirtyResidentInodes].filter((dirtyIno) => dirtyIno !== ino),
-        ];
-        let flushed = false;
-        for (const pressureIno of pressureInodes) {
-          if (!trackedHasDirtyResidentPages(pressureIno)) {
-            continue;
-          }
-          flushed = flushDirtyResidentFileByInode(pressureIno) || flushed;
-        }
+        const flushed = flushDirtyResidentFilesUnderPressure(ino);
         if (flushed) {
           written = writeDirtyResidentFileData(
             deps.getSabPageCache(),
@@ -1250,6 +1242,34 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     } catch {
       return -5;
     }
+  }
+
+  function flushDirtyResidentFilesUnderPressure(preferredIno?: number): boolean {
+    const dirtyInodes = [...dirtyResidentInodes];
+    const orderedInodes = preferredIno === undefined
+      ? dirtyInodes
+      : [preferredIno, ...dirtyInodes.filter((ino) => ino !== preferredIno)];
+    let flushed = false;
+    const attempts: string[] = [];
+    for (const ino of orderedInodes) {
+      const dirty = trackedHasDirtyResidentPages(ino);
+      if (!dirty) {
+        attempts.push(`${ino}:clean`);
+        continue;
+      }
+      const inodeFlushed = flushDirtyResidentFileByInode(ino);
+      attempts.push(`${ino}:${inodeFlushed ? "flushed" : "failed"}`);
+      flushed = inodeFlushed || flushed;
+    }
+    if (FS_METADATA_SYNC_DEBUG_ENABLED) {
+      console.error(
+        `[tidemark-fs-pressure] preferred=${preferredIno ?? 0}`
+          + `:tracked=${dirtyInodes.join(",") || "none"}`
+          + `:attempts=${attempts.join(",") || "none"}`
+          + `:flushed=${flushed ? 1 : 0}`,
+      );
+    }
+    return flushed;
   }
 
   function flushDirtyResidentFileByInode(ino: number): boolean {
@@ -1603,13 +1623,28 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     if (parentIno === ino) {
       return false;
     }
+    const targetMode = targetExports.memfs_inode_mode(ino);
+    if ((targetMode & MEMFS_S_IFMT) !== (published.mode & MEMFS_S_IFMT)) {
+      validatedTargetInodeEpochs.get(targetExports)?.delete(ino);
+      return false;
+    }
+    const dirEpoch = readDirEpoch(deps.getSabPageCache());
+    if (validatedTargetInodeEpochs.get(targetExports)?.get(ino) === dirEpoch) {
+      return true;
+    }
     const namePtr = writeScratchFor(targetExports, published.name);
     const linkedIno = targetExports.memfs_lookup(parentIno, namePtr, published.name.length);
     if (linkedIno !== ino) {
+      validatedTargetInodeEpochs.get(targetExports)?.delete(ino);
       return false;
     }
-    const targetMode = targetExports.memfs_inode_mode(ino);
-    return (targetMode & MEMFS_S_IFMT) === (published.mode & MEMFS_S_IFMT);
+    let targetEpochs = validatedTargetInodeEpochs.get(targetExports);
+    if (!targetEpochs) {
+      targetEpochs = new Map();
+      validatedTargetInodeEpochs.set(targetExports, targetEpochs);
+    }
+    targetEpochs.set(ino, dirEpoch);
+    return true;
   }
 
   function ensurePublishedInodeInTarget(
@@ -1767,6 +1802,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
       const canonicalSize = (canonicalMode & MEMFS_S_IFMT) === MEMFS_S_IFREG
         ? Number(canonicalExports.memfs_file_size(ino))
         : publishedRecord?.size ?? 0;
+      const hasDirtyResidentPages = trackedHasDirtyResidentPages(ino);
       const action = supervisorDataSyncAction(sourceExports, {
         kind: "export",
         ino,
@@ -1775,14 +1811,17 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
         targetMode,
         targetSize: canonicalSize,
         published: publishedRecord,
-        hasDirtyResidentPages: trackedHasDirtyResidentPages(ino),
-        pageMapNewer: residentPageMapIsNewerThanBacking(ino),
+        hasDirtyResidentPages,
+        pageMapNewer: residentPageMapIsNewerThanBackingWithState(
+          ino,
+          hasDirtyResidentPages,
+          publishedRecord,
+        ),
         hasBackingFile: hasBackingFile(ino),
       });
       if (action === "externalize") {
         clearSeedBackingExtentForInode(ino);
         const refreshedPublished = readInodeRecord(deps.getSabPageCache(), ino) ?? published;
-        ensurePublishedInodeInTarget(canonicalExports, ino, refreshedPublished);
         syncExternalFileDataIntoTarget(canonicalExports, ino, mode, size, refreshedPublished);
         for (const memberExports of deps.processKernels.values()) {
           trySyncExternalFileDataIntoTarget(memberExports, ino, mode, size, refreshedPublished);
@@ -2203,6 +2242,7 @@ export function createKernelWorkerFsState(deps: KernelWorkerFsStateDeps) {
     readBackingFileRangeByInode,
     ensurePublishedBackingInodeForFill,
     flushDirtyResidentFileByInode,
+    flushDirtyResidentFilesUnderPressure,
     truncateDirtyResidentFileByInode,
     writeDirtyResidentFileByInode,
     rebuildPageCacheFromExports,
