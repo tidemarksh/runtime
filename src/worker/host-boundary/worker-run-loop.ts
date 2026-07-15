@@ -11,6 +11,7 @@ import {
 import { clearThreadRunningGeneration } from "../thread-host-state.js";
 import {
   beginBlockedRpc as beginHostBlockedRpc,
+  consumeBlockedRpcDeferredRetry,
   finishBlockedRpc as finishHostBlockedRpc,
 } from "../host-blocked-state.js";
 import { clearForkSharedSyncIfCurrent } from "../fork-shared-sync-state.js";
@@ -67,6 +68,10 @@ export function createRunLoopScheduler(deps: RunLoopSchedulerDeps): RunLoopSched
       || !finishHostBlockedRpc(latestBlocked, rpcGeneration)
     ) {
       return null;
+    }
+    if (consumeBlockedRpcDeferredRetry(latestBlocked)) {
+      deps.clearHostBlockedRetryTimer(handle, worker);
+      deps.scheduleSupervisorBlockedRetry(handle, worker, ["host-progress"]);
     }
     return latestBlocked;
   }

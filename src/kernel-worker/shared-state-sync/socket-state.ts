@@ -1,4 +1,9 @@
-import { attachKernelRuntimeState, readKernelRuntimeState } from "../../abi.js";
+import {
+  attachKernelRuntimeState,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
+  readKernelRuntimeState,
+} from "../../abi.js";
 import type { KernelExports, KernelRuntimeState } from "../../abi.js";
 import { kernelNetBufferCount } from "../../kernel-socket-layout.js";
 import type { KernelWorkerSocketStateSnapshot } from "../../messages.js";
@@ -22,7 +27,11 @@ export function createKernelWorkerSocketStateBridge(deps: KernelWorkerSocketStat
     const netBufPoolBytes = processExports.kernel_net_buf_pool_bytes();
     const maxBuffers = kernelNetBufferCount(processExports);
     const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
-    memory.set(snapshot.socketTable, state.socketTablePtr);
+    if (snapshot.socketState !== undefined) {
+      memory.set(snapshot.socketState, kernelSocketStatePtr(state));
+    } else {
+      memory.set(snapshot.socketTable, state.socketTablePtr);
+    }
     if (snapshot.netBufPool !== undefined) {
       memory.set(snapshot.netBufPool, state.netBufBase);
     } else if (netBufSlotBytes > 0) {
@@ -55,6 +64,8 @@ export function createKernelWorkerSocketStateBridge(deps: KernelWorkerSocketStat
     const netBufPoolBytes = processExports.kernel_net_buf_pool_bytes();
     const maxBuffers = kernelNetBufferCount(processExports);
     const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
+    const socketTableBytes = processExports.kernel_socket_table_bytes();
+    const socketStateBytes = kernelSocketStateBytes(processExports, state);
     const netBufSlots: KernelWorkerSocketStateSnapshot["netBufSlots"] = [];
     if (netBufSlotBytes > 0) {
       for (let bufferIndex = 0; bufferIndex < maxBuffers; bufferIndex += 1) {
@@ -71,8 +82,16 @@ export function createKernelWorkerSocketStateBridge(deps: KernelWorkerSocketStat
     return {
       socketTable: memory.slice(
         state.socketTablePtr,
-        state.socketTablePtr + processExports.kernel_socket_table_bytes(),
+        state.socketTablePtr + socketTableBytes,
       ),
+      ...(socketStateBytes > socketTableBytes
+        ? {
+            socketState: memory.slice(
+              kernelSocketStatePtr(state),
+              kernelSocketStatePtr(state) + socketStateBytes,
+            ),
+          }
+        : {}),
       netBufSlots,
       socketUsed: state.socketUsed,
       netBufUsed: state.netBufUsed,

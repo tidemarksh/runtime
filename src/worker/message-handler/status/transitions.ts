@@ -899,6 +899,7 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
       if (restoreRuntimeNetworkSidecarForHandle(handle, deps.processHandles, thread.vmPtr)) {
         handle.kernelState = readKernelRuntimeState(handle.kernel);
         publishKernelRuntimeState(handle.runtimeBridge, handle.kernelState, true);
+        setThreadOwnerAsyncStatus(thread, status);
         const connectResult = deps.resolveNetworkConnect(handle, thread.vmPtr);
         void connectResult
           .then(async (result) => {
@@ -918,10 +919,18 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
             await deps.commitNetworkConnect(handle, thread.vmPtr, result);
           })
           .then(() => {
+            clearThreadOwnerAsyncStatus(thread);
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
             deps.notifyWorkerStatusProgress(handle);
             deps.enqueueWorker(handle, worker);
           })
           .catch((error) => {
+            clearThreadOwnerAsyncStatus(thread);
+            if (!workerStillOwnedByHandle()) {
+              return;
+            }
             deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
           });
         deps.pumpProcess(handle);

@@ -63,6 +63,7 @@ function appendNetworkLifecycle(handle: ProcessHandle, event: string): void {
   if (!NETWORK_LIFECYCLE_LOG_ENABLED) {
     return;
   }
+  console.error(`[tidemark:network-lifecycle] ${event}`);
   workerDebugLog(handle).push(event);
   if (workerDebugLog(handle).length > 4096) {
     workerDebugLog(handle).splice(0, workerDebugLog(handle).length - 4096);
@@ -185,6 +186,7 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     fd: number;
     connection: RuntimeNetworkConnection;
   }>>();
+  const pendingNetworkConnectResolutions = new WeakMap<ProcessHandle, Map<number, Promise<bigint>>>();
 
   function networkConnectionOfds(handle: ProcessHandle): Map<number, number> {
     return networkConnectionOfdsState(handle);
@@ -469,8 +471,11 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     const previousDeliveredBytes = previousPayload === undefined
       ? undefined
       : networkRecvPayloadDeliveredBytes(previousPayload);
-    const deliveredBytes = previousDeliveredBytes !== undefined && writtenBytes !== undefined && writtenBytes > 0
-      ? previousDeliveredBytes + writtenBytes
+    const deliveredBytes = writtenBytes !== undefined && writtenBytes > 0
+      ? Math.max(
+          observedDeliveredBytes ?? 0,
+          (previousDeliveredBytes ?? safeReadBytes ?? 0) + writtenBytes,
+        )
       : observedDeliveredBytes;
     const socketSlot = snapshotNetworkSocketSlot(handle, vmPtr, fd);
     if (socketSlot !== null) {
@@ -502,6 +507,24 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
       return payload.readBytes + payload.availableBytes;
     }
     return undefined;
+  }
+
+  function networkRecvPayloadFullyConsumed(
+    handle: ProcessHandle,
+    vmPtr: number,
+    fd: number,
+  ): boolean {
+    const payload = networkRecvPayloadWatermarks(handle).get(fd);
+    if (!payload) {
+      return false;
+    }
+    const deliveredBytes = networkRecvPayloadDeliveredBytes(payload);
+    const socketIdx = socketIdxForFd(handle, vmPtr, fd);
+    const readBytes = socketIdx >= 0 ? socketReadBytesSnapshot(handle, socketIdx) : undefined;
+    return deliveredBytes !== undefined
+      && deliveredBytes > 0
+      && readBytes !== undefined
+      && readBytes >= deliveredBytes;
   }
 
   function counterAhead(sourceValue: number, targetValue: number, capacity: number): boolean {
@@ -1185,7 +1208,22 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
     return null;
   }
 
-  async function resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint> {
+  function resolveNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint> {
+    const existingResolution = pendingNetworkConnectResolutions.get(handle)?.get(vmPtr);
+    if (existingResolution) {
+      return existingResolution;
+    }
+    const resolution = performNetworkConnect(handle, vmPtr);
+    let resolutions = pendingNetworkConnectResolutions.get(handle);
+    if (!resolutions) {
+      resolutions = new Map();
+      pendingNetworkConnectResolutions.set(handle, resolutions);
+    }
+    resolutions.set(vmPtr, resolution);
+    return resolution;
+  }
+
+  async function performNetworkConnect(handle: ProcessHandle, vmPtr: number): Promise<bigint> {
     ensureNetworkBookkeeping(handle);
     if (!handle.networkBridge) {
       deps.appendWorkerDebugLog(handle, `net-connect-no-bridge:${handle.pid}`);
@@ -1252,6 +1290,11 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
 
   async function commitNetworkConnect(handle: ProcessHandle, vmPtr: number, connectResult?: bigint): Promise<void> {
     ensureNetworkBookkeeping(handle);
+    const resolutions = pendingNetworkConnectResolutions.get(handle);
+    resolutions?.delete(vmPtr);
+    if (resolutions?.size === 0) {
+      pendingNetworkConnectResolutions.delete(handle);
+    }
     const pending = pendingNetworkConnects.get(handle);
     const connect = pending?.get(vmPtr);
     if (!pending || !connect) {
@@ -1556,17 +1599,24 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
         if (pendingNetworkEof.has(connection)) {
           const pendingInbound = pendingNetworkInbound.get(connection);
           if (!pendingInbound || pendingInbound.length === 0) {
-            const restoredEofWatermark = restoreBufferedNetworkRecvFromWatermark(
-              handle,
-              vmPtr,
-              fd,
-              { allowPartialReadProgress: true },
-            );
+            const payloadFullyConsumed = networkRecvPayloadFullyConsumed(handle, vmPtr, fd);
+            const restoredEofWatermark = payloadFullyConsumed
+              ? false
+              : restoreBufferedNetworkRecvFromWatermark(
+                  handle,
+                  vmPtr,
+                  fd,
+                  { allowPartialReadProgress: true },
+                );
             if (restoredEofWatermark || hasCurrentNetworkRecvAvailable(handle, vmPtr, fd)) {
               return "idle";
             }
             const eofDeferrals = networkEofDeferrals.get(connection) ?? 0;
-            if (suppressNetworkDrainAfterInbound.has(connection) && eofDeferrals < 1) {
+            if (
+              !payloadFullyConsumed
+              && suppressNetworkDrainAfterInbound.has(connection)
+              && eofDeferrals < 1
+            ) {
               networkEofDeferrals.set(connection, eofDeferrals + 1);
               return "idle";
             }
@@ -1581,16 +1631,22 @@ export function createWorkerProcessIoHelpers(deps: WorkerProcessIoDeps) {
           ? pendingNetworkInbound.get(connection) ?? null
           : readConnectionNow(handle, vmPtr, fd, connection, chunkSize);
         if (inbound === null) {
-          const restoredEofWatermark = restoreBufferedNetworkRecvFromWatermark(
-            handle,
-            vmPtr,
-            fd,
-            { allowPartialReadProgress: true },
-          );
+          const payloadFullyConsumed = networkRecvPayloadFullyConsumed(handle, vmPtr, fd);
+          const restoredEofWatermark = payloadFullyConsumed
+            ? false
+            : restoreBufferedNetworkRecvFromWatermark(
+                handle,
+                vmPtr,
+                fd,
+                { allowPartialReadProgress: true },
+              );
           if (
-            restoredEofWatermark
-            || suppressNetworkDrainAfterInbound.has(connection)
-            || hasCurrentNetworkRecvAvailable(handle, vmPtr, fd)
+            !payloadFullyConsumed
+            && (
+              restoredEofWatermark
+              || suppressNetworkDrainAfterInbound.has(connection)
+              || hasCurrentNetworkRecvAvailable(handle, vmPtr, fd)
+            )
           ) {
             pendingNetworkEof.add(connection);
             networkEofDeferrals.set(connection, 0);

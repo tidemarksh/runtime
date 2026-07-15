@@ -1,5 +1,7 @@
 import {
   attachKernelRuntimeState,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
   readKernelRuntimeState,
 } from "../../abi.js";
 import type { RuntimeNetworkConnection } from "../../bridge/network.js";
@@ -875,6 +877,7 @@ export function snapshotSocketStateForKernelWorker(handle: ProcessHandle): Kerne
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   const memory = new Uint8Array(handle.memory.buffer);
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
+  const socketStateBytes = kernelSocketStateBytes(handle.kernel, handle.kernelState);
   const netBufUsed = currentNetBufUsed(handle);
   const maxNetBuffers = kernelNetBufferCount(handle.kernel);
   const netBufferSlotBytes = netBufferSlotBytesForHandle(handle);
@@ -883,6 +886,14 @@ export function snapshotSocketStateForKernelWorker(handle: ProcessHandle): Kerne
       handle.kernelState.socketTablePtr,
       handle.kernelState.socketTablePtr + socketTableBytes,
     ),
+    ...(socketStateBytes > socketTableBytes
+      ? {
+          socketState: memory.slice(
+            kernelSocketStatePtr(handle.kernelState),
+            kernelSocketStatePtr(handle.kernelState) + socketStateBytes,
+          ),
+        }
+      : {}),
     netBufSlots: snapshotUsedNetBufferSlots(
       memory,
       handle.kernelState.netBufBase,
@@ -923,7 +934,11 @@ export function applySocketStateFromKernelWorker(
     ),
     ...preserveNetworkRecvHeadWatermarks(handle, netBufPoolBytes),
   ];
-  memory.set(snapshot.socketTable, handle.kernelState.socketTablePtr);
+  if (snapshot.socketState !== undefined) {
+    memory.set(snapshot.socketState, kernelSocketStatePtr(handle.kernelState));
+  } else {
+    memory.set(snapshot.socketTable, handle.kernelState.socketTablePtr);
+  }
   applyKernelWorkerNetBuffers(handle, memory, snapshot);
   restoreNetworkSocketSlotsForHandle(handle, preservedSocketSlots);
   restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);

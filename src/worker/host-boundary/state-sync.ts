@@ -56,6 +56,7 @@ import {
   isEpollPassiveUntilWake,
   isEpollWakeRetryPending,
   isBlockedRpcPending,
+  markBlockedRpcDeferredRetry,
   setBlockedPassiveUntilWake,
   setEpollPassiveUntilWake,
   setEpollWakeRetryPending,
@@ -305,8 +306,24 @@ export function createWorkerSchedulerStateSyncHelpers(
           continue;
         }
         switch (action) {
-          case "skip":
+          case "skip": {
+            if (
+              isBlockedRpcPending(blocked)
+              && blocked.status === member.kernel.abi_status_pipe_wait()
+              && supervisorBlockedWaitStatusMatchesWakeSource(
+                member.kernel,
+                blocked.status,
+                wakeSource,
+              )
+            ) {
+              markBlockedRpcDeferredRetry(blocked);
+              deps.appendRuntimeLifecycleEvent(
+                member.runtimeId,
+                `pipe-wake-defer-rpc:${member.pid}:vm=0x${blocked.vmPtr.toString(16)}:status=${blocked.status}`,
+              );
+            }
             continue;
+          }
           case "retry":
             break;
           case "clear-pipe-sync-and-retry":

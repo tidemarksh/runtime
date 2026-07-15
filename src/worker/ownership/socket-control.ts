@@ -1,4 +1,5 @@
 import type { RuntimeNetworkBridge } from "../../bridge/network.js";
+import { kernelSocketStateBytes, kernelSocketStatePtr } from "../../abi.js";
 import { requireKernelSocketCount } from "../../kernel-socket-layout.js";
 import type {
   KernelWorkerFdEntrySnapshot,
@@ -475,6 +476,7 @@ export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorke
     return undefined;
   }
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
+  const socketStateBytes = kernelSocketStateBytes(handle.kernel, handle.kernelState);
   const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
   if (socketTableBytes <= 0 || netBufPoolBytes <= 0) {
     return undefined;
@@ -485,6 +487,14 @@ export function snapshotSocketStateForThread(handle: ProcessHandle): KernelWorke
       handle.kernelState.socketTablePtr,
       handle.kernelState.socketTablePtr + socketTableBytes,
     ),
+    ...(socketStateBytes > socketTableBytes
+      ? {
+          socketState: memory.slice(
+            kernelSocketStatePtr(handle.kernelState),
+            kernelSocketStatePtr(handle.kernelState) + socketStateBytes,
+          ),
+        }
+      : {}),
     netBufPool: memory.slice(
       handle.kernelState.netBufBase,
       handle.kernelState.netBufBase + netBufPoolBytes,

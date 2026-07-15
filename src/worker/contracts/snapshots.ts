@@ -32,6 +32,7 @@ export interface KernelWorkerNetBufferSnapshot {
 
 export interface KernelWorkerSocketStateSnapshot {
   socketTable: Uint8Array;
+  socketState?: Uint8Array;
   netBufPool?: Uint8Array;
   netBufSlots?: KernelWorkerNetBufferSnapshot[];
   socketUsed: number;

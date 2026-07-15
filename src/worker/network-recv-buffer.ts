@@ -371,6 +371,59 @@ export function preserveNetworkRecvBuffers(
   return preserved;
 }
 
+export function reconcileNetworkRecvBufferConsumers(
+  handle: ProcessHandle,
+  vmPtr: number,
+  preserved: PreservedNetworkRecvBuffer[],
+): void {
+  if (preserved.length === 0) {
+    return;
+  }
+  const maxSockets = requireKernelSocketCount(handle.kernel);
+  const netBufferCount = maxSockets * 2;
+  const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
+  const netBufferBytes = netBufferCount > 0 ? netBufPoolBytes / netBufferCount : 0;
+  if (!Number.isInteger(netBufferBytes) || netBufferBytes <= NET_BUFFER_HEADER_BYTES) {
+    return;
+  }
+  const byOffset = new Map(preserved.map((buffer) => [buffer.offset, buffer]));
+  for (const fd of runtimeNetworkFds(handle)) {
+    const payload = networkRecvPayloadWatermarks(handle).get(fd);
+    if (
+      payload?.readBytes === undefined
+      || payload.availableBytes === undefined
+      || payload.recvBufIdx < 0
+      || payload.recvBufIdx >= netBufferCount
+    ) {
+      continue;
+    }
+    const socketIdx = kernelSocketIndexForFd(handle, vmPtr, fd);
+    if (socketIdx < 0 || kernelSocketRecvBufferIndex(handle, socketIdx) !== payload.recvBufIdx) {
+      continue;
+    }
+    const readBytesRaw = kernelSocketReadBytes(handle, socketIdx);
+    const readBytes = typeof readBytesRaw === "bigint" ? Number(readBytesRaw) : readBytesRaw;
+    if (!Number.isSafeInteger(readBytes)) {
+      continue;
+    }
+    const consumed = (readBytes as number) - payload.readBytes;
+    if (consumed < 0 || consumed > payload.availableBytes) {
+      continue;
+    }
+    const buffer = byOffset.get(payload.recvBufIdx * netBufferBytes);
+    if (!buffer) {
+      continue;
+    }
+    const head = (payload.head + consumed) % payload.capacity;
+    buffer.head = head;
+    buffer.forceHead = true;
+    payload.head = head;
+    payload.readBytes = readBytes as number;
+    payload.availableBytes -= consumed;
+    networkRecvHeadWatermarks(handle).set(fd, head);
+  }
+}
+
 export function preserveUsedNetBufferHeads(
   handle: ProcessHandle,
   netBufPoolBytes: number,

@@ -6,6 +6,7 @@ import type { KernelRuntimeState } from "../../../../src/abi.js";
 import { POLLFD_BYTES } from "../../../../src/layout/poll.js";
 import {
   isPipeCanonicalEofReady,
+  markBlockedRpcDeferredRetry,
   setPipeCanonicalEofReady,
 } from "../../../../src/worker/host-blocked-state.js";
 import { snapshotPendingGuestMemoryWritesForNextStep } from "../../../../src/worker/thread-step-payload.js";
@@ -198,6 +199,32 @@ test("blocked-rpc follows supervisor pipe defer action", async () => {
     1,
     "blocked-rpc-defer-pipe-supervisor:1",
   );
+});
+
+test("blocked-rpc schedules a pipe wake deferred during the in-flight RPC", async () => {
+  const kernel = makeKernel();
+  const worker = {} as Worker;
+  const vmPtr = 0x1234;
+  kernel.setStatus(kernel.abi_status_pipe_wait());
+  kernel.supervisor_blocked_pipe_resume_action = vi.fn(() =>
+    kernel.supervisor_blocked_pipe_resume_action_defer()
+  );
+  const handle = makeHandle(kernel, worker);
+  const blocked = hostExecutionState(handle).hostBlockedWorkers.get(worker);
+  markBlockedRpcDeferredRetry(blocked as never);
+  const clearHostBlockedRetryTimer = vi.fn();
+  const scheduleSupervisorBlockedRetry = vi.fn();
+  const { helpers } = makeHelpers(handle, worker, {
+    clearHostBlockedRetryTimer,
+    scheduleSupervisorBlockedRetry,
+  });
+
+  await expect(
+    helpers.executeHostBlockedSyscallResume(handle, worker, vmPtr, kernel.abi_status_pipe_wait()),
+  ).resolves.toBeUndefined();
+
+  expect(clearHostBlockedRetryTimer).toHaveBeenCalledWith(handle, worker);
+  expect(scheduleSupervisorBlockedRetry).toHaveBeenCalledWith(handle, worker);
 });
 
 test("blocked-rpc follows supervisor pipe direct action and captures read writeback", async () => {

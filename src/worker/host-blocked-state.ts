@@ -3,6 +3,7 @@ import type { HostBlockedWorkerState } from "./types.js";
 interface HostBlockedEffectState {
   rpcPending: boolean;
   rpcGeneration: number;
+  rpcDeferredRetryPending: boolean;
   passiveUntilWake: boolean;
   epollPassiveUntilWake: boolean;
   epollWakeRetryPending: boolean;
@@ -23,6 +24,7 @@ function effectState(blocked: HostBlockedWorkerState): HostBlockedEffectState {
     state = {
       rpcPending: false,
       rpcGeneration: 0,
+      rpcDeferredRetryPending: false,
       passiveUntilWake: false,
       epollPassiveUntilWake: false,
       epollWakeRetryPending: false,
@@ -95,8 +97,22 @@ export function finishBlockedRpc(
 export function invalidateBlockedRpc(blocked: HostBlockedWorkerState): number {
   const state = effectState(blocked);
   state.rpcPending = false;
+  state.rpcDeferredRetryPending = false;
   state.rpcGeneration += 1;
   return state.rpcGeneration;
+}
+
+export function markBlockedRpcDeferredRetry(blocked: HostBlockedWorkerState): void {
+  effectState(blocked).rpcDeferredRetryPending = true;
+}
+
+export function consumeBlockedRpcDeferredRetry(blocked: HostBlockedWorkerState): boolean {
+  const state = effectState(blocked);
+  if (!state.rpcDeferredRetryPending) {
+    return false;
+  }
+  state.rpcDeferredRetryPending = false;
+  return true;
 }
 
 export function isBlockedPassiveUntilWake(

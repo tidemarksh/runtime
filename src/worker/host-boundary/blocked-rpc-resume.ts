@@ -36,6 +36,7 @@ import {
 } from "../ownership/ofd-metadata.js";
 import {
   beginBlockedRpc as beginHostBlockedRpc,
+  consumeBlockedRpcDeferredRetry,
   finishBlockedRpc as finishHostBlockedRpc,
   getBlockedRpcGeneration,
   isPipeCanonicalEofReady,
@@ -49,6 +50,7 @@ export interface WorkerKernelRpcBlockedRpcDeps {
   appendWorkerDebugLog(handle: ProcessHandle, event: string): void;
   failProcess(handle: ProcessHandle, error: Error): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
+  scheduleSupervisorBlockedRetry(handle: ProcessHandle, worker: Worker): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   requestPipeStateSync(handle: ProcessHandle, wakeWaiters?: boolean): Promise<void>;
   syncBlockedForkSharedStateViaKernelWorker(handle: ProcessHandle, sourceVmPtr: number | undefined, cause: SyncCause): Promise<void>;
@@ -156,6 +158,10 @@ async function executeHostBlockedSyscallResume(
       || !finishHostBlockedRpc(blocked, rpcGeneration)
     ) {
       return;
+    }
+    if (consumeBlockedRpcDeferredRetry(blocked)) {
+      deps.clearHostBlockedRetryTimer(handle, worker);
+      deps.scheduleSupervisorBlockedRetry(handle, worker);
     }
     if (!preserveCanonicalEofReadyOnFinish) {
       setPipeCanonicalEofReady(blocked, false);
@@ -412,13 +418,14 @@ export function createWorkerKernelRpcBlockedRpcHelpers(deps: WorkerKernelRpcBloc
 }
 
 export function createWorkerKernelRpcBlockedRpcTestHelpers(
-  deps: Omit<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">
-    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "requestThreadWorkerBlockedResume">>
+  deps: Omit<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "scheduleSupervisorBlockedRetry" | "requestThreadWorkerBlockedResume">
+    & Partial<Pick<WorkerKernelRpcBlockedRpcDeps, "clearHostBlockedRetryTimer" | "scheduleSupervisorBlockedRetry" | "requestThreadWorkerBlockedResume">>
     & { handleHostBlockedRetryResult?: HostBlockedRetryResultHandler },
 ) {
   const internals = createWorkerKernelRpcBlockedRpcHelperInternals({
     ...deps,
     clearHostBlockedRetryTimer: deps.clearHostBlockedRetryTimer ?? (() => {}),
+    scheduleSupervisorBlockedRetry: deps.scheduleSupervisorBlockedRetry ?? (() => {}),
     requestThreadWorkerBlockedResume: deps.requestThreadWorkerBlockedResume ?? (() => {}),
   });
   return {

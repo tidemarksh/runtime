@@ -71,6 +71,7 @@ import {
   isEpollWakeRetryPending,
   setBlockedRpcGeneration,
   setBlockedRpcPending,
+  markBlockedRpcDeferredRetry,
   setEpollPassiveUntilWake,
   setEpollWakeRetryPending,
 } from "../../../../src/worker/host-blocked-state.js";
@@ -8098,6 +8099,38 @@ test("notifySchedulerProgress leaves supervisor timer owned socket wait to super
   expect(runtimeEvents).toContain(
     `blocked-retry-skip-supervisor-timer:${handle.pid}:status=${handle.kernel.abi_status_socket_recv()}:vm=0x1234`,
   );
+});
+
+test("finishing the latest blocked RPC requeues one deferred host-progress retry", () => {
+  const worker = {} as Worker;
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  const { exports: kernel } = makeKernel();
+  const handle = makeHandle(kernel, worker, threadWorkerStates);
+  const blocked = {
+    vmPtr: 0x1234,
+    status: kernel.abi_status_pipe_wait(),
+  };
+  setBlockedRpcPending(blocked as never, true);
+  setBlockedRpcGeneration(blocked as never, 7);
+  markBlockedRpcDeferredRetry(blocked as never);
+  hostExecutionState(handle).hostBlockedWorkers.set(worker, blocked as never);
+  const clearHostBlockedRetryTimer = vi.fn();
+  const scheduleSupervisorBlockedRetry = vi.fn();
+  const scheduler = createRunLoopScheduler({
+    threadWorkerStates,
+    retryHostBlockedWorker: vi.fn(),
+    clearHostBlockedRetryTimer,
+    scheduleSupervisorBlockedRetry,
+  });
+
+  expect(scheduler.finishBlockedRpc(handle, worker, 0x1234, 7)).toBe(blocked);
+  expect(clearHostBlockedRetryTimer).toHaveBeenCalledWith(handle, worker);
+  expect(scheduleSupervisorBlockedRetry).toHaveBeenCalledWith(handle, worker, ["host-progress"]);
+
+  setBlockedRpcPending(blocked as never, true);
+  setBlockedRpcGeneration(blocked as never, 8);
+  expect(scheduler.finishBlockedRpc(handle, worker, 0x1234, 8)).toBe(blocked);
+  expect(scheduleSupervisorBlockedRetry).toHaveBeenCalledTimes(1);
 });
 
 test("connect timeout completes through supervisor timer when kernel-worker exists", async () => {

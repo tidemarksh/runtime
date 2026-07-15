@@ -501,6 +501,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     blockWorker,
     clearBlockedWorker,
     clearHostBlockedRetryTimer,
+    scheduleSupervisorBlockedRetry,
     parkSupervisorFutexWait,
     requestThreadWorkerBlockedResume,
     enqueueWorker,

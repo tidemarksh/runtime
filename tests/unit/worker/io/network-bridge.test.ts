@@ -422,6 +422,65 @@ test("commitNetworkConnect adopts a successful bridge connection after the local
   expect(connection.close).not.toHaveBeenCalled();
 });
 
+test("resolveNetworkConnect reuses an in-flight blocked connect until commit", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const view = new Uint8Array(memory.buffer);
+  const connection = {
+    close: vi.fn(async () => {}),
+    read: vi.fn(() => undefined),
+    write: vi.fn(),
+  };
+  let finishConnect: ((result: { connection: typeof connection }) => void) | undefined;
+  const bridge = {
+    connect: vi.fn()
+      .mockImplementationOnce(() => new Promise<{ connection: typeof connection }>((resolve) => {
+      finishConnect = resolve;
+      }))
+      .mockResolvedValue({ connection }),
+  };
+  const handle = {
+    pid: 42,
+    runtimeId: 1,
+    vmPtr: 0x2000,
+    memory,
+    networkBridge: bridge,
+    runtimeBridge: {
+      notifySab: new SharedArrayBuffer(8),
+      stateSab: new SharedArrayBuffer(176),
+    },
+    kernelState: {
+      netBufBase: 0,
+    },
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      kernel_net_buf_pool_bytes: () => 0,
+      abi_econnrefused: () => 111,
+      supervisor_socket_connect_fd: () => 3,
+      supervisor_socket_connect_peer_addr: (_vmPtr: number, dstPtr: number) => {
+        view.set([2, 0, 0x1f, 0x90, 127, 0, 0, 1], dstPtr);
+        return 8;
+      },
+      thread_a0: () => 0n,
+      thread_status: () => 30,
+      thread_socket_idx_for_fd: vi.fn(() => -1),
+      supervisor_socket_commit_external_connect_result: vi.fn(() => 0),
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  const helpers = createWorkerProcessIoHelpers(createDeps());
+
+  const first = helpers.resolveNetworkConnect(handle, 0x2000);
+  const duplicate = helpers.resolveNetworkConnect(handle, 0x2000);
+
+  expect(bridge.connect).toHaveBeenCalledTimes(1);
+  finishConnect?.({ connection });
+  await expect(Promise.all([first, duplicate])).resolves.toEqual([0n, 0n]);
+
+  await helpers.commitNetworkConnect(handle, 0x2000, 0n);
+  await expect(helpers.resolveNetworkConnect(handle, 0x2000)).resolves.toBe(0n);
+  expect(bridge.connect).toHaveBeenCalledTimes(2);
+});
+
 test("commitNetworkConnect drops bridge connection when supervisor rejects the connect result", async () => {
   const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
   const view = new Uint8Array(memory.buffer);
@@ -1068,6 +1127,85 @@ test("bridge EOF is deferred immediately after inbound injection even when recv 
   expect(handle.kernel.thread_socket_close_external_peer).not.toHaveBeenCalled();
   expect(connection.close).not.toHaveBeenCalled();
   expect(networkConnections(handle).get(7)).toBe(connection);
+});
+
+test("async bridge EOF closes the peer before resuming after the guest consumed the payload", async () => {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+  const response = new TextEncoder().encode("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+  const netBufBase = 0x10000;
+  const netBufBytes = 4096;
+  const netBuf = new DataView(memory.buffer, netBufBase, 16);
+  let readCalls = 0;
+  let readBytes = 0;
+  let recvAvailable = 0;
+  let resolveEof: ((value: null) => void) | null = null;
+  const connection = {
+    close: vi.fn(async () => {}),
+    write: vi.fn(),
+    read: vi.fn(() => {
+      readCalls += 1;
+      if (readCalls === 1) {
+        return response;
+      }
+      return new Promise<null>((resolve) => {
+        resolveEof = resolve;
+      });
+    }),
+  };
+  const deps = createDeps();
+  const handle = {
+    pid: 42,
+    vmPtr: 0x3000,
+    memory,
+    kernelState: { netBufBase },
+    kernel: {
+      kernel_heap_ptr: () => 0x100,
+      abi_max_fds: () => 16,
+      abi_max_sockets: () => 1,
+      abi_fd_type_socket: () => 8,
+      abi_enotconn: () => -107,
+      abi_enotsock: () => -88,
+      kernel_net_buf_pool_bytes: () => netBufBytes * 2,
+      process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 7 ? 7 : 0,
+      kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 8 : 0,
+      thread_socket_idx_for_fd: vi.fn(() => 0),
+      thread_socket_state: vi.fn(() => 3),
+      thread_socket_recv_buf_idx: vi.fn(() => 0),
+      thread_socket_recv_available: vi.fn(() => recvAvailable),
+      thread_socket_read_bytes: vi.fn(() => readBytes),
+      thread_socket_peer_idx: vi.fn(() => 1),
+      thread_socket_mark_external_peer: vi.fn(() => 0),
+      supervisor_socket_close_external_peer: vi.fn(),
+      thread_socket_drain_outbound: vi.fn(() => 0),
+      thread_socket_inject_inbound: vi.fn((_vmPtr: number, _fd: number, srcPtr: number, srcLen: number) => {
+        new Uint8Array(memory.buffer, netBufBase + 16, srcLen)
+          .set(new Uint8Array(memory.buffer, srcPtr, srcLen));
+        netBuf.setUint32(4, srcLen, true);
+        recvAvailable = srcLen;
+        return srcLen;
+      }),
+    },
+  } as unknown as ProcessHandle;
+  withSupervisorSocketDefaults(handle.kernel);
+  seedNetworkConnections(handle, [[7, connection]]);
+  const helpers = createWorkerProcessIoHelpers(deps);
+
+  await expect(helpers.pumpNetworkConnections(handle, 0x3000)).resolves.toBe(true);
+  expect(resolveEof).not.toBeNull();
+
+  readBytes = response.length;
+  recvAvailable = 0;
+  netBuf.setUint32(0, response.length, true);
+  resolveEof?.(null);
+
+  await vi.waitFor(() => {
+    expect(handle.kernel.supervisor_socket_close_external_peer).toHaveBeenCalledWith(0x3000, 7);
+  });
+  expect(connection.close).toHaveBeenCalledTimes(1);
+  expect(deps.requestSocketStateSync).toHaveBeenCalledWith(handle, true);
+  expect(deps.requestSocketStateSync.mock.invocationCallOrder[0]).toBeLessThan(
+    deps.pumpProcess.mock.invocationCallOrder[0],
+  );
 });
 
 test("bridge EOF marks peer shutdown but preserves the guest socket until fd close", async () => {

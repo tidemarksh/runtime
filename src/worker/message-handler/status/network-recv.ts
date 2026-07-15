@@ -4,6 +4,7 @@ import {
   netBufUsedMaskFromBufferIndices,
   preserveClosedNetworkRecvBuffers,
   preserveNetworkRecvBuffers as preserveNetworkRecvBuffersCommon,
+  reconcileNetworkRecvBufferConsumers,
   preserveUsedNetBufferHeads,
   preservedSocketRecvBufferIndices,
   readNetworkRecvBufferDebug,
@@ -36,6 +37,7 @@ export {
   readNetworkRecvBufferDebug,
   restoreMergedNetBufferHeads,
   restoreNetworkRecvBufferProducers,
+  reconcileNetworkRecvBufferConsumers,
 };
 
 export function pruneStatusNetworkConnectionsFromFdEntries(

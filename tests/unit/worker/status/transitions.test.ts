@@ -993,6 +993,11 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
   };
   addKernelShareMember(handle, parent as never);
   const deps = makeDeps(worker);
+  setThreadOwnerPid(deps.threadWorkerStates.get(worker)! as never, 4);
+  let finishConnect: ((result: bigint) => void) | undefined;
+  deps.resolveNetworkConnect.mockImplementation(() => new Promise<bigint>((resolve) => {
+    finishConnect = resolve;
+  }));
   deps.processHandles.set(1, parent as never);
   deps.processHandles.set(4, handle as never);
   const transition = createWorkerStatusTransitionHandler(deps as never);
@@ -1016,16 +1021,19 @@ test("STATUS_CONNECT restores the runtime network bridge from a related handle",
     completedSyncEffects: 0,
   });
 
+  expect(getThreadOwnerAsyncStatus(deps.threadWorkerStates.get(worker)! as never)).toBe(28);
+  finishConnect?.(0n);
   await vi.waitFor(() => {
     expect(deps.commitNetworkConnect).toHaveBeenCalledWith(handle, 0x1234, 0n);
+    expect(deps.enqueueWorker).toHaveBeenCalledTimes(1);
   });
   expect(deps.resolveNetworkConnect).toHaveBeenCalledWith(handle, 0x1234);
   expect(handle.networkBridge).toBe(bridge);
   expect(deps.resumeConnectViaKernelWorker).toHaveBeenCalledWith(handle, worker, 0x1234, 0n);
-  expect(deps.enqueueWorker).toHaveBeenCalledTimes(1);
   expect(deps.commitNetworkConnect.mock.invocationCallOrder[0]).toBeLessThan(
     deps.enqueueWorker.mock.invocationCallOrder[0],
   );
+  expect(getThreadOwnerAsyncStatus(deps.threadWorkerStates.get(worker)! as never)).toBeNull();
   expect(deps.pumpNetworkConnections).not.toHaveBeenCalled();
   expect(deps.blockWorker).not.toHaveBeenCalled();
 });

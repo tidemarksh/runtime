@@ -50,6 +50,7 @@ export interface WorkerScheduler {
     options?: { clearPipeSyncBeforeRetry?: boolean },
   ): void;
   clearHostBlockedRetryTimer(handle: ProcessHandle, worker: Worker): void;
+  scheduleSupervisorBlockedRetry(handle: ProcessHandle, worker: Worker): void;
   parkSupervisorFutexWait(handle: ProcessHandle, worker: Worker, vmPtr: number, source: string): void;
   requestThreadWorkerBlockedResume(handle: ProcessHandle, worker: Worker): void;
   enqueueWorker(handle: ProcessHandle, worker: Worker): void;

@@ -1,5 +1,7 @@
 import type { KernelExports, KernelRuntimeState, StatusCodes } from "../abi.js";
 import {
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
   readKernelRuntimeState,
   supervisorOfdFdType,
   supervisorOfdHostFd,
@@ -886,6 +888,7 @@ function snapshotSocketState(
   }
   const memory = new Uint8Array(kernelExports.memory.buffer);
   const socketTableBytes = kernelExports.kernel_socket_table_bytes();
+  const socketStateBytes = kernelSocketStateBytes(kernelExports, kernelState);
   const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
   const maxBuffers = kernelNetBufferCount(kernelExports);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
@@ -907,6 +910,14 @@ function snapshotSocketState(
       kernelState.socketTablePtr,
       kernelState.socketTablePtr + socketTableBytes,
     ),
+    ...(socketStateBytes > socketTableBytes
+      ? {
+          socketState: memory.slice(
+            kernelSocketStatePtr(kernelState),
+            kernelSocketStatePtr(kernelState) + socketStateBytes,
+          ),
+        }
+      : {}),
     netBufSlots,
     socketUsed: kernelState.socketUsed,
     netBufUsed: kernelState.netBufUsed,

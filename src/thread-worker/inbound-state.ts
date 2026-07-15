@@ -1,5 +1,9 @@
 import type { KernelExports, KernelRuntimeState } from "../abi.js";
-import { attachKernelRuntimeState } from "../abi.js";
+import {
+  attachKernelRuntimeState,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
+} from "../abi.js";
 import { kernelNetBufferCount } from "../kernel-socket-layout.js";
 import {
   readRuntimeFdAuthorityEpoch,
@@ -256,16 +260,25 @@ function applySocketState(
   }
   const memory = new Uint8Array(kernelExports.memory.buffer);
   const socketTableBytes = kernelExports.kernel_socket_table_bytes();
+  const socketStateBytes = kernelSocketStateBytes(kernelExports, kernelState);
   const netBufPoolBytes = kernelExports.kernel_net_buf_pool_bytes();
   const maxBuffers = kernelNetBufferCount(kernelExports);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxBuffers);
   if (
     socketState.socketTable.length !== socketTableBytes
+    || (
+      socketState.socketState !== undefined
+      && socketState.socketState.length !== socketStateBytes
+    )
     || (socketState.netBufPool !== undefined && socketState.netBufPool.length !== netBufPoolBytes)
   ) {
     return;
   }
-  memory.set(socketState.socketTable, kernelState.socketTablePtr);
+  if (socketState.socketState !== undefined) {
+    memory.set(socketState.socketState, kernelSocketStatePtr(kernelState));
+  } else {
+    memory.set(socketState.socketTable, kernelState.socketTablePtr);
+  }
   if (socketState.netBufPool !== undefined) {
     memory.set(socketState.netBufPool, kernelState.netBufBase);
   } else if (netBufSlotBytes > 0) {

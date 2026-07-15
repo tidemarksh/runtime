@@ -1,4 +1,8 @@
-import { attachKernelRuntimeState } from "../../../abi.js";
+import {
+  attachKernelRuntimeState,
+  kernelSocketStateBytes,
+  kernelSocketStatePtr,
+} from "../../../abi.js";
 import { FS_RING_TOTAL_BYTES } from "../../../layout/fs-ring.js";
 import { kernelNetBufferCount } from "../../../kernel-socket-layout.js";
 import {
@@ -42,6 +46,7 @@ import {
   preservedSocketRecvBufferIndices,
   preserveUsedNetBufferHeads,
   readNetworkRecvBufferDebug,
+  reconcileNetworkRecvBufferConsumers,
   restoreMergedNetBufferHeads,
   restoreNetworkRecvBufferProducers,
 } from "./network-recv.js";
@@ -195,10 +200,6 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   if (!msg.socketState) {
     return;
   }
-  const currentSocketUsed = handle.kernelState.socketUsed | handle.kernel.kernel_socket_used();
-  const currentNetBufUsed = handle.kernelState.netBufUsed
-    | handle.kernel.kernel_net_buf_used()
-    | deriveNetBufUsedFromSocketSlots(handle, currentSocketUsed);
   const debugFds = runtimeNetworkFds(handle);
   const socketDebugEntry = (fd: number, source: string) => {
     const socketIdx = handle.kernel.thread_socket_idx_for_fd?.(msg.vmPtr, fd) ?? -1;
@@ -234,6 +235,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
     return;
   }
   const socketTableBytes = handle.kernel.kernel_socket_table_bytes();
+  const socketStateBytes = kernelSocketStateBytes(handle.kernel, handle.kernelState);
   const netBufPoolBytes = handle.kernel.kernel_net_buf_pool_bytes();
   const maxNetBuffers = kernelNetBufferCount(handle.kernel);
   const netBufSlotBytes = Math.floor(netBufPoolBytes / maxNetBuffers);
@@ -247,11 +249,15 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
     ));
   if (
     msg.socketState.socketTable.length !== socketTableBytes
+    || (
+      msg.socketState.socketState !== undefined
+      && msg.socketState.socketState.length !== socketStateBytes
+    )
     || !netBufPoolSizeValid
     || !netBufSlotsSizeValid
   ) {
     if (debugFds.size > 0) {
-      appendStatusSocketDebug(handle, `socket-state-skip:${handle.pid}:reason=size:socket=${msg.socketState.socketTable.length}/${socketTableBytes}:net=${msg.socketState.netBufPool?.length ?? -1}/${netBufPoolBytes}:slots=${msg.socketState.netBufSlots?.length ?? 0}`);
+      appendStatusSocketDebug(handle, `socket-state-skip:${handle.pid}:reason=size:socket=${msg.socketState.socketTable.length}/${socketTableBytes}:full=${msg.socketState.socketState?.length ?? -1}/${socketStateBytes}:net=${msg.socketState.netBufPool?.length ?? -1}/${netBufPoolBytes}:slots=${msg.socketState.netBufSlots?.length ?? 0}`);
     }
     return;
   }
@@ -267,10 +273,14 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   const preservedNetBufferHeads = preserveUsedNetBufferHeads(
     handle,
     netBufPoolBytes,
-    currentNetBufUsed | msg.socketState.netBufUsed | preservedSocketNetBufUsed,
+    msg.socketState.netBufUsed | preservedSocketNetBufUsed,
     preservedSocketRecvBuffers,
   ).concat(preserveClosedNetworkRecvBuffers(handle, netBufPoolBytes));
-  memory.set(msg.socketState.socketTable, handle.kernelState.socketTablePtr);
+  if (msg.socketState.socketState !== undefined) {
+    memory.set(msg.socketState.socketState, kernelSocketStatePtr(handle.kernelState));
+  } else {
+    memory.set(msg.socketState.socketTable, handle.kernelState.socketTablePtr);
+  }
   if (msg.socketState.netBufPool !== undefined) {
     memory.set(msg.socketState.netBufPool, handle.kernelState.netBufBase);
   } else if (netBufSlotBytes > 0) {
@@ -278,8 +288,9 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
       memory.set(slot.bytes, handle.kernelState.netBufBase + slot.bufferIndex * netBufSlotBytes);
     }
   }
+  reconcileNetworkRecvBufferConsumers(handle, msg.vmPtr, preservedRecvBuffers);
   restoreNetworkSocketSlots(memory, socketTablePtrs(handle), preservedSocketSlots);
-  const mergedSocketUsed = msg.socketState.socketUsed | currentSocketUsed | preservedSocketUsed;
+  const mergedSocketUsed = msg.socketState.socketUsed | preservedSocketUsed;
   const derivedNetBufUsed = deriveNetBufUsedFromSocketSlots(handle, mergedSocketUsed);
   restoreNetworkRecvBufferProducers(memory, handle.kernelState.netBufBase, preservedRecvBuffers);
   restoreMergedNetBufferHeads(memory, handle.kernelState.netBufBase, preservedNetBufferHeads);
@@ -287,7 +298,7 @@ export function applyThreadSocketState(handle: ProcessHandle, msg: ThreadWorkerS
   handle.kernelState = {
     ...handle.kernelState,
     socketUsed: mergedSocketUsed,
-    netBufUsed: msg.socketState.netBufUsed | currentNetBufUsed | derivedNetBufUsed | preservedSocketNetBufUsed,
+    netBufUsed: msg.socketState.netBufUsed | derivedNetBufUsed | preservedSocketNetBufUsed,
   };
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   if (debugFds.size > 0) {

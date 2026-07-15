@@ -102,6 +102,33 @@ test("applyThreadWorkerInboundState applies fd, pipe, socket, guest write, and w
   expect(attachCall?.[11]).toBe(3n);
 });
 
+test("applyThreadWorkerInboundState applies the complete Kernel socket state", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  const kernelExports = makeKernelExports(memory);
+  const kernelState = {
+    ...makeState(),
+    socketStatePtr: 0xc0,
+    socketStateBytes: 24,
+  };
+  kernelExports.kernel_socket_state_ptr = () => 0xc0;
+  kernelExports.kernel_socket_state_bytes = () => 24;
+  const socketState = Uint8Array.from({ length: 24 }, (_, index) => 0x60 + index);
+
+  applyThreadWorkerInboundState({ kernelExports, guestBase: 0 }, {
+    kernelState,
+    targetVmPtr: 0x1234,
+    socketState: {
+      socketTable: new Uint8Array(16),
+      socketState,
+      socketUsed: 1,
+      netBufUsed: 0n,
+    },
+  });
+
+  expect([...bytes.slice(0xc0, 0xd8)]).toEqual([...socketState]);
+});
+
 test("applyThreadWorkerInboundState delegates exited-thread publications to Kernel", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const kernelExports = makeKernelExports(memory);

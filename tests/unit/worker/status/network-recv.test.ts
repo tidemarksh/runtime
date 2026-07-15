@@ -1,8 +1,11 @@
 import { expect, test, vi } from "vite-plus/test";
 import {
   deriveNetBufUsedFromSocketSlots,
+  preserveNetworkRecvBuffers,
   preserveNetworkRecvForKernelMemoryWrite,
   pruneStatusNetworkConnectionsFromFdEntries,
+  reconcileNetworkRecvBufferConsumers,
+  restoreNetworkRecvBufferProducers,
 } from "../../../../src/worker/message-handler/status/network-recv.js";
 import {
   networkClosedFds,
@@ -10,6 +13,7 @@ import {
   networkConnectionOfds,
   networkConnections,
   networkRecvHeadWatermarks,
+  networkRecvPayloadWatermarks,
   networkRecvTailWatermarks,
 } from "../../../../src/worker/network-socket-state.js";
 import { runtimeNetworkFds } from "../../../../src/worker/ownership/socket-control.js";
@@ -24,6 +28,56 @@ test("status network recv derives used net buffers from live socket slots", () =
   });
 
   expect(deriveNetBufUsedFromSocketSlots(handle as never, 0b11)).toBe(0b1010n);
+});
+
+test("status network recv retains proven consumer progress while restoring host payload", () => {
+  let readBytes = 0;
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_max_sockets: () => 1,
+      kernel_net_buf_pool_bytes: () => 64,
+      thread_socket_idx_for_fd: (_vmPtr: number, fd: number) => fd === 4 ? 0 : -1,
+      thread_socket_peer_idx: () => -1,
+      thread_socket_recv_buf_idx: () => 0,
+      thread_socket_state: () => 3,
+      thread_socket_external_peer: () => 1,
+      thread_socket_read_bytes: () => BigInt(readBytes),
+      thread_socket_recv_available: () => 0,
+    }),
+  });
+  seedNetworkSocketState(handle, {
+    connections: [[4, {}]],
+    recvPayloadWatermarks: [[4, {
+      recvBufIdx: 0,
+      capacity: 16,
+      head: 0,
+      tail: 10,
+      readBytes: 0,
+      availableBytes: 10,
+      deliveredBytes: 10,
+      data: Uint8Array.from({ length: 16 }, (_, index) => index + 1),
+    }]],
+  });
+  const memory = new Uint8Array(handle.memory.buffer);
+  const view = new DataView(handle.memory.buffer);
+  view.setUint32(0x4000, 0, true);
+  view.setUint32(0x4004, 10, true);
+  memory.set(Uint8Array.from({ length: 16 }, (_, index) => index + 1), 0x4010);
+  const preserved = preserveNetworkRecvBuffers(handle as never, 0x1234, 64);
+
+  view.setUint32(0x4000, 10, true);
+  view.setUint32(0x4004, 10, true);
+  readBytes = 10;
+  reconcileNetworkRecvBufferConsumers(handle as never, 0x1234, preserved);
+  restoreNetworkRecvBufferProducers(memory, 0x4000, preserved);
+
+  expect(view.getUint32(0x4000, true)).toBe(10);
+  expect(view.getUint32(0x4004, true)).toBe(10);
+  expect(networkRecvPayloadWatermarks(handle as never).get(4)).toEqual(expect.objectContaining({
+    head: 10,
+    readBytes: 10,
+    availableBytes: 0,
+  }));
 });
 
 test("status network recv lists runtime network fds", () => {

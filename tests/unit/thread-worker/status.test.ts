@@ -178,6 +178,50 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
   expect(lastFutexWaitDebug).toBeUndefined();
 });
 
+test("postThreadWorkerStatus publishes the complete Kernel socket state", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const socketStatePtr = 0x3000;
+  const socketTableBytes = 16;
+  const socketStateBytes = 32;
+  const expected = Uint8Array.from({ length: socketStateBytes }, (_, index) => 0x40 + index);
+  new Uint8Array(kernelExports.memory.buffer).set(expected, socketStatePtr);
+  Object.assign(kernelExports, {
+    abi_max_sockets: () => 1,
+    kernel_socket_table_ptr: () => socketStatePtr,
+    kernel_socket_table_bytes: () => socketTableBytes,
+    kernel_socket_state_ptr: () => socketStatePtr,
+    kernel_socket_state_bytes: () => socketStateBytes,
+    kernel_socket_used: () => 1,
+    kernel_net_buf_base: () => 0x3100,
+    kernel_net_buf_pool_bytes: () => 16,
+    kernel_net_buf_used: () => 0n,
+  });
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 7,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, 0, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as {
+    socketState?: { socketTable: Uint8Array; socketState?: Uint8Array };
+  };
+  expect([...msg.socketState!.socketTable]).toEqual([...expected.subarray(0, socketTableBytes)]);
+  expect([...msg.socketState!.socketState!]).toEqual([...expected]);
+});
+
 test("postThreadWorkerStatus omits unchanged owned state from routine status", () => {
   const postMessage = vi.fn();
   Object.defineProperty(globalThis, "postMessage", {
