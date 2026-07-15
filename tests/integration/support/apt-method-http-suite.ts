@@ -2588,6 +2588,8 @@ function createAsyncMethodNetworkBridge(
   metrics?: MethodBridgeMetrics,
 ): RuntimeNetworkBridge {
   const eventLimit = traceBridgeWrites ? 256 : 64;
+  const requestCaptureLimit = 1024 * 1024;
+  let capturedRequestChars = 0;
   const record = (event: string): void => {
     if (events.length < eventLimit) {
       events.push(event);
@@ -2661,8 +2663,15 @@ function createAsyncMethodNetworkBridge(
             metrics.writes += 1;
           }
           const request = decoder.decode(data);
-          requestText += request;
-          requests.push(request);
+          if (requestText.length < requestCaptureLimit) {
+            requestText += request.slice(0, requestCaptureLimit - requestText.length);
+          }
+          const remainingCaptureChars = requestCaptureLimit - capturedRequestChars;
+          if (remainingCaptureChars > 0) {
+            const captured = request.slice(0, remainingCaptureChars);
+            requests.push(captured);
+            capturedRequestChars += captured.length;
+          }
           if (request.includes("GET ")) {
             sawRequest = true;
           }
@@ -2935,11 +2944,13 @@ function compactAptMethodExecFailureDebug(summary: string): string {
   const processLifecycle = summary.match(/process_lifecycle_tail=\[([^\]]*)\]/)?.[1] ?? "";
   const focusedLifecycle = processLifecycle
     .split(", ")
-    .filter((entry) => /exec|fork|spawn|child|method|exit|fail|handoff|ownership/.test(entry))
+    .filter((entry) => /exec|fork|spawn|child|method|exit|fail|handoff|ownership|blocked-state|pipe-sync/.test(entry))
     .slice(-48);
   return JSON.stringify({
     processes,
     focusedLifecycle,
+    blockedStates: matches(/blocked-state:[^,\]]+/g, 16),
+    pipeSyncEvents: matches(/(?:pipe-sync|blocked-retry)[^,\]]*/g, 32),
     methodPathEvents: methodPathMatches(summary, 32),
     execveErrors: matches(/execve_error=[^ ]+/g, 16),
     execveStageTrace: matches(/execve_stage_trace=\[[^\]]*\]/g, 8),
@@ -4783,7 +4794,13 @@ export function registerAptGetUpdateParentTest(): void {
 test("apt-get update local gate: parent acquire loop exits after in-memory HTTP response", async () => {
   const guestRequests: string[] = [];
   const bridgeEvents: string[] = [];
-  const prepared = await prepareAptGetRuntime(createAsyncMethodNetworkBridge(guestRequests, bridgeEvents));
+  const metrics = createMethodBridgeMetrics();
+  const prepared = await prepareAptGetRuntime(createAsyncMethodNetworkBridge(
+    guestRequests,
+    bridgeEvents,
+    selectMethodResponseBody,
+    metrics,
+  ));
   if (!prepared) {
     return;
   }
@@ -4845,6 +4862,7 @@ test("apt-get update local gate: parent acquire loop exits after in-memory HTTP 
         detail,
         `guestRequests=${JSON.stringify(guestRequests)}`,
         `bridgeEvents=${JSON.stringify(bridgeEvents)}`,
+        `metrics=${compactMethodBridgeMetrics(metrics)}`,
         `output=${JSON.stringify(output)}`,
         `partialInRelease=${await describeGuestFile(runtime, methodAcquireFilename)}`,
         `finalInRelease=${await describeGuestFile(runtime, "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_InRelease")}`,
@@ -5229,7 +5247,7 @@ test("apt-get update local gate: package index request reaches in-memory bridge"
       }
     });
 
-    await waitForBridgeRequestOrExit(guestRequests, proc, asyncDoneTimeoutMs).catch(async (error) => {
+    await waitForPackageIndexRequestCount(guestRequests, proc, 1, asyncDoneTimeoutMs).catch(async (error) => {
       const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
       const debugSummary = await runtimeDebugSummary(runtime);
       throw new Error([
