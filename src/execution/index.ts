@@ -4,6 +4,11 @@ export {
   executeInterpreterStep,
   type InterpreterExecutionEngineOptions,
 } from "./interpreter.js";
+export {
+  createJitExecutionEngine,
+  hasJitExecutionAbi,
+  type JitModuleFactory,
+} from "./jit.js";
 export type {
   ExecutionBoundaryStatusCodes,
   ExecutionControlBoundary,
@@ -13,4 +18,3 @@ export type {
   ExecutionStepRequest,
   ExecutionStepResult,
 } from "./types.js";
-

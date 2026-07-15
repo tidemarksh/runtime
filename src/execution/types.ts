@@ -1,6 +1,6 @@
 import type { KernelExports, StatusCodes } from "../abi.js";
 
-export type ExecutionEngineKind = "interpreter";
+export type ExecutionEngineKind = "interpreter" | "jit";
 
 export type ExecutionControlBoundary =
   | "continue"
@@ -11,7 +11,17 @@ export type ExecutionControlBoundary =
 
 export type ExecutionKernelExports = Pick<
   KernelExports,
-  "thread_step" | "debug_thread_step_no_block_cache" | "thread_status"
+  | "memory"
+  | "thread_step"
+  | "thread_step_jit"
+  | "thread_jit_module_ptr"
+  | "thread_jit_module_len"
+  | "thread_jit_install"
+  | "thread_jit_compiled_id"
+  | "thread_jit_complete"
+  | "thread_jit_clear_pending"
+  | "debug_thread_step_no_block_cache"
+  | "thread_status"
 >;
 
 export interface ExecutionStepRequest {

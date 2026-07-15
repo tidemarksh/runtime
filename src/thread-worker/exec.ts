@@ -4,6 +4,7 @@ import {
   type RuntimeStateBridge,
 } from "../bridge/runtime-state.js";
 import { executeInterpreterStep } from "../execution/interpreter.js";
+import type { ExecutionEngine } from "../execution/types.js";
 import { clearSyscallTrace } from "./debug.js";
 import {
   handleFutexWait,
@@ -27,6 +28,7 @@ interface ThreadWorkerExecContext {
   eintrErrno: number;
   futexWaitSliceMs: number;
   runtimeBridge: RuntimeStateBridge | null;
+  executionEngine?: ExecutionEngine;
   postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
   recordFutexWaitDebug?(debug: string): void;
@@ -57,7 +59,10 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     clearSyscallTrace(ctx.exports);
     const effectiveBudget = requestedBudget;
     publishStage(ctx, 2, effectiveBudget);
-    const execution = executeInterpreterStep({
+    const execution = ctx.executionEngine?.step({
+      vmPtr: ctx.vmPtr,
+      budget: effectiveBudget,
+    }) ?? executeInterpreterStep({
       exports: ctx.exports,
       statusCodes: ctx.statusCodes,
       vmPtr: ctx.vmPtr,

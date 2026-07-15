@@ -1116,6 +1116,14 @@ export interface KernelExports {
 
   // Thread execution
   thread_step(vm_ptr: number, budget: number): number;
+  thread_step_jit?(vm_ptr: number, budget: number): number;
+  thread_jit_module_ptr?(vm_ptr: number): number;
+  thread_jit_module_len?(vm_ptr: number): number;
+  thread_jit_module_entry_pc?(vm_ptr: number): bigint;
+  thread_jit_install?(vm_ptr: number, moduleId: number): number;
+  thread_jit_compiled_id?(vm_ptr: number): number;
+  thread_jit_complete?(vm_ptr: number, executed: number): number;
+  thread_jit_clear_pending?(vm_ptr: number): void;
   debug_thread_step_no_block_cache?(vm_ptr: number, budget: number): number;
   thread_status(vm_ptr: number): number;
   thread_exit_code(vm_ptr: number): number;

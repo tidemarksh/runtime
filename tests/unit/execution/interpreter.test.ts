@@ -89,7 +89,7 @@ test("execution boundary classification covers syscall, fault, blocking, and inv
   expect(classifyExecutionBoundary(statusCodes.JIT_READY, statusCodes)).toBe("invalidation");
 });
 
-test("execution exposes only interpreter engine construction for section 14", () => {
+test("execution keeps an explicit interpreter fallback", () => {
   const engine = createInterpreterExecutionEngine({
     exports: {
       thread_step: () => 0,
@@ -107,6 +107,7 @@ test("execution implementation does not import fd ownership or scheduler policy 
   const sources = [
     readFileSync(resolve(sourceRoot, "types.ts"), "utf8"),
     readFileSync(resolve(sourceRoot, "interpreter.ts"), "utf8"),
+    readFileSync(resolve(sourceRoot, "jit.ts"), "utf8"),
     readFileSync(resolve(sourceRoot, "index.ts"), "utf8"),
   ].join("\n");
 
