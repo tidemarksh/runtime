@@ -933,8 +933,12 @@ export function createWorkerSchedulerQueueHelpers(
       snapshotProcessFdEntriesForThread(handle, vmPtr ?? 0),
     );
     const pendingKernelState = takePendingKernelStateForNextStep(thread);
+    const stepSequence = thread === undefined
+      ? 0
+      : getThreadActivityState(thread).stepCount;
     const stepMessage: ThreadWorkerInbound = {
       type: "step",
+      stepSequence,
       budget: stepBudget,
       kernelState: pendingKernelState ?? handle.kernelState,
     };

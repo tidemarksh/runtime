@@ -62,6 +62,7 @@ export type ThreadWorkerInbound =
     }
   | {
       type: "step";
+      stepSequence: number;
       budget: number;
       processIdentity?: ThreadWorkerProcessIdentity;
       exitedThreads?: ThreadWorkerExitedThreadPublication[];
@@ -93,6 +94,7 @@ export interface ThreadWorkerReadyMessage {
 export interface ThreadWorkerStatusMessage {
   type: "status";
   generation: number;
+  stepSequence?: number;
   status: number;
   exitCode: number;
   termSignal: number;

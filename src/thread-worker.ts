@@ -56,6 +56,7 @@ let statusCodes: StatusCodes;
 let vmPtr = 0;
 let guestBase = 0;
 let generation = 0;
+let stepSequence = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let executionEngine: ExecutionEngine | undefined;
@@ -216,6 +217,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
     vmPtr,
     guestBase,
     generation,
+    stepSequence,
     runtimeBridge,
     lastResumeBlockedDebug,
     lastFutexWaitDebug,
@@ -345,6 +347,7 @@ await bindWorkerMessageHandler<ThreadWorkerInbound>(async (event) => {
       break;
     case "step":
       try {
+        stepSequence = msg.stepSequence;
         const kernelExports = requireExports();
         attachKernelRuntimeState(kernelExports, msg.kernelState);
         applyThreadWorkerInboundState({

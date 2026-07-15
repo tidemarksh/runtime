@@ -24,7 +24,10 @@ import {
   setThreadWaitingInWorkerStatus,
 } from "../../../../src/worker/thread-host-state.js";
 import { getThreadExecveProcessState } from "../../../../src/worker/thread-execve-state.js";
-import { getThreadActivityState } from "../../../../src/worker/thread-activity-state.js";
+import {
+  getThreadActivityState,
+  threadLatestStepAnswered,
+} from "../../../../src/worker/thread-activity-state.js";
 import { snapshotPendingPipeSlotSnapshots } from "../../../../src/worker/pending-pipe-slot-state.js";
 import { setProcessMemfsDirty } from "../../../../src/worker/process-memfs-state.js";
 import {
@@ -1746,7 +1749,8 @@ test("status handler logs quoted write debug fields before wait handling", () =>
   const memory = new WebAssembly.Memory({ initial: 8, maximum: 8, shared: true });
   const worker = {} as Worker;
   const threadWorkerStates = new WeakMap<Worker, { vmPtr: number; initialized: boolean; waitingInWorkerStatus: number | null }>();
-  threadWorkerStates.set(worker, makeThreadState());
+  const thread = makeThreadState({ stepCount: 1 });
+  threadWorkerStates.set(worker, thread);
 
   const handler = createWorkerStatusMessageHandler({
     threadWorkerStates,
@@ -1875,6 +1879,8 @@ test("status handler logs quoted write debug fields before wait handling", () =>
   expect(view.getUint32(12, true)).toBe(SUPERVISOR_THREAD_EVENT_KIND_BLOCKED);
   expect(view.getUint32(36, true)).toBe(11);
   expect(view.getUint32(40, true)).toBe(20);
+  expect(getThreadActivityState(thread as never).statusCount).toBe(0);
+  expect(threadLatestStepAnswered(thread as never)).toBe(false);
 });
 
 test("status handler routes waitInWorker CONNECT through the connect transition", async () => {

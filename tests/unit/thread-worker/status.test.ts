@@ -150,6 +150,7 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
     vmPtr: 0x1234,
     guestBase: 0,
     generation: 7,
+    stepSequence: 41,
     runtimeBridge: null,
     lastResumeBlockedDebug,
     lastFutexWaitDebug,
@@ -165,6 +166,7 @@ test("postThreadWorkerStatus owns status outbound assembly", () => {
   expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
     type: "status",
     generation: 7,
+    stepSequence: 41,
     status: 0,
     waitInWorker: true,
     vmPtr: 0x1234,

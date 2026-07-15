@@ -226,7 +226,21 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       }
       return;
     }
+    const currentStepSequence = getThreadActivityState(thread).stepCount;
+    if (
+      msg.stepSequence !== undefined
+      && msg.stepSequence !== currentStepSequence
+    ) {
+      deps.appendWorkerDebugLog(
+        handle,
+        `status-stale-step:0x${thread.vmPtr.toString(16)}`
+          + `:msg=${msg.stepSequence}:current=${currentStepSequence}:status=${msg.status}`,
+      );
+      return;
+    }
     const status = msg.status;
+    const waitInWorkerRequiresLocalWaitHandling = msg.waitInWorker === true
+      && status !== handle.kernel.abi_status_connect();
     const pendingWaitingStatus = getThreadWaitingInWorkerStatus(thread);
     if (pendingWaitingStatus !== null && status !== pendingWaitingStatus) {
       clearSupervisorHostTimer(handle, thread.vmPtr);
@@ -436,7 +450,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       );
     }
     const activity = getThreadActivityState(thread);
-    activity.statusCount += 1;
+    if (!waitInWorkerRequiresLocalWaitHandling) {
+      activity.statusCount += 1;
+    }
     recordWorkerMessageDebugEvent(workerMessageDebugStats(handle), "statusHandled");
     activity.statusCounts[String(status)] = (activity.statusCounts[String(status)] ?? 0) + 1;
     activity.lastStatus = status;
@@ -676,8 +692,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         ? effects | syncEffects.syncEffectPipeState
         : effects;
     };
-    const waitInWorkerRequiresLocalWaitHandling = msg.waitInWorker
-      && status !== handle.kernel.abi_status_connect();
     if (waitInWorkerRequiresLocalWaitHandling) {
       const waitInWorkerSyncEffects = completedSyncEffectsForMessage(status, msg);
       submitShadowThreadEvent(msg, status, waitInWorkerSyncEffects);

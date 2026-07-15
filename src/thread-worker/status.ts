@@ -67,6 +67,7 @@ let statusCodes: StatusCodes;
 let vmPtr = 0;
 let guestBase = 0;
 let generation = 0;
+let stepSequence = 0;
 let runtimeBridge: RuntimeStateBridge | null = null;
 let lastResumeBlockedDebug: string | undefined;
 let lastFutexWaitDebug: string | undefined;
@@ -88,6 +89,7 @@ export interface ThreadWorkerStatusContext {
   vmPtr: number;
   guestBase: number;
   generation: number;
+  stepSequence: number;
   runtimeBridge: RuntimeStateBridge | null;
   lastResumeBlockedDebug: string | undefined;
   lastFutexWaitDebug: string | undefined;
@@ -1078,6 +1080,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   const msg: ThreadWorkerOutbound = {
     type: "status",
     generation,
+    stepSequence,
     status,
     exitCode: kernelExports.thread_exit_code(vmPtr),
     termSignal: kernelExports.thread_term_signal(vmPtr),
@@ -1144,6 +1147,7 @@ export function postThreadWorkerStatus(
   vmPtr = context.vmPtr;
   guestBase = context.guestBase;
   generation = context.generation;
+  stepSequence = context.stepSequence;
   runtimeBridge = context.runtimeBridge;
   lastResumeBlockedDebug = context.lastResumeBlockedDebug;
   lastFutexWaitDebug = context.lastFutexWaitDebug;
