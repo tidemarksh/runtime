@@ -1379,18 +1379,20 @@ test("kernel-worker fs outcome skips regular file fd state when status flags cha
   ))).toBe(true);
 });
 
-test("kernel-worker fs outcome applies regular file fd state when live offset advanced", async () => {
+test("kernel-worker fs outcome applies regular file write state when response generation advanced", async () => {
   const ringBase = 0x3000;
   let currentOffset = 0n;
+  let fdGeneration = 1;
   const kernel = {
     ...makeKernel(),
-    thread_pending_fs_opcode: () => FS_OP_READ,
+    thread_pending_fs_opcode: () => FS_OP_WRITE,
     thread_pending_fs_effects: () => 4,
     thread_pending_fs_target_ino: () => 42,
     thread_fs_ring_base: () => ringBase,
     supervisor_fs_pending_regular_file_fd: () => 3,
     supervisor_fs_pending_regular_file_ofd: () => 5,
     process_fd_ofd_id: (_vmPtr: number, fd: number) => fd === 3 ? 5 : 0,
+    process_fd_generation: (_vmPtr: number, fd: number) => fd === 3 ? fdGeneration : 0,
     process_set_fd_entry: vi.fn(),
     kernel_ofd_fd_type: (ofdId: number) => ofdId === 5 ? 3 : 0,
     kernel_ofd_host_fd: () => -1,
@@ -1398,9 +1400,10 @@ test("kernel-worker fs outcome applies regular file fd state when live offset ad
     kernel_ofd_status_flags: () => 0,
     kernel_ofd_offset: (ofdId: number) => ofdId === 5 ? currentOffset : 0n,
   };
-  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_READ, 3);
+  seedFsRingRequest(kernel.memory, ringBase, 0x1234, FS_OP_WRITE, 3);
   const kernelWorkerRequest = vi.fn(async () => {
     currentOffset = 16n;
+    fdGeneration = 2;
     new DataView(kernel.memory.buffer).setUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, 1, true);
     return {
       type: "fs-processed",
@@ -1410,7 +1413,7 @@ test("kernel-worker fs outcome applies regular file fd state when live offset ad
       memfsMutated: false,
       ofdStateChanged: true,
       fdEntries: [
-        { fd: 3, ofdId: 5, fdFlags: 0 },
+        { fd: 3, ofdId: 5, fdFlags: 0, generation: 2 },
       ],
       ofdSlots: [
         { ofdId: 5, slot: makeOfdSlotSnapshot({ fileType: 3, hostFd: -1, ino: 42, offset: 8n }) },

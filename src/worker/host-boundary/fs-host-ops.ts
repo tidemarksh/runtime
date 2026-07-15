@@ -387,6 +387,7 @@ function formatRegularFilePendingFsDebugSuffix(
       `host=${request.identity.hostFd}`,
       `status=${request.identity.statusFlags}`,
       `offset=${request.identity.offset.toString()}`,
+      `generation=${request.generation ?? "n/a"}`,
     ].join("/");
   }
   return [
@@ -397,6 +398,7 @@ function formatRegularFilePendingFsDebugSuffix(
     `host=${supervisorOfdHostFd(handle, request.ofdId)}`,
     `status=${supervisorOfdStatusFlags(handle, request.ofdId)}`,
     `offset=${supervisorOfdOffset(handle, request.ofdId).toString()}`,
+    `generation=${request.generation ?? "n/a"}`,
   ].join("/");
 }
 
@@ -547,7 +549,7 @@ function formatFdEntrySummary(
   const nonzeroEntries = (fdEntries ?? [])
     .filter((entry) => entry.ofdId !== 0)
     .slice(0, 16)
-    .map((entry) => `${entry.fd}->${entry.ofdId}/${entry.fdFlags}`);
+    .map((entry) => `${entry.fd}->${entry.ofdId}/${entry.fdFlags}/g${entry.generation ?? "n/a"}`);
   return nonzeroEntries.length > 0 ? nonzeroEntries.join(",") : "none";
 }
 
@@ -1389,6 +1391,34 @@ function currentRegularFileOfdMatchesRequest(
     currentIdentity,
     { compareOffset: false },
   );
+}
+
+function regularFileResponseMatchesCurrentRequest(
+  handle: ProcessHandle,
+  vmPtr: number,
+  request: PendingRegularFileFsRequest,
+  fdEntries: readonly KernelWorkerFdEntrySnapshot[] | undefined,
+  ofdSlots: readonly KernelWorkerOfdSlotSnapshot[] | undefined,
+): boolean {
+  const responseFd = fdEntries?.find((entry) => (
+    entry.fd === request.fd
+    && entry.ofdId === request.ofdId
+  ));
+  const currentGeneration = handle.kernel.process_fd_generation?.(vmPtr, request.fd);
+  if (
+    responseFd?.generation === undefined
+    || currentGeneration === undefined
+    || responseFd.generation !== currentGeneration
+    || supervisorProcessOfdForFd(handle, vmPtr, request.fd) !== responseFd.ofdId
+    || supervisorProcessFdFlagsForFd(handle, vmPtr, request.fd) !== responseFd.fdFlags
+    || !currentRegularFileOfdMatchesRequest(handle, request)
+  ) {
+    return false;
+  }
+  return ofdSlots?.some((snapshot) => (
+    snapshot.ofdId === request.ofdId
+    && regularFileSnapshotMatchesRequest(request, snapshot)
+  )) ?? false;
 }
 
 function filterFsResponseToRegularFileRequest(
@@ -2506,7 +2536,14 @@ async function resumeFsViaKernelWorkerOnce(
         responseFdState.fdEntries,
         responseFdState.ofdSlots,
       );
-      const requestStillCurrent = regularFileRequestCurrent;
+      const requestStillCurrent = regularFileRequestCurrent
+        || regularFileResponseMatchesCurrentRequest(
+          handle,
+          vmPtr,
+          regularFilePendingFs,
+          responseFdState.fdEntries,
+          responseFdState.ofdSlots,
+        );
       const submittedIdentityOfdApplied = !requestStillCurrent && regularFileReadHasSubmittedIdentity
         ? applySubmittedIdentityRegularFileOfdSlots(
           handle,
