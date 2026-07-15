@@ -248,6 +248,7 @@ export function createWorkerScheduler(deps: WorkerSchedulerDeps): WorkerSchedule
     if (thread !== undefined && thread.vmPtr === vmPtr) {
       clearThreadRunningGeneration(thread);
     }
+    schedulerQueueHelpers.retireSupervisorFutexWorker(handle, worker, vmPtr);
     appendWorkerDebugLog(
       handle,
       `${source}:0x${vmPtr.toString(16)}`,

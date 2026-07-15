@@ -27,6 +27,7 @@ interface ThreadWorkerExecContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
+  waitForFutexInWorker: boolean;
   runtimeBridge: RuntimeStateBridge | null;
   executionEngine?: ExecutionEngine;
   postStatus: ThreadWorkerOutcomePublisher;
@@ -76,8 +77,6 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     remainingBudget = Math.max(0, remainingBudget - consumedBudget);
 
     if (status === ctx.statusCodes.FUTEX_WAIT) {
-      // Keep futex waits inside the thread-worker so wakeups come from
-      // shared-memory Atomics.notify instead of owner-side 1ms retry polling.
       if (handleFutexWait({
         ...ctx,
         step: (nextBudget: number) => stepThread(ctx, nextBudget),

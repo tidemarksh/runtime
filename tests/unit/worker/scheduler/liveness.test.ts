@@ -6839,6 +6839,73 @@ test("pumpProcess runs process-scoped supervisor resume worker instead of TypeSc
   );
 });
 
+test("pumpProcess retains a supervisor resume until a replacement worker is initialized", () => {
+  const selectedWorker = {
+    postMessage: vi.fn(),
+  } as unknown as Worker;
+  const selectedThread = makeThreadState(0x1234);
+  setThreadInitialized(selectedThread, false);
+  const threadWorkerStates = new WeakMap<Worker, ThreadWorkerState>();
+  threadWorkerStates.set(selectedWorker, selectedThread);
+  const { exports: kernel } = makeKernel();
+  kernel.kernel_scratch_base = () => 0;
+  kernel.supervisor_resume_record_bytes = () => 48;
+  kernel.supervisor_resume_kind_runnable_thread = () => 2;
+  let resumePolled = false;
+  kernel.supervisor_process_resume = vi.fn((
+    _vmPtr: number,
+    outPtr: number,
+    outLen: number,
+  ) => {
+    if (resumePolled) {
+      return 0;
+    }
+    expect(outPtr).toBe(0);
+    expect(outLen).toBe(48);
+    writeSupervisorRunnableResumeRecord(kernel.memory, outPtr, selectedThread, 17n);
+    resumePolled = true;
+    return 48;
+  });
+  const handle = makeHandle(kernel, selectedWorker, threadWorkerStates);
+  kernel.memory = handle.memory;
+  const debugEvents: string[] = [];
+  const queue = createWorkerSchedulerQueueHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: (_handle, event) => {
+      debugEvents.push(event);
+    },
+    blockWorker: () => {},
+    clearHostBlockedRetryTimer: () => {},
+    takeThreadWorkerBlockedResume: () => false,
+    isSupervisorFutexWaiter: () => false,
+    completeProcessExit: async () => {},
+    failProcess: (_handle, error) => {
+      throw error;
+    },
+    handleWorkerMessage: () => {},
+    threadWorkerStates,
+  });
+
+  queue.pumpProcess(handle);
+
+  expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
+  expect(selectedWorker.postMessage).not.toHaveBeenCalled();
+  expect(hostExecutionState(handle).runningWorker).toBeNull();
+
+  setThreadInitialized(selectedThread, true);
+  queue.pumpProcess(handle);
+
+  expect(kernel.supervisor_process_resume).toHaveBeenCalledTimes(1);
+  expect(hostExecutionState(handle).runningWorker).toBe(selectedWorker);
+  expect(selectedWorker.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+    type: "step",
+  }));
+  expect(debugEvents).toContain(
+    "supervisor-resume:runnable:defer-owner-async:0x1234:tid=2:seq=17"
+      + ":status=0:owner=-1:ownerDetail=unknown:ownerAgeMs=null",
+  );
+});
+
 test("pumpProcess does not run TypeScript continuation when supervisor process resume selects no runnable worker", () => {
   const ordinaryWorker = {
     postMessage: vi.fn(),
@@ -7225,7 +7292,13 @@ test("pumpProcess leaves a quiescent worker-local futex waiter parked until its 
 });
 
 test("blockWorker parks futex wait as supervisor-owned worker state", () => {
+  const termination = new Promise<number>(() => {});
   const worker = {
+    postMessage: vi.fn(),
+    terminate: vi.fn(() => termination),
+    threadId: 2,
+  } as unknown as Worker;
+  const anchorWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
   const thread = makeThreadState(0x70bf0d7);
@@ -7236,6 +7309,8 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
     ? kernel.abi_status_futex_wait()
     : kernel.abi_status_ok();
   const handle = makeHandle(kernel, worker, threadWorkerStates);
+  handle.worker = anchorWorker;
+  addProcessWorker(handle, anchorWorker);
   hostExecutionState(handle).runningWorker = worker;
   hostExecutionState(handle).vforkReadyWorkers = [worker];
   hostExecutionState(handle).hostBlockedWorkers.set(worker, {
@@ -7262,6 +7337,9 @@ test("blockWorker parks futex wait as supervisor-owned worker state", () => {
   expect(hostExecutionState(handle).runningWorker).toBeNull();
   expect(getThreadWaitingInWorkerStatus(thread as never)).toBeNull();
   expect(getThreadRunningGeneration(thread)).toBeNull();
+  expect(processHasWorker(handle, worker)).toBe(false);
+  expect(processHasWorker(handle, anchorWorker)).toBe(true);
+  expect(worker.terminate).toHaveBeenCalledTimes(1);
   scheduler.enqueueWorker(handle, worker);
   expect(hostExecutionState(handle).vforkReadyWorkers).toEqual([]);
   expect(hostExecutionState(handle).runningWorker).toBeNull();

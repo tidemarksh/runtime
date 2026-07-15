@@ -10,6 +10,7 @@ import {
   clearThreadWaitingInWorkerStatus,
   getThreadOwnerAsyncDetail,
   getThreadOwnerAsyncStatus,
+  isThreadInitialized,
 } from "../thread-host-state.js";
 import { clearSupervisorHostTimer } from "../supervisor-host-op.js";
 import { supervisorBlockedStatusIsHostWait } from "../../supervisor-blocked-resume.js";
@@ -56,6 +57,7 @@ export interface SupervisorResumeHostBoundaryDeps {
   clearBlockedWorker(handle: ProcessHandle, worker: Worker): void;
   removeVforkReadyWorker(handle: ProcessHandle, worker: Worker): void;
   retryDeferredResumes(handle: ProcessHandle): void;
+  isThreadWorkerLeaseTransitioning?(handle: ProcessHandle, vmPtr: number): boolean;
   includeDetailedDiagnostics?: boolean;
 }
 
@@ -381,10 +383,16 @@ export function createSupervisorResumeHostBoundary(
     handle: ProcessHandle,
     record: SupervisorResumeRecord,
   ): number | null {
+    if (deps.isThreadWorkerLeaseTransitioning?.(handle, record.vmPtr) === true) {
+      return -1;
+    }
     const worker = findWorkerByVmPtr(handle, record.vmPtr);
     const thread = worker === undefined ? undefined : deps.threadWorkerStates.get(worker);
     if (thread === undefined) {
       return null;
+    }
+    if (!isThreadInitialized(thread)) {
+      return -1;
     }
     return getThreadOwnerAsyncStatus(thread);
   }
@@ -521,6 +529,11 @@ export function createSupervisorResumeHostBoundary(
       );
       return null;
     }
+    const ownerAsyncStatus = ownerAsyncStatusForResumeRecord(handle, record);
+    if (ownerAsyncStatus !== null) {
+      deferResumeRecord(handle, record, ownerAsyncStatus);
+      return null;
+    }
     return selectSupervisorResumeWorker(handle, record, "supervisor-resume:runnable");
   }
 
@@ -589,7 +602,8 @@ export function createSupervisorResumeHostBoundary(
 
   function drainSupervisorResumeQueue(handle: ProcessHandle): SupervisorResumeSelection | null {
     const nextResume = handle.kernel.supervisor_next_resume;
-    if (nextResume === undefined) {
+    const initialDeferred = deferredResumeRecords.get(handle);
+    if (nextResume === undefined && (initialDeferred === undefined || initialDeferred.length === 0)) {
       return null;
     }
     const recordBytes = supervisorResumeRecordBytes(handle);
@@ -616,6 +630,9 @@ export function createSupervisorResumeHostBoundary(
           break;
         }
         continue;
+      }
+      if (nextResume === undefined) {
+        break;
       }
       const result = nextResume.call(handle.kernel, scratch, recordBytes);
       if (result === 0) {

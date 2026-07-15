@@ -41,6 +41,7 @@ interface ThreadWorkerBlockingContext {
   threadStepBudget: number;
   eintrErrno: number;
   futexWaitSliceMs: number;
+  waitForFutexInWorker?: boolean;
   postStatus: ThreadWorkerOutcomePublisher;
   reattachPublishedKernelRuntimeState(): void;
   recordFutexWaitDebug?(debug: string): void;
@@ -120,6 +121,9 @@ export function handleFutexWait(
   }
 
   ctx.postStatus(createThreadWorkerStatusOutcome(status, true));
+  if (ctx.waitForFutexInWorker === false) {
+    return false;
+  }
 
   for (;;) {
     const wordIndex = futexWordIndex(ctx.guestBase, guestAddr, i32);

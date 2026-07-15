@@ -176,6 +176,23 @@ export function removeWorkerFromPool(worker: Worker): void {
   releaseThreadWorkerStackSlot(worker);
 }
 
+export async function terminateWorker(worker: Worker): Promise<void> {
+  const entry = workerEntryMap.get(worker);
+  if (entry) {
+    const index = workerPool.indexOf(entry);
+    if (index >= 0) {
+      workerPool.splice(index, 1);
+    }
+    workerEntryMap.delete(worker);
+  }
+  try {
+    const result = (worker as Worker & { terminate(): void | Promise<number> }).terminate();
+    await result;
+  } finally {
+    releaseThreadWorkerStackSlot(worker);
+  }
+}
+
 export function destroyWorkerPool(): void {
   if (evictionTimer !== null) {
     clearInterval(evictionTimer);

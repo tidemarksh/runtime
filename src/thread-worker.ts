@@ -66,6 +66,9 @@ const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
 const THREAD_STEP_BUDGET = readThreadStepBudget();
 const EINTR_ERRNO = 4;
 const FUTEX_WAIT_SLICE_MS = 10;
+const WAIT_FOR_FUTEX_IN_WORKER = typeof (globalThis as {
+  process?: { versions?: { node?: string } };
+}).process?.versions?.node !== "string";
 const PIPE_SLOT_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_PIPE_SLOT_DEBUG ?? "") === "1";
@@ -257,6 +260,7 @@ function step(budget: number): void {
     threadStepBudget: THREAD_STEP_BUDGET,
     eintrErrno: EINTR_ERRNO,
     futexWaitSliceMs: FUTEX_WAIT_SLICE_MS,
+    waitForFutexInWorker: WAIT_FOR_FUTEX_IN_WORKER,
     runtimeBridge,
     executionEngine,
     postStatus: postStatusOutcome,

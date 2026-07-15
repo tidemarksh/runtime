@@ -7,6 +7,7 @@ import {
   processWorkerList,
 } from "../process-worker-state.js";
 import {
+  clearWorkerMessageHandler,
   setWorkerErrorHandler,
   setWorkerMessageErrorHandler,
   setWorkerMessageHandler,
@@ -26,7 +27,13 @@ import type {
   ThreadWorkerState,
 } from "../types.js";
 import type { ThreadWorkerOutbound } from "../../messages.js";
-import { kernelStackSlotForWorker, releaseWorker } from "../pool.js";
+import {
+  acquireWorker,
+  kernelStackSlotForWorker,
+  maybeUnrefTimer,
+  releaseWorker,
+  terminateWorker,
+} from "../pool.js";
 import {
   readSupervisorFaultExitDecision,
   supervisorFaultExitKindProcessExit,
@@ -54,6 +61,7 @@ import {
   getThreadOwnerAsyncStatus,
   getThreadRunningGeneration,
   getThreadWaitingInWorkerStatus,
+  isThreadInitialized,
   setThreadHostIdentity,
   setThreadInitialized,
   setThreadReinitCount,
@@ -228,12 +236,25 @@ export function createWorkerSchedulerQueueHelpers(
 ): WorkerSchedulerQueueHelpers {
   const observedForkSharedSyncGates = new WeakMap<ProcessHandle, Promise<void>>();
   const fdTableCoherenceRetryTimers = new WeakMap<ProcessHandle, ReturnType<typeof setTimeout>>();
+  const supervisorFutexPumpTimers = new WeakMap<ProcessHandle, ReturnType<typeof setTimeout>>();
+  const transitioningWorkerLeases = new WeakMap<ProcessHandle, Set<number>>();
+  const compactedWorkerLeases = new WeakSet<ThreadWorkerState>();
+
+  function isThreadWorkerLeaseTransitioning(handle: ProcessHandle, vmPtr: number): boolean {
+    return transitioningWorkerLeases.get(handle)?.has(vmPtr) === true;
+  }
+
+  function processHasTransitioningWorkerLease(handle: ProcessHandle): boolean {
+    return (transitioningWorkerLeases.get(handle)?.size ?? 0) > 0;
+  }
+
   const supervisorResumeHostBoundary = createSupervisorResumeHostBoundary({
     threadWorkerStates: deps.threadWorkerStates,
     appendWorkerDebugLog: deps.appendWorkerDebugLog,
     clearBlockedWorker: (handle, worker) => clearBlockedWorker(deps, handle, worker),
     removeVforkReadyWorker,
     retryDeferredResumes: (handle) => pumpProcess(handle),
+    isThreadWorkerLeaseTransitioning,
     includeDetailedDiagnostics: deps.includeDetailedSupervisorDiagnostics,
   });
 
@@ -367,7 +388,11 @@ export function createWorkerSchedulerQueueHelpers(
     deleteProcessWorker(handle, worker);
   }
 
-  function attachThreadWorker(handle: ProcessHandle, request: AttachThreadWorkerRequest): void {
+  function attachThreadWorker(
+    handle: ProcessHandle,
+    request: AttachThreadWorkerRequest,
+    retainedThread?: ThreadWorkerState,
+  ): void {
     const { worker, vmPtr, forcePrepare, transferFrom, preserveMemoryBytes, preserveMemoryRanges } = request;
     const generation = nextThreadWorkerGeneration++;
     const existingThread = deps.threadWorkerStates.get(worker);
@@ -419,15 +444,21 @@ export function createWorkerSchedulerQueueHelpers(
       handle,
       `${reinitWithinHandle ? "reinit" : "attach"}:0x${vmPtr.toString(16)}${formatSchedulerStepDebugSuffix(handle, vmPtr)}`,
     );
-    const reinitCount = reinitWithinHandle ? getThreadReinitCount(existingThread) + 1 : 0;
-    const thread: ThreadWorkerState = {
-      vmPtr,
-    };
+    const reinitCount = reinitWithinHandle
+      ? getThreadReinitCount(existingThread) + 1
+      : retainedThread === undefined ? 0 : getThreadReinitCount(retainedThread) + 1;
+    const thread: ThreadWorkerState = retainedThread ?? { vmPtr };
+    thread.vmPtr = vmPtr;
     deps.threadWorkerStates.set(worker, thread);
     setThreadHostIdentity(thread, handle.pid, generation);
     setThreadReinitCount(thread, reinitCount);
     setThreadInitialized(thread, false);
-    resetThreadActivityState(thread);
+    clearThreadOwnerAsyncStatus(thread);
+    clearThreadWaitingInWorkerStatus(thread);
+    clearThreadRunningGeneration(thread);
+    if (retainedThread === undefined) {
+      resetThreadActivityState(thread);
+    }
     setWorkerMessageHandler(worker, (event: MessageEvent<ThreadWorkerOutbound>) => {
       deps.handleWorkerMessage(handle, worker, event.data);
     });
@@ -505,11 +536,87 @@ export function createWorkerSchedulerQueueHelpers(
     worker.postMessage(initMessage);
   }
 
+  function retireSupervisorFutexWorker(
+    handle: ProcessHandle,
+    worker: Worker,
+    vmPtr: number,
+  ): void {
+    const nodeWorker = worker as Worker & { threadId?: number };
+    if (
+      worker === handle.worker
+      || typeof nodeWorker.threadId !== "number"
+      || processWorkerCount(handle) <= 1
+      || isThreadWorkerLeaseTransitioning(handle, vmPtr)
+    ) {
+      return;
+    }
+    const thread = deps.threadWorkerStates.get(worker);
+    if (
+      thread === undefined
+      || thread.vmPtr !== vmPtr
+      || compactedWorkerLeases.has(thread)
+    ) {
+      return;
+    }
+    const transitioning = transitioningWorkerLeases.get(handle) ?? new Set<number>();
+    transitioning.add(vmPtr);
+    transitioningWorkerLeases.set(handle, transitioning);
+    compactedWorkerLeases.add(thread);
+    deps.appendRuntimeLifecycleEvent(
+      handle.runtimeId,
+      `supervisor-futex-worker-retire:${handle.pid}:vm=0x${vmPtr.toString(16)}`,
+    );
+    deleteProcessWorker(handle, worker);
+    deps.threadWorkerStates.delete(worker);
+    clearWorkerMessageHandler(worker);
+    setWorkerErrorHandler(worker, null);
+    setWorkerMessageErrorHandler(worker, null);
+    void terminateWorker(worker)
+      .then(() => {
+        const reattachWhenIdle = (): void => {
+          if (processExitInProgress(handle)) {
+            transitioning.delete(vmPtr);
+            return;
+          }
+          const processHostEffectInFlight = processWorkerList(handle).some((candidate) => (
+            getThreadOwnerAsyncStatus(deps.threadWorkerStates.get(candidate)) !== null
+          ));
+          if (hostExecutionState(handle).runningWorker !== null || processHostEffectInFlight) {
+            setTimeout(reattachWhenIdle, 1);
+            return;
+          }
+          const replacement = acquireWorker();
+          attachThreadWorker(handle, {
+            worker: replacement,
+            vmPtr,
+            forcePrepare: true,
+          }, thread);
+          deps.appendRuntimeLifecycleEvent(
+            handle.runtimeId,
+            `supervisor-futex-worker-reattach:${handle.pid}:vm=0x${vmPtr.toString(16)}`,
+          );
+          pumpProcess(handle);
+        };
+        reattachWhenIdle();
+      })
+      .catch((error) => {
+        transitioning.delete(vmPtr);
+        deps.failProcess(handle, error instanceof Error ? error : new Error(String(error)));
+      });
+  }
+
   function enqueueWorker(handle: ProcessHandle, worker: Worker): void {
     if (processExitInProgress(handle)) {
       return;
     }
     const thread = deps.threadWorkerStates.get(worker);
+    if (
+      thread !== undefined
+      && isThreadWorkerLeaseTransitioning(handle, thread.vmPtr)
+      && isThreadInitialized(thread)
+    ) {
+      transitioningWorkerLeases.get(handle)?.delete(thread.vmPtr);
+    }
     if (FS_LIFECYCLE_DEBUG_ENABLED) {
       appendSchedulerFsTiming(
         deps,
@@ -750,6 +857,10 @@ export function createWorkerSchedulerQueueHelpers(
     if (processExitInProgress(handle)) {
       return;
     }
+    if (processHasTransitioningWorkerLease(handle)) {
+      appendSchedulerQueueDebugLog(handle, "pump-held:worker-lease-transition");
+      return;
+    }
     if (FS_LIFECYCLE_DEBUG_ENABLED) {
       appendSchedulerFsTiming(
         deps,
@@ -826,6 +937,10 @@ export function createWorkerSchedulerQueueHelpers(
       fdTableCoherenceRetryTimers.delete(handle);
     }
     const supervisorResumeSelected = supervisorResumeHostBoundary.drainSupervisorResumeQueue(handle);
+    if (processHasTransitioningWorkerLease(handle)) {
+      appendSchedulerQueueDebugLog(handle, "pump-held:worker-lease-attach-started");
+      return;
+    }
     if (completeFaultedWaitingWorker(handle)) {
       return;
     }
@@ -870,7 +985,23 @@ export function createWorkerSchedulerQueueHelpers(
           `:ready=${hostExecutionState(handle).vforkReadyWorkers.length}`,
         );
       }
+      const hasSupervisorFutexWaiter = processWorkerList(handle).some((candidate) => (
+        deps.isSupervisorFutexWaiter(handle, candidate)
+      ));
+      if (hasSupervisorFutexWaiter && !supervisorFutexPumpTimers.has(handle)) {
+        const timer = setTimeout(() => {
+          supervisorFutexPumpTimers.delete(handle);
+          pumpProcess(handle);
+        }, 10);
+        supervisorFutexPumpTimers.set(handle, timer);
+        maybeUnrefTimer(timer);
+      }
       return;
+    }
+    const futexPumpTimer = supervisorFutexPumpTimers.get(handle);
+    if (futexPumpTimer !== undefined) {
+      clearTimeout(futexPumpTimer);
+      supervisorFutexPumpTimers.delete(handle);
     }
     hostExecutionState(handle).runningWorker = next;
     const thread = deps.threadWorkerStates.get(next);
@@ -1014,6 +1145,7 @@ export function createWorkerSchedulerQueueHelpers(
 
   return {
     attachThreadWorker,
+    retireSupervisorFutexWorker,
     enqueueWorker,
     pumpProcess,
   };
