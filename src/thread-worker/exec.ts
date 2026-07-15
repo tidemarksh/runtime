@@ -70,7 +70,10 @@ export function stepThread(ctx: ThreadWorkerExecContext, budget: number): void {
     });
     const status = execution.status;
     publishStage(ctx, 3, status);
-    remainingBudget = Math.max(0, remainingBudget - effectiveBudget);
+    const consumedBudget = Number.isFinite(execution.returnedBudget)
+      ? Math.min(effectiveBudget, Math.max(0, effectiveBudget - execution.returnedBudget))
+      : effectiveBudget;
+    remainingBudget = Math.max(0, remainingBudget - consumedBudget);
 
     if (status === ctx.statusCodes.FUTEX_WAIT) {
       // Keep futex waits inside the thread-worker so wakeups come from

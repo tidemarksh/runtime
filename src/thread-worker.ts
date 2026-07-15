@@ -48,6 +48,8 @@ import {
   applyThreadWorkerInboundState,
 } from "./thread-worker/inbound-state.js";
 import { DEFAULT_NODE_EXECUTION_STEP_BUDGET } from "./execution/budget.js";
+import { createJitExecutionEngine, hasJitExecutionAbi } from "./execution/jit.js";
+import type { ExecutionEngine } from "./execution/types.js";
 
 let exports: KernelExports | undefined;
 let statusCodes: StatusCodes;
@@ -56,6 +58,7 @@ let guestBase = 0;
 let generation = 0;
 let wasmFeatures: WasmFeatureSupport;
 let runtimeBridge: RuntimeStateBridge | null = null;
+let executionEngine: ExecutionEngine | undefined;
 let preparedInputs: ThreadWorkerPrepareInputs | null = null;
 const DEFAULT_NODE_THREAD_STEP_BUDGET = DEFAULT_NODE_EXECUTION_STEP_BUDGET;
 const DEFAULT_BROWSER_THREAD_STEP_BUDGET = 2_000;
@@ -71,6 +74,14 @@ const PIPE_RESUME_DEBUG_ENABLED = PIPE_SLOT_DEBUG_ENABLED
   }).process?.env?.TIDEMARK_PIPE_RESUME_DEBUG ?? "") === "1";
 let lastResumeBlockedDebug: string | undefined;
 let lastFutexWaitDebug: string | undefined;
+
+function jitExecutionEnabled(): boolean {
+  const env = (globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env;
+  return (env?.TIDEMARK_EXPERIMENTAL_JIT ?? "") === "1"
+    && (env?.TIDEMARK_DEBUG_DISABLE_BLOCK_CACHE ?? "") !== "1";
+}
 
 function acquireSharedMemoryForStep(buffer: ArrayBufferLike): void {
   if (runtimeBridge !== null) {
@@ -137,6 +148,12 @@ async function prepare(
   });
   const nextExports = instance.exports as unknown as KernelExports;
   exports = nextExports;
+  executionEngine = jitExecutionEnabled() && hasJitExecutionAbi(nextExports)
+    ? createJitExecutionEngine({
+      exports: nextExports,
+      statusCodes: readStatusCodes(nextExports),
+    })
+    : undefined;
   restoreThreadWorkerPrepareMemory(inputs.memory, preservedMemory);
   configureKernelInstanceStack(nextExports, kernelStackSlot);
   wasmFeatures = detectWasmFeatures();
@@ -239,6 +256,7 @@ function step(budget: number): void {
     eintrErrno: EINTR_ERRNO,
     futexWaitSliceMs: FUTEX_WAIT_SLICE_MS,
     runtimeBridge,
+    executionEngine,
     postStatus: postStatusOutcome,
     reattachPublishedKernelRuntimeState,
     recordFutexWaitDebug(debug) {

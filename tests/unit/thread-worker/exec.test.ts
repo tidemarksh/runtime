@@ -195,6 +195,39 @@ test("stepThread consumes the owner budget in worker quanta when no runtime stat
   expect(postStatus).toHaveBeenCalledWith(createThreadWorkerStatusOutcome(0));
 });
 
+test("stepThread preserves budget returned by an early kernel trace boundary", () => {
+  const clearSyscallTrace = vi.fn();
+  const returnedBudgets = [90, 0];
+  const threadStep = vi.fn(() => returnedBudgets.shift() ?? 0);
+  const postStatus = vi.fn();
+
+  stepThread({
+    exports: {
+      debug_clear_syscall_trace: clearSyscallTrace,
+      thread_step: threadStep,
+      thread_status: () => 0,
+      supervisor_thread_take_completed_sync_effects: () => 0,
+    } as never,
+    statusCodes: {
+      OK: 0,
+      FUTEX_WAIT: 20,
+      EPOLL_WAIT: 22,
+    } as never,
+    vmPtr: 0x1234,
+    guestBase: 0,
+    threadStepBudget: 100,
+    eintrErrno: 4,
+    futexWaitSliceMs: 10,
+    runtimeBridge: createRuntimeStateBridge(),
+    postStatus,
+    reattachPublishedKernelRuntimeState: () => {},
+  }, 100);
+
+  expect(threadStep).toHaveBeenNthCalledWith(1, 0x1234, 100);
+  expect(threadStep).toHaveBeenNthCalledWith(2, 0x1234, 90);
+  expect(postStatus).toHaveBeenCalledTimes(1);
+});
+
 test("stepThread publishes OK early when another runtime status arrives during a long step", () => {
   const clearSyscallTrace = vi.fn();
   const bridge = createRuntimeStateBridge();
