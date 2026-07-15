@@ -4,58 +4,16 @@ import {
   runDynamicStartupEntry,
   type DynamicStartupEntry,
 } from "../../../support/dynamic-startup-harness.js";
-import { stringifyJavaDiagnosticValue } from "./diagnostic-json.js";
 import { javaDynamicStartupEntry, javaMemory64HeadroomEntry } from "./dynamic-startup.js";
 
-function appendRuntimeFailureEvidence(
-  detail: string,
-  runtime: {
-    debugExecutionStats?: () => unknown;
-    debugLastFailureSnapshot?: () => unknown;
-  },
-): string {
-  return [
-    detail,
-    `lastFailure=${stringifyJavaDiagnosticValue(runtime.debugLastFailureSnapshot?.() ?? null)}`,
-    `executionStats=${stringifyJavaDiagnosticValue(runtime.debugExecutionStats?.() ?? [])}`,
-  ].join("\n");
-}
-
-function expectJavaTimeoutDiagnostic(detail: string): void {
-  expect(detail).not.toContain("Unsupported satp mode");
-  expect(detail).not.toContain("RuntimeError: memory access out of bounds");
-  expect(detail).toContain("timeout after 20000ms");
-  expect(detail).toContain('"ownerState":"wait:20"');
-  expectStatusNameEvidence(detail, "FUTEX_WAIT");
-  expectStatusNameEvidence(detail, "FS");
-  expect(
-    detail.includes('"ownerState":"async:6"')
-      || detail.includes('"ownerState":"running"')
-      || detail.includes('"ownerState":"blocked"')
-      || detail.includes("async=6"),
-    detail,
-  ).toBe(true);
-}
-
-function hasStatusNameEvidence(detail: string, statusName: string): boolean {
-  return detail.includes(`"lastStatusName":"${statusName}"`)
-    || (
-      detail.includes('"statusCountsByName":')
-      && detail.includes(`"${statusName}":`)
-    );
-}
-
-function expectStatusNameEvidence(detail: string, statusName: string): void {
-  expect(hasStatusNameEvidence(detail, statusName), detail).toBe(true);
-}
-
-function expectStrictNoErrorFileTimeoutDiagnostic(detail: string): void {
-  expectJavaTimeoutDiagnostic(detail);
-  expect(detail).toContain('"guestMemoryPolicyLimitBytes":"1073741824"');
-  expect(detail).toContain('"processMaxMemoryBytes":1073741824');
-  expect(detail).toContain("ret=-12");
+function expectJavaCleanExit(result: { exitCode: number; output: string; debugInfo?: string }): void {
+  const detail = `output=${JSON.stringify(result.output)}\ndebug=${result.debugInfo ?? ""}`;
+  expect(result.exitCode, detail).toBe(0);
+  expect(result.output).toContain('openjdk version "25.0.2"');
+  expect(detail).not.toContain("A fatal error has been detected by the Java Runtime Environment");
+  expect(detail).not.toContain("SIGSEGV");
+  expect(detail).not.toContain("SIGILL");
   expect(detail).not.toContain("hs_err_pid1.log");
-  expect(detail).not.toContain("rv=-95");
 }
 
 const javaInterpretedHeadroomEntry: DynamicStartupEntry = {
@@ -97,7 +55,7 @@ const javaStrictNoErrorFileEntry: DynamicStartupEntry = {
   ],
 };
 
-test("java dynamic startup diagnostic: interpreted variant preserves timeout surface", async () => {
+test("java dynamic startup diagnostic: interpreted variant exits cleanly", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaInterpretedHeadroomEntry);
   if (!prepared) {
     return;
@@ -105,30 +63,14 @@ test("java dynamic startup diagnostic: interpreted variant preserves timeout sur
 
   const { runtime, elfBytes } = prepared;
   try {
-    let detail = "";
-    try {
-      const result = await runDynamicStartupEntry(
-        runtime,
-        javaInterpretedHeadroomEntry,
-        elfBytes,
-      );
-      detail = [
-        `unexpected exit=${result.exitCode}`,
-        `output=${JSON.stringify(result.output)}`,
-        `debug=${result.debugInfo ?? ""}`,
-      ].join("\n");
-    } catch (error) {
-      detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    }
-    detail = appendRuntimeFailureEvidence(detail, runtime);
-
-    expectJavaTimeoutDiagnostic(detail);
+    const result = await runDynamicStartupEntry(runtime, javaInterpretedHeadroomEntry, elfBytes);
+    expectJavaCleanExit(result);
   } finally {
     runtime.destroy();
   }
 }, 90_000);
 
-test("java dynamic startup diagnostic: error-file-disabled interpreted variant preserves timeout surface", async () => {
+test("java dynamic startup diagnostic: error-file-disabled interpreted variant exits cleanly", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaInterpretedNoErrorFileEntry);
   if (!prepared) {
     return;
@@ -136,32 +78,14 @@ test("java dynamic startup diagnostic: error-file-disabled interpreted variant p
 
   const { runtime, elfBytes } = prepared;
   try {
-    let detail = "";
-    try {
-      const result = await runDynamicStartupEntry(
-        runtime,
-        javaInterpretedNoErrorFileEntry,
-        elfBytes,
-      );
-      detail = [
-        `unexpected exit=${result.exitCode}`,
-        `output=${JSON.stringify(result.output)}`,
-        `debug=${result.debugInfo ?? ""}`,
-      ].join("\n");
-    } catch (error) {
-      detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    }
-    detail = appendRuntimeFailureEvidence(detail, runtime);
-
-    expectJavaTimeoutDiagnostic(detail);
-    expect(detail).not.toContain("hs_err_pid1.log");
-    expect(detail).not.toContain("rv=-95");
+    const result = await runDynamicStartupEntry(runtime, javaInterpretedNoErrorFileEntry, elfBytes);
+    expectJavaCleanExit(result);
   } finally {
     runtime.destroy();
   }
 }, 120_000);
 
-test("java dynamic startup diagnostic: strict error-file-disabled variant preserves timeout surface", async () => {
+test("java dynamic startup diagnostic: strict error-file-disabled variant exits cleanly", async () => {
   const prepared = await prepareDynamicStartupRuntime(javaStrictNoErrorFileEntry);
   if (!prepared) {
     return;
@@ -169,24 +93,8 @@ test("java dynamic startup diagnostic: strict error-file-disabled variant preser
 
   const { runtime, elfBytes } = prepared;
   try {
-    let detail = "";
-    try {
-      const result = await runDynamicStartupEntry(
-        runtime,
-        javaStrictNoErrorFileEntry,
-        elfBytes,
-      );
-      detail = [
-        `unexpected exit=${result.exitCode}`,
-        `output=${JSON.stringify(result.output)}`,
-        `debug=${result.debugInfo ?? ""}`,
-      ].join("\n");
-    } catch (error) {
-      detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    }
-    detail = appendRuntimeFailureEvidence(detail, runtime);
-
-    expectStrictNoErrorFileTimeoutDiagnostic(detail);
+    const result = await runDynamicStartupEntry(runtime, javaStrictNoErrorFileEntry, elfBytes);
+    expectJavaCleanExit(result);
   } finally {
     runtime.destroy();
   }

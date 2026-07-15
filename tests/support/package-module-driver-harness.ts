@@ -32,6 +32,8 @@ export interface PackageModuleDriverEntry {
   cwd?: string;
   timeoutMs: number;
   guestMemoryPolicyLimitBytes: number;
+  maxProcessMemoryPages?: number;
+  maxForkMemoryPages?: number;
   hostFileBackingMode?: SnapshotBuildOptions["hostFileBackingMode"];
   snapshotSources: readonly SnapshotSource[];
   expectedDriverSubstrings?: readonly string[];
@@ -64,6 +66,8 @@ export async function preparePackageModuleDriverRuntime(
   const runtime = await Runtime.create({
     wasmBytes,
     guestMemoryPolicyLimitBytes: entry.guestMemoryPolicyLimitBytes,
+    maxProcessMemoryPages: entry.maxProcessMemoryPages,
+    maxForkMemoryPages: entry.maxForkMemoryPages,
   });
   try {
     const snapshot = await applySnapshotSourcesToRuntime(runtime, entry.snapshotSources, {

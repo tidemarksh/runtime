@@ -63,7 +63,7 @@ test(`java package/module driver isolation: ${javaIsolationEntry.id}`, async () 
   } finally {
     runtime.destroy();
   }
-}, 20_000);
+}, javaIsolationEntry.timeoutMs + 60_000);
 
 test(`java package/module driver isolation: ${javaVersionWithPackageSnapshotEntry.id}`, async () => {
   const prepared = await preparePackageModuleDriverRuntime(javaVersionWithPackageSnapshotEntry);
@@ -111,4 +111,4 @@ test(`java package/module driver isolation: ${javaVersionWithPackageSnapshotEntr
   } finally {
     runtime.destroy();
   }
-}, 20_000);
+}, javaVersionWithPackageSnapshotEntry.timeoutMs + 60_000);
