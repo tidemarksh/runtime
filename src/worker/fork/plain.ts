@@ -22,7 +22,6 @@ import {
 import {
   adoptKernelShare,
   discardCopiedSharedKernelObjects,
-  reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
   restoreLocalPipeSlots,
   snapshotLocalPipeSlots,
@@ -329,7 +328,6 @@ export async function handlePlainFork(
       restoreIncompatibleLocalOfdSlots(childHandle, preservedChildHeldOfdSlots);
       syncKernelShareOfdReservations(childHandle);
     }
-    reconcileKernelSharePipeControl(handle);
     deps.appendWorkerDebugLog(
       handle,
       `plain-fork-parent:spawn-child:${childPid}:vm=0x${childHandle.vmPtr.toString(16)}`,

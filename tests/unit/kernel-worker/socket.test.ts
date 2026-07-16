@@ -3,6 +3,7 @@ import { expect, test } from "vite-plus/test";
 import { readKernelRuntimeState, type KernelExports, type KernelRuntimeState } from "../../../src/abi.js";
 import { createKernelWorkerPrimitives } from "../../../src/kernel-worker/primitives.js";
 import { createKernelWorkerSharedStateSync } from "../../../src/kernel-worker/shared-state-sync.js";
+import { SOCKET_SLOT_COOKIE_OFFSET } from "../../../src/layout/socket.js";
 
 type TestKernelExports = KernelExports;
 
@@ -39,6 +40,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     abi_max_fds: () => 256,
     abi_max_sockets: () => 64,
     abi_max_threads: () => 64,
+    abi_fd_type_socket: () => 8,
     kernel_heap_base: () => runtimeState.heapBase,
     kernel_heap_ptr: () => runtimeState.heapPtr,
     kernel_ofd_table_ptr: () => runtimeState.ofdTablePtr,
@@ -54,7 +56,7 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     kernel_epoll_table_bytes: () => 64 * 4,
     kernel_epoll_instance_bytes: () => 64 * 16 + 4,
     kernel_socket_table_ptr: () => runtimeState.socketTablePtr,
-    kernel_socket_table_bytes: () => 64 * 128,
+    kernel_socket_table_bytes: () => 64 * 512,
     kernel_socket_used: () => runtimeState.socketUsed,
     kernel_pipe_base: () => runtimeState.pipeBase,
     kernel_pipe_region_bytes: () => 64 * (32 + 4096),
@@ -111,6 +113,9 @@ function makeKernelExports(memory: WebAssembly.Memory): TestKernelExports {
     process_fd_ofd_id: () => 0,
     process_thread_vm_ptr: (_vmPtr: number, slot: number) => (slot === 0 ? 0x1234 : 0),
     thread_blocked_ofd_id: () => 0,
+    supervisor_ofd_fd_type: () => 0,
+    supervisor_ofd_reconcile_refcount: () => 0,
+    supervisor_process_held_ofd_refcount: () => 0,
   };
 
   return exports as unknown as TestKernelExports;
@@ -150,6 +155,20 @@ function seedSocketState(
 
 function netBufferSlotBytes(exports: TestKernelExports): number {
   return Math.floor(exports.kernel_net_buf_pool_bytes() / (exports.abi_max_sockets() * 2));
+}
+
+function setSocketCookie(
+  memory: WebAssembly.Memory,
+  socketTablePtr: number,
+  slotBytes: number,
+  socketIdx: number,
+  cookie: bigint,
+): void {
+  new DataView(memory.buffer).setBigUint64(
+    socketTablePtr + socketIdx * slotBytes + SOCKET_SLOT_COOKIE_OFFSET,
+    cookie,
+    true,
+  );
 }
 
 function seedNetBuffer(
@@ -243,6 +262,94 @@ test("kernel-worker socket sync propagates canonical state to shared members onl
   expect(new Uint8Array(parentMemory.buffer)[makeKernelState().socketTablePtr + 8]).toBe(0x10);
   expect(new Uint8Array(childMemory.buffer)[makeKernelState().socketTablePtr + 8]).toBe(0x10);
   expect(new Uint8Array(canonicalMemory.buffer)[makeKernelState().socketTablePtr + 8]).toBe(0x10);
+});
+
+test("kernel-worker socket sync preserves a slot held only by another process", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+  const state = makeKernelState();
+  const slotBytes = canonicalExports.kernel_socket_table_bytes() / canonicalExports.abi_max_sockets();
+  const protectedSlot = 2;
+  const peerSlot = 3;
+
+  parentExports.supervisor_process_socket_held_ofd = (_vmPtr, index) => index === 0 ? 21 : 0;
+  parentExports.supervisor_ofd_ino = (ofdId) => ofdId === 21 ? protectedSlot : 0;
+  childExports.supervisor_process_socket_held_ofd = () => 0;
+  childExports.supervisor_ofd_ino = () => 0;
+
+  seedSocketState(canonicalExports, canonicalMemory, 0b1100, 1n, 0, 0);
+  seedSocketState(parentExports, parentMemory, 0b1100, 1n, 0, 0);
+  seedSocketState(childExports, childMemory, 0b1100, 1n, 0, 0);
+  const canonicalBytes = new Uint8Array(canonicalMemory.buffer);
+  const childBytes = new Uint8Array(childMemory.buffer);
+  setSocketCookie(canonicalMemory, state.socketTablePtr, slotBytes, protectedSlot, 0xa2n);
+  setSocketCookie(childMemory, state.socketTablePtr, slotBytes, protectedSlot, 0xb2n);
+  canonicalBytes[state.socketTablePtr + protectedSlot * slotBytes + 8] = 0xa2;
+  canonicalBytes[state.socketTablePtr + peerSlot * slotBytes + 8] = 0xa3;
+  childBytes[state.socketTablePtr + protectedSlot * slotBytes + 8] = 0xb2;
+  childBytes[state.socketTablePtr + peerSlot * slotBytes + 8] = 0xb3;
+
+  sharedStateSync.syncSocketState(2, readKernelRuntimeState(childExports));
+
+  expect(canonicalBytes[state.socketTablePtr + protectedSlot * slotBytes + 8]).toBe(0xa2);
+  expect(canonicalBytes[state.socketTablePtr + peerSlot * slotBytes + 8]).toBe(0xb3);
+  expect(new Uint8Array(parentMemory.buffer)[state.socketTablePtr + protectedSlot * slotBytes + 8]).toBe(0xa2);
+  expect(new Uint8Array(parentMemory.buffer)[state.socketTablePtr + peerSlot * slotBytes + 8]).toBe(0xb3);
+});
+
+test("kernel-worker socket sync accepts updates to a held slot with the same socket cookie", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+  const state = makeKernelState();
+  const slotBytes = canonicalExports.kernel_socket_table_bytes() / canonicalExports.abi_max_sockets();
+  const heldSlot = 2;
+
+  parentExports.supervisor_process_socket_held_ofd = (_vmPtr, index) => index === 0 ? 21 : 0;
+  parentExports.supervisor_ofd_ino = (ofdId) => ofdId === 21 ? heldSlot : 0;
+  childExports.supervisor_process_socket_held_ofd = () => 0;
+  childExports.supervisor_ofd_ino = () => 0;
+
+  seedSocketState(canonicalExports, canonicalMemory, 0b100, 0n, 0, 0);
+  seedSocketState(parentExports, parentMemory, 0b100, 0n, 0, 0);
+  seedSocketState(childExports, childMemory, 0b100, 0n, 0, 0);
+  setSocketCookie(canonicalMemory, state.socketTablePtr, slotBytes, heldSlot, 0xa2n);
+  setSocketCookie(childMemory, state.socketTablePtr, slotBytes, heldSlot, 0xa2n);
+  new Uint8Array(canonicalMemory.buffer)[state.socketTablePtr + heldSlot * slotBytes + 8] = 0xa2;
+  new Uint8Array(childMemory.buffer)[state.socketTablePtr + heldSlot * slotBytes + 8] = 0xb2;
+
+  sharedStateSync.syncSocketState(2, readKernelRuntimeState(childExports));
+
+  expect(new Uint8Array(canonicalMemory.buffer)[state.socketTablePtr + heldSlot * slotBytes + 8]).toBe(0xb2);
+});
+
+test("kernel-worker socket sync asks the canonical kernel to release unheld socket OFDs", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const reconciled: Array<[number, number]> = [];
+  canonicalExports.supervisor_ofd_fd_type = (ofdId) => ofdId === 23 ? 8 : 0;
+  canonicalExports.supervisor_ofd_reconcile_refcount = (ofdId, expectedRefcount) => {
+    reconciled.push([ofdId, expectedRefcount]);
+    return expectedRefcount;
+  };
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  sharedStateSync.syncSocketState(2, readKernelRuntimeState(childExports));
+
+  expect(reconciled).toEqual([[23, 0]]);
 });
 
 test("kernel-worker socket sync does not rewind a process-local net buffer consumer head", () => {

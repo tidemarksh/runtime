@@ -48,7 +48,6 @@ import {
   restoreRegularFileOffsetsForStep,
   snapshotOfdSlotsForThread,
 } from "../ownership/ofd-table.js";
-import { reconcileKernelSharePipeControl } from "../kernel-share.js";
 import { snapshotSocketStateForThread } from "../ownership/socket-control.js";
 import { supervisorProcessOwnerMatches } from "../process-identity.js";
 import {
@@ -86,6 +85,7 @@ import {
   takePendingKernelMemoryWritesForNextStep,
   takePendingPipeSlotsForNextStep,
 } from "../thread-step-payload.js";
+
 import {
   appendSchedulerQueueDebugLog,
   formatSchedulerStepDebugSuffix,
@@ -1021,7 +1021,6 @@ export function createWorkerSchedulerQueueHelpers(
         `pump-run:ready=${hostExecutionState(handle).vforkReadyWorkers.length}:vm=0x${vmPtr.toString(16)}:status=${handle.kernel.thread_status(vmPtr)}`,
       );
       restoreRegularFileOffsetsForStep(handle);
-      reconcileKernelSharePipeControl(handle);
       const activity = getThreadActivityState(thread);
       activity.stepCount += 1;
       setThreadRunningGeneration(thread, getThreadGeneration(thread));

@@ -67,12 +67,6 @@ function pipeCounterAhead(sourceValue: number, targetValue: number): boolean {
     || (sourceValue < targetValue && targetValue > PIPE_BUF_SIZE / 2 && sourceValue < PIPE_BUF_SIZE / 2);
 }
 
-function pipeGenerationAhead(sourceValue: number, targetValue: number): boolean {
-  return targetValue === 0
-    || sourceValue > targetValue
-    || (sourceValue < targetValue && targetValue > 0x80000000 && sourceValue < 0x80000000);
-}
-
 function pipeSlotSnapshotMergeAction(
   context: number,
   mode: number,
@@ -97,31 +91,20 @@ function pipeSlotSnapshotMergeAction(
   const kernelWorkerApply = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_APPLY;
   const kernelWorkerProcess = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_PROCESS;
   const kernelWorkerCanonical = context === PIPE_SLOT_SNAPSHOT_CONTEXT_KERNEL_WORKER_CANONICAL;
-  const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
   let targetHead = targetHeadInput;
   let targetTail = targetTailInput;
 
+  if (sourceGeneration === 0 && targetGeneration !== 0) {
+    return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
+  }
+
   if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
-    if (sourceHead === 0 && sourceTail === 0 && !pipeGenerationAhead(sourceGeneration, targetGeneration)) {
-      if (kernelWorkerCanonical) {
-        if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
-          return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
-        }
-      } else if (targetHead !== targetTail && !fresh) {
-        return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
-      }
+    if (!fresh && targetGeneration !== 0) {
+      return PIPE_SLOT_SNAPSHOT_ACTION_SKIP | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
     }
-    let action = PIPE_SLOT_SNAPSHOT_ACTION_STOP;
-    if (
-      fresh
-      || pipeGenerationAhead(sourceGeneration, targetGeneration)
-      || (targetReadOpen <= 0 && targetWriteOpen <= 0)
-    ) {
-      action |= PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
-    } else if (syncGenerationWithoutApply) {
-      action |= PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION;
-    }
-    return action;
+    return PIPE_SLOT_SNAPSHOT_ACTION_APPLY_SLOT
+      | PIPE_SLOT_SNAPSHOT_ACTION_SYNC_GENERATION
+      | PIPE_SLOT_SNAPSHOT_ACTION_STOP;
   }
 
   if (
@@ -855,6 +838,13 @@ test("kernel-worker pipe control recompute does not add host stdio over supervis
   const pipeMask = 1n << 4n;
 
   parentExports.setHostStdioSlots({ stdout: 4 });
+  seedPipeSlotState(canonicalMemory, 4, {
+    head: 2,
+    tail: 5,
+    marker: 0xab,
+    readOpen: 1,
+    writeOpen: 1,
+  });
   seedPipeSlot(parentMemory, 4, 0xaa, 1, 1);
   installSupervisorPipeAuthority(parentExports, {
     usedMask: 1n | pipeMask,
@@ -882,6 +872,9 @@ test("kernel-worker pipe control recompute does not add host stdio over supervis
   expect(readOpen[4]).toBe(0);
   expect(writeOpen[4]).toBe(0);
   expect((kernelState.pipeUsed & pipeMask) !== 0n).toBe(false);
+  expect(pipeHead(canonicalMemory, 4)).toBe(2);
+  expect(pipeTail(canonicalMemory, 4)).toBe(5);
+  expect(pipeMarker(canonicalMemory, 4)).toBe(0xab);
 });
 
 test("kernel-worker releaseHostStdio keeps sibling private host stdio pipe counts intact", () => {
@@ -903,6 +896,27 @@ test("kernel-worker releaseHostStdio keeps sibling private host stdio pipe count
   expect(pipeReadOpen(parentMemory, 4)).toBe(1);
   expect(pipeReadOpen(childMemory, 5)).toBe(0);
   expect(pipeReadOpen(canonicalMemory, 4)).toBe(1);
+});
+
+test("kernel-worker releaseHostStdio does not clear a canonical slot held by another process", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  parentExports.setHostStdioSlots({ stdout: 4 });
+  childExports.setHostStdioSlots({ stdout: 4 });
+  seedPipeSlot(canonicalMemory, 4, 0xcc, 1, 1);
+  seedPipeSlot(parentMemory, 4, 0xaa, 1, 1);
+  seedPipeSlot(childMemory, 4, 0xbb, 1, 0);
+
+  sharedStateSync.releaseHostStdio(2, 0x1234, makeKernelState());
+
+  expect(pipeMarker(canonicalMemory, 4)).toBe(0xcc);
+  expect(pipeReadOpen(parentMemory, 4)).toBe(1);
 });
 
 test("kernel-worker pipe sync keeps host stdout readable for a spawned process with a parent pid", () => {

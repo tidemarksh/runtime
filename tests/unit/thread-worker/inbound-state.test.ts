@@ -102,6 +102,66 @@ test("applyThreadWorkerInboundState applies fd, pipe, socket, guest write, and w
   expect(attachCall?.[11]).toBe(3n);
 });
 
+test("applyThreadWorkerInboundState delegates recycled pipe generation rejection to Kernel", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new Uint8Array(memory.buffer);
+  const kernelExports = makeKernelExports(memory);
+  const kernelState = makeState();
+  const slotBytes = 32;
+  const targetOffset = kernelState.pipeBase + 2 * slotBytes;
+  const source = new Uint8Array(slotBytes);
+  const sourceView = new DataView(source.buffer);
+  const targetView = new DataView(memory.buffer);
+  source.fill(0x31);
+  bytes.fill(0x42, targetOffset, targetOffset + slotBytes);
+  sourceView.setUint32(20, 7, true);
+  targetView.setUint32(targetOffset + 20, 8, true);
+  const decide = vi.fn(() => 513);
+  Object.assign(kernelExports, {
+    kernel_pipe_region_bytes: () => slotBytes * 4,
+    supervisor_pipe_slot_snapshot_context_thread_step: () => 2,
+    supervisor_pipe_slot_snapshot_context_shared_state: () => 1,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_apply: () => 3,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_process: () => 4,
+    supervisor_pipe_slot_snapshot_context_kernel_worker_canonical: () => 5,
+    supervisor_pipe_slot_snapshot_action_skip: () => 1,
+    supervisor_pipe_slot_snapshot_action_apply_slot: () => 2,
+    supervisor_pipe_slot_snapshot_action_apply_control: () => 4,
+    supervisor_pipe_slot_snapshot_action_set_head_to_source: () => 8,
+    supervisor_pipe_slot_snapshot_action_set_tail_to_source: () => 16,
+    supervisor_pipe_slot_snapshot_action_set_head_zero: () => 32,
+    supervisor_pipe_slot_snapshot_action_copy_full: () => 64,
+    supervisor_pipe_slot_snapshot_action_copy_tail_delta: () => 128,
+    supervisor_pipe_slot_snapshot_action_sync_generation: () => 256,
+    supervisor_pipe_slot_snapshot_action_stop: () => 512,
+    supervisor_pipe_slot_snapshot_merge_action: decide,
+  });
+
+  applyThreadWorkerInboundState({ kernelExports, guestBase: 0 }, {
+    kernelState,
+    targetVmPtr: 0x1234,
+    pipeSlots: [{ pipeSlot: 2, slot: source }],
+  });
+
+  expect(targetView.getUint32(targetOffset + 20, true)).toBe(8);
+  expect(bytes[targetOffset]).toBe(0x42);
+  expect(decide).toHaveBeenCalledWith(
+    2,
+    7,
+    0,
+    expect.any(Number),
+    expect.any(Number),
+    expect.any(Number),
+    expect.any(Number),
+    7,
+    expect.any(Number),
+    expect.any(Number),
+    expect.any(Number),
+    expect.any(Number),
+    8,
+  );
+});
+
 test("applyThreadWorkerInboundState applies the complete Kernel socket state", () => {
   const memory = new WebAssembly.Memory({ initial: 1 });
   const bytes = new Uint8Array(memory.buffer);

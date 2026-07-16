@@ -223,7 +223,6 @@ export function reconcileKernelSharePipeControl(handle: ProcessHandle): void {
   for (const member of members) {
     pipeUsed |= addSupervisorPipeControlForMember(member, readOpen, writeOpen, maxPipes);
   }
-
   for (const member of members) {
     for (let pipeSlot = 1; pipeSlot < maxPipes; pipeSlot += 1) {
       if ((pipeUsed & (1n << BigInt(pipeSlot))) === 0n) {

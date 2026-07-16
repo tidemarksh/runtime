@@ -5,7 +5,6 @@ import {
   kernelShareOtherMembers,
   kernelShareMemberList,
   kernelShareSharedOfdIds,
-  reconcileKernelSharePipeControl,
 } from "../../kernel-share.js";
 import { kernelWorkerOwnsEpollState } from "../../ownership/epoll-control.js";
 import { shouldRequestForkSharedStateForEffect } from "../../ownership/ofd-peer.js";
@@ -127,8 +126,6 @@ export function createWorkerOwnedStateSyncHandler(deps: WorkerMessageHandlerDeps
           processHandles: deps.processHandles,
           appendRuntimeLifecycleEvent: deps.appendRuntimeLifecycleEvent,
           syncForkSharedStateViaKernelWorker: deps.syncForkSharedStateViaKernelWorker,
-        }).then(() => {
-          reconcileKernelSharePipeControl(handle);
         })
       : Promise.resolve();
     const syncOfdState = (): Promise<void> => shouldSyncEpollDependentOfds

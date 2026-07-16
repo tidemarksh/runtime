@@ -19,7 +19,6 @@ import {
   kernelShareMemberList,
   kernelShareOtherMembers,
   kernelShareSharedOfdIdList,
-  reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
@@ -578,19 +577,23 @@ export async function syncForkSharedStateViaKernelWorker(
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   restoreProcessIdentity(handle, sourceVmPtr, sourceProcessIdentity);
-  reapplyMemfsDeletedPaths(handle);
+  const includeMemfs = options.includeMemfs ?? true;
+  if (includeMemfs) {
+    reapplyMemfsDeletedPaths(handle);
+  }
   restoreLocalOfdSlots(handle, preservedSourceFdOfdSlots);
   for (const snapshot of preservedRuntimeNetworkKernelStates) {
     restoreRuntimeNetworkKernelState(snapshot);
   }
-  reconcileKernelSharePipeControl(handle);
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
-  for (const member of kernelShareOtherMembers(handle)) {
-    const reapplied = reapplyMemfsDeletedPaths(member);
-    if (reapplied.length > 0) {
-      member.kernelState = readKernelRuntimeState(member.kernel);
-      attachKernelRuntimeState(member.kernel, member.kernelState);
+  if (includeMemfs) {
+    for (const member of kernelShareOtherMembers(handle)) {
+      const reapplied = reapplyMemfsDeletedPaths(member);
+      if (reapplied.length > 0) {
+        member.kernelState = readKernelRuntimeState(member.kernel);
+        attachKernelRuntimeState(member.kernel, member.kernelState);
+      }
     }
   }
   lastForkSharedActiveOfdIdsByHandle.set(handle, new Set(sourceActiveOfdIds));

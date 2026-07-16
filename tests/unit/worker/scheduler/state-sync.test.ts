@@ -347,7 +347,7 @@ test("waking pipe sync applies the current fd snapshot while process workers are
   expect(kernelWorkerRequest).toHaveBeenCalledTimes(1);
 });
 
-test("pipe sync reconciles endpoint ownership before publishing the canonical snapshot", async () => {
+test("pipe sync leaves endpoint ownership reconciliation to the kernel-worker", async () => {
   const sequence: string[] = [];
   const kernelWorkerRequest = vi.fn(async (msg) => {
     sequence.push("sync");
@@ -383,7 +383,7 @@ test("pipe sync reconciles endpoint ownership before publishing the canonical sn
 
   await helpers.requestPipeStateSync(handle, false);
 
-  expect(sequence).toEqual(["reconcile", "sync", "reconcile"]);
+  expect(sequence).toEqual(["sync"]);
 });
 
 test("requestPipeStateSync defers passive indefinite epoll wake while another worker is running", async () => {

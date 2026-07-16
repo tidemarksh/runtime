@@ -54,7 +54,6 @@ import type {
 import {
   copySharedKernelObjectsHostLocal,
   kernelShareOtherMembers,
-  reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
 import {
@@ -368,9 +367,6 @@ export function mergePipeSlotSnapshotsIntoHandle(
     if (pipeSlotSnapshotActionHas(action, actionSet.setHeadToSource)) {
       view.setUint32(targetOffset + PIPE_DEBUG_HEAD_OFFSET, sourceHead, true);
     }
-    if (pipeSlotSnapshotActionHas(action, actionSet.setTailToSource)) {
-      view.setUint32(targetOffset + PIPE_DEBUG_TAIL_OFFSET, sourceTail, true);
-    }
     if (pipeSlotSnapshotActionHas(action, actionSet.setHeadZero)) {
       view.setUint32(targetOffset + PIPE_DEBUG_HEAD_OFFSET, 0, true);
     }
@@ -384,6 +380,13 @@ export function mergePipeSlotSnapshotsIntoHandle(
       memory.set(
         snapshot.slot.subarray(PIPE_DEBUG_HEADER_BYTES, slotBytes),
         targetOffset + PIPE_DEBUG_HEADER_BYTES,
+      );
+    }
+    if (pipeSlotSnapshotActionHas(action, actionSet.setTailToSource)) {
+      Atomics.store(
+        new Uint32Array(memory.buffer),
+        (targetOffset + PIPE_DEBUG_TAIL_OFFSET) >>> 2,
+        sourceTail,
       );
     }
     if (pipeSlotSnapshotActionHas(action, actionSet.syncGeneration)) {
@@ -1129,7 +1132,6 @@ export {
   SOCKET_STATE_SHUTDOWN,
   copySharedKernelObjectsHostLocal,
   kernelShareOtherMembers,
-  reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
   mergeKernelShareOfdStateInto,
   pruneStaleKernelShareOfdIds,

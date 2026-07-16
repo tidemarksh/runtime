@@ -11,7 +11,6 @@ import {
 import {
   applyThreadPipeSlots,
 } from "../../ownership/pipe-control.js";
-import { reconcileKernelSharePipeControl } from "../../kernel-share/pipe.js";
 import { processHasKernelWorkerOwnership } from "../../kernel-worker-ownership.js";
 import { adoptKernelStateForHandle } from "../../sync.js";
 import {
@@ -92,6 +91,7 @@ import {
 } from "../../supervisor-status.js";
 import { clearSupervisorHostTimer } from "../../supervisor-host-op.js";
 import {
+  setPendingKernelStateForNextStep,
   takeChangedFdEntriesWithBaselineSincePosted,
   takeChangedOfdSlotsWithBaselineSincePosted,
 } from "../../thread-step-payload.js";
@@ -105,7 +105,6 @@ const FS_LIFECYCLE_DEBUG_ENABLED = ((globalThis as {
 const FD_CONTROL_DEBUG_ENABLED = ((globalThis as {
   process?: { env?: Record<string, string | undefined> };
 }).process?.env?.TIDEMARK_FD_CONTROL_DEBUG ?? "") === "1";
-
 interface ThreadRegisterSnapshot {
   vmPtr: number;
   pc: bigint;
@@ -345,6 +344,9 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       statusStateBelongsToHandle,
       kernelWorkerAvailable: processHasKernelWorkerOwnership(handle),
     });
+    if (activeVforkWorker && fsStatus !== undefined && status === fsStatus) {
+      setPendingKernelStateForNextStep(thread, msg.kernelState);
+    }
     appendStatusRouteFdDebug(
       "route-actions",
       handle,
@@ -577,7 +579,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
       && (msg.pipeSlots?.length ?? 0) > 0
       && !(activeVforkWorker && status === faultStatus)
     );
-    let appliedPipeControlSnapshot = false;
     if (routeActions.adoptThreadKernelState) {
       handle.kernelState = adoptKernelStateForHandle(handle, msg.kernelState);
       attachKernelRuntimeState(handle.kernel, handle.kernelState);
@@ -593,7 +594,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
       );
-      appliedPipeControlSnapshot = (msg.pipeSlots ?? []).some((snapshot) => snapshot.controlChanged === true);
       const changedRegularFileOfdFds = applyStatusOfdSlots(handle, msg, {
         authoritativeOfdIds,
         postedFdEntries,
@@ -634,7 +634,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         msg.pipeSlots,
         pipeSlotLifecycleDebugEnabled() ? deps.appendRuntimeLifecycleEvent : undefined,
       );
-      appliedPipeControlSnapshot = (msg.pipeSlots ?? []).some((snapshot) => snapshot.controlChanged === true);
     } else if (routeActions.applyFsMemoryWrites) {
       applyThreadKernelMemoryWrites(
         handle,
@@ -643,9 +642,6 @@ export function createWorkerStatusMessageHandler(deps: WorkerMessageHandlerDeps)
         { skipFsRingWrites: routeActions.skipFsRingWrites },
       );
       applyThreadGuestMemoryWrites(handle, msg, deps.appendRuntimeLifecycleEvent);
-    }
-    if (appliedPipeControlSnapshot) {
-      reconcileKernelSharePipeControl(handle);
     }
     if (traceFsStatusTiming) {
       appendFsStatusRouteTiming(

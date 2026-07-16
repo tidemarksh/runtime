@@ -25,7 +25,6 @@ import {
 import {
   kernelShareMemberList,
   kernelShareOtherMembers,
-  reconcileKernelSharePipeControl,
   restoreLocalOfdSlots,
 } from "../kernel-share.js";
 import { processExitInProgress } from "../process-lifecycle-state.js";
@@ -75,10 +74,6 @@ export async function syncPipeStateViaKernelWorker(
   cause: SyncCause,
 ): Promise<bigint> {
   const kernelWorkerRequest = requireKernelWorkerOwnership(handle, "syncPipeStateViaKernelWorker");
-  // Process FD tables are authoritative for pipe endpoint ownership. Publish
-  // their aggregate before taking snapshots so endpoint closure reaches the
-  // canonical kernel and blocked workers in this sync, not the next one.
-  reconcileKernelSharePipeControl(handle);
   const processStateSnapshot = snapshotProcessState(handle);
   const fdEntries = snapshotProcessFdEntries(handle, handle.vmPtr);
   const fdEntryOfdIds = ofdIdsFromFdEntries(handle, fdEntries);
@@ -200,7 +195,6 @@ export async function syncPipeStateViaKernelWorker(
     restoreRuntimeNetworkKernelState(snapshot);
   }
   restoreIncompatibleLocalOfdSlots(handle, preservedLocalPipeOfdSlots);
-  reconcileKernelSharePipeControl(handle);
   handle.kernelState = readKernelRuntimeState(handle.kernel);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
   restoreProcessState(handle, processStateSnapshot, { preserveCurrentFdTable: true });

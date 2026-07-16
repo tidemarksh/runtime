@@ -33,7 +33,7 @@ import {
   formatGuestMemoryWriteWatchOverlap,
 } from "../guest-memory-writes.js";
 import { ensureKernelMemoryCapacity, kernelScratchBase } from "../kernel-scratch.js";
-import { adoptKernelStateForHandle } from "../kernel-state.js";
+import { adoptKernelState, adoptKernelStateForHandle } from "../kernel-state.js";
 import {
   forgetMemfsDeletedPath,
   reapplyMemfsDeletedPaths,
@@ -64,6 +64,7 @@ import {
 import { maybeThreadActivityState, getThreadActivityState } from "../thread-activity-state.js";
 import {
   appendPendingAuthoritativeFdForNextStep,
+  getPendingKernelStateForNextStep,
   setPendingKernelStateForNextStep,
 } from "../thread-step-payload.js";
 import type {
@@ -2622,7 +2623,13 @@ async function resumeFsViaKernelWorkerOnce(
       return { kind: "process-gone" };
     }
     if (fsResponseDisposition.storePendingKernelState) {
-      setPendingKernelStateForNextStep(threadState, fsProcessedResponse.kernelState);
+      const localWorkerKernelState = getPendingKernelStateForNextStep(threadState);
+      setPendingKernelStateForNextStep(
+        threadState,
+        localWorkerKernelState === undefined
+          ? fsProcessedResponse.kernelState
+          : adoptKernelState(localWorkerKernelState, fsProcessedResponse.kernelState),
+      );
     }
     const statusAfterFs = findSupervisorExecveSpawnStatus(handle, [
       handle.kernel.thread_status?.(vmPtr),

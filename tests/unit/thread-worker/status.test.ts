@@ -5,6 +5,15 @@ import {
   OFD_OFFSET_OFFSET,
   OFD_TYPE_OFFSET,
 } from "../../../src/layout/ofd.js";
+import {
+  FS_OP_WRITE,
+  FS_RING_REQUEST_BUF_PTR_OFFSET,
+  FS_RING_REQUEST_LEN_OFFSET,
+  FS_RING_REQUEST_OPCODE_OFFSET,
+  FS_RING_REQUEST_PATH_PTR_OFFSET,
+  FS_RING_SUBMIT_HEAD_OFFSET,
+  fsRingRequestEntryOffset,
+} from "../../../src/layout/fs-ring.js";
 import { applyThreadWorkerInboundState } from "../../../src/thread-worker/inbound-state.js";
 import {
   postThreadWorkerStatus,
@@ -588,6 +597,42 @@ test("postThreadWorkerStatus snapshots completed regular-file read guest writes"
     guestMemoryWrites?: Array<{ guestPtr: number; bytes: Uint8Array }>;
   };
   expect(msg.guestMemoryWrites).toEqual([{ guestPtr: 0x500, bytes }]);
+});
+
+test("postThreadWorkerStatus does not publish pending FS inputs as guest writes", () => {
+  const postMessage = vi.fn();
+  Object.defineProperty(globalThis, "postMessage", {
+    configurable: true,
+    value: postMessage,
+  });
+  const kernelExports = makeKernelExports();
+  const ringBase = 0x1000;
+  const request = fsRingRequestEntryOffset(ringBase, 0);
+  const view = new DataView(kernelExports.memory.buffer);
+  view.setUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, 1, true);
+  view.setUint32(request + FS_RING_REQUEST_OPCODE_OFFSET, FS_OP_WRITE, true);
+  view.setBigUint64(request + FS_RING_REQUEST_LEN_OFFSET, 8n, true);
+  view.setBigUint64(request + FS_RING_REQUEST_BUF_PTR_OFFSET, 0x500n, true);
+  view.setBigUint64(request + FS_RING_REQUEST_PATH_PTR_OFFSET, 0x600n, true);
+  new Uint8Array(kernelExports.memory.buffer).set(Uint8Array.from([1, 2, 3, 4]), 0x500);
+  new Uint8Array(kernelExports.memory.buffer).set(new TextEncoder().encode("/tmp/out\0"), 0x600);
+  kernelExports.thread_fs_ring_base = () => ringBase;
+
+  postThreadWorkerStatus({
+    kernelExports,
+    statusCodes: makeStatusCodes(),
+    vmPtr: 0x1234,
+    guestBase: 0,
+    generation: 10,
+    runtimeBridge: null,
+    lastResumeBlockedDebug: undefined,
+    lastFutexWaitDebug: undefined,
+    setLastResumeBlockedDebug() {},
+    setLastFutexWaitDebug() {},
+  }, makeStatusCodes().FS, false, 0);
+
+  const msg = postMessage.mock.calls[0]?.[0] as { guestMemoryWrites?: unknown[] };
+  expect(msg.guestMemoryWrites).toBeUndefined();
 });
 
 test("postThreadWorkerStatus carries Kernel blocked syscall state for supervisor adoption", () => {

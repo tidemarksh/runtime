@@ -25,18 +25,7 @@ import { ensureMemoryCapacity, kernelScratchBase } from "../worker/kernel-scratc
 import { collectDebugParts, collectFdTraceDebug } from "./debug.js";
 import { consumeThreadWorkerInboundGuestWriteDebug } from "./inbound-state.js";
 import { readCompletedSyncEffects } from "./sync-effects.js";
-import {
-  FS_OP_WRITE,
-  FS_RING_REQUEST_BUF_PTR_OFFSET,
-  FS_RING_REQUEST_LEN_OFFSET,
-  FS_RING_REQUEST_OPCODE_OFFSET,
-  FS_RING_REQUEST_PATH_PTR_OFFSET,
-  FS_RING_SUBMIT_HEAD_OFFSET,
-  FS_RING_SUBMIT_QUEUE_SIZE,
-  FS_RING_SUBMIT_TAIL_OFFSET,
-  FS_RING_TOTAL_BYTES,
-  fsRingRequestEntryOffset,
-} from "../layout/fs-ring.js";
+import { FS_RING_TOTAL_BYTES } from "../layout/fs-ring.js";
 import {
   OFD_OFFSET_OFFSET,
   OFD_TYPE_OFFSET,
@@ -591,83 +580,6 @@ function snapshotAbsoluteMemory(
   return { ptr, bytes: memory.slice(ptr, ptr + length) };
 }
 
-function snapshotGuestMemoryWrite(
-  kernelExports: KernelExports,
-  guestPtr: number,
-  length: number,
-): GuestMemoryWriteSnapshot | undefined {
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  const start = guestBase + guestPtr;
-  if (
-    !Number.isFinite(guestPtr)
-    || !Number.isFinite(length)
-    || guestPtr <= 0
-    || length <= 0
-    || start < 0
-    || start + length > memory.byteLength
-  ) {
-    return undefined;
-  }
-  return { guestPtr, bytes: memory.slice(start, start + length) };
-}
-
-function snapshotGuestCString(
-  kernelExports: KernelExports,
-  guestPtr: number,
-  maxLength = 4096,
-): GuestMemoryWriteSnapshot | undefined {
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  const start = guestBase + guestPtr;
-  if (!Number.isFinite(guestPtr) || guestPtr <= 0 || start < 0 || start >= memory.byteLength) {
-    return undefined;
-  }
-  let length = 0;
-  while (length < maxLength && start + length < memory.byteLength) {
-    length += 1;
-    if (memory[start + length - 1] === 0) {
-      break;
-    }
-  }
-  return snapshotGuestMemoryWrite(kernelExports, guestPtr, length);
-}
-
-function snapshotPendingFsRequestGuestMemory(kernelExports: KernelExports): GuestMemoryWriteSnapshot[] {
-  if (kernelExports.thread_fs_ring_base === undefined) {
-    return [];
-  }
-  const ringBase = kernelExports.thread_fs_ring_base(vmPtr);
-  const memory = new Uint8Array(kernelExports.memory.buffer);
-  if (ringBase <= 0 || ringBase + FS_RING_TOTAL_BYTES > memory.byteLength) {
-    return [];
-  }
-  const view = new DataView(memory.buffer);
-  const submitHead = view.getUint32(ringBase + FS_RING_SUBMIT_HEAD_OFFSET, true);
-  const submitTail = view.getUint32(ringBase + FS_RING_SUBMIT_TAIL_OFFSET, true);
-  const snapshots: GuestMemoryWriteSnapshot[] = [];
-  const count = Math.min(submitHead - submitTail, FS_RING_SUBMIT_QUEUE_SIZE);
-  for (let offset = 0; offset < count; offset += 1) {
-    const pos = submitTail + offset;
-    const entry = fsRingRequestEntryOffset(ringBase, pos);
-    const opcode = view.getUint32(entry + FS_RING_REQUEST_OPCODE_OFFSET, true);
-    const len = Number(view.getBigUint64(entry + FS_RING_REQUEST_LEN_OFFSET, true));
-    const bufPtr = Number(view.getBigUint64(entry + FS_RING_REQUEST_BUF_PTR_OFFSET, true));
-    const pathPtr = Number(view.getBigUint64(entry + FS_RING_REQUEST_PATH_PTR_OFFSET, true));
-    if (opcode === FS_OP_WRITE && len > 0 && bufPtr > 0) {
-      const snapshot = snapshotGuestMemoryWrite(kernelExports, bufPtr, Math.min(len, 1 << 20));
-      if (snapshot) {
-        snapshots.push(snapshot);
-      }
-    }
-    if (pathPtr > 0) {
-      const snapshot = snapshotGuestCString(kernelExports, pathPtr);
-      if (snapshot) {
-        snapshots.push(snapshot);
-      }
-    }
-  }
-  return snapshots;
-}
-
 function snapshotFsRingMemory(
   kernelExports: KernelExports,
   status: number,
@@ -1016,10 +928,7 @@ function postStatus(status: number, waitInWorker = false, completedSyncEffects?:
   const latestFdTrace = shouldSnapshotOwnedState
     ? snapshotLatestFdTraceForStatus(kernelExports, vmPtr)
     : null;
-  const guestMemoryWrites = [
-    ...(snapshotCompletedReadGuestMemory(kernelExports, status) ?? []),
-    ...snapshotPendingFsRequestGuestMemory(kernelExports),
-  ];
+  const guestMemoryWrites = snapshotCompletedReadGuestMemory(kernelExports, status) ?? [];
   publishThreadWorkerStage(105, status);
   const memfsSnapshotMode = shouldSnapshotProcessMemfsMemory(status, effectiveSyncEffects);
   const processPendingSnapshot = snapshotAbsoluteMemory(

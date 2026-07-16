@@ -49,6 +49,7 @@ import { POLLFD_BYTES } from "../../../src/layout/poll.js";
 import {
   SOCKET_SHUT_RD_WR_MASK,
   SOCKET_SLOT_EXTERNAL_PEER_OFFSET,
+  SOCKET_SLOT_COOKIE_OFFSET,
   SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
   SOCKET_SLOT_SHUTDOWN_MASK_OFFSET,
   SOCKET_SLOT_STATE_OFFSET,
@@ -235,6 +236,7 @@ describe("runtime/kernel object layout", () => {
     expect(SOCKET_SLOT_STATE_OFFSET).toBe(slot.fields.state);
     expect(SOCKET_SLOT_EXTERNAL_PEER_OFFSET).toBe(slot.fields.external_peer);
     expect(SOCKET_SLOT_RECV_BUF_IDX_OFFSET).toBe(slot.fields.recv_buf_idx);
+    expect(SOCKET_SLOT_COOKIE_OFFSET).toBe(slot.fields.so_cookie);
     expect(SOCKET_SLOT_SHUTDOWN_MASK_OFFSET).toBe(slot.fields.shutdown_mask);
   });
 });

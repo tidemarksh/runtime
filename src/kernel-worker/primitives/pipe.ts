@@ -57,11 +57,14 @@ function applySupervisorPipeControl(
 }
 
 function copyPipeSlotDataPlane(targetBytes: Uint8Array, sourceSlot: Uint8Array, targetOffset: number): void {
-  targetBytes.set(sourceSlot.subarray(0, PIPE_OFF_READ_OPEN), targetOffset);
   targetBytes.set(
     sourceSlot.subarray(PIPE_OFF_CONTROL_END, PIPE_SLOT_BYTES),
     targetOffset + PIPE_OFF_CONTROL_END,
   );
+  const sourceView = new DataView(sourceSlot.buffer, sourceSlot.byteOffset, sourceSlot.byteLength);
+  const counters = new Uint32Array(targetBytes.buffer);
+  Atomics.store(counters, (targetOffset + PIPE_OFF_HEAD) >>> 2, sourceView.getUint32(PIPE_OFF_HEAD, true));
+  Atomics.store(counters, (targetOffset + PIPE_OFF_TAIL) >>> 2, sourceView.getUint32(PIPE_OFF_TAIL, true));
 }
 
 function clearPipeSlotDataPlane(targetBytes: Uint8Array, targetOffset: number): void {
@@ -388,12 +391,9 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       }
     }
 
-    const rawBytes = new Uint8Array(canonicalExports.memory.buffer);
     let pipeUsed = 1n;
     for (const pipeIdx of managedPipeSlots) {
-      const slotBase = canonicalExports.kernel_pipe_base() + pipeIdx * PIPE_SLOT_BYTES;
       if ((readOpen[pipeIdx] ?? 0) <= 0 && (writeOpen[pipeIdx] ?? 0) <= 0) {
-        clearPipeSlotDataPlane(rawBytes, slotBase);
         applySupervisorPipeControl(canonicalExports, pipeIdx, 0, 0);
         continue;
       }
@@ -524,9 +524,6 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
     if (pipeSlotSnapshotActionHas(action, actionSet.setHeadToSource)) {
       targetView.setUint32(targetOffset + PIPE_OFF_HEAD, sourceHead, true);
     }
-    if (pipeSlotSnapshotActionHas(action, actionSet.setTailToSource)) {
-      targetView.setUint32(targetOffset + PIPE_OFF_TAIL, sourceTail, true);
-    }
     if (pipeSlotSnapshotActionHas(action, actionSet.setHeadZero)) {
       targetView.setUint32(targetOffset + PIPE_OFF_HEAD, 0, true);
     }
@@ -544,6 +541,13 @@ export function createKernelWorkerPipePrimitives(deps: KernelWorkerPrimitivesDep
       targetBytes.set(
         sourceSlot.subarray(PIPE_OFF_DATA, PIPE_SLOT_BYTES),
         targetOffset + PIPE_OFF_DATA,
+      );
+    }
+    if (pipeSlotSnapshotActionHas(action, actionSet.setTailToSource)) {
+      Atomics.store(
+        new Uint32Array(targetBytes.buffer),
+        (targetOffset + PIPE_OFF_TAIL) >>> 2,
+        sourceTail,
       );
     }
     if (pipeSlotSnapshotActionHas(action, actionSet.syncGeneration)) {

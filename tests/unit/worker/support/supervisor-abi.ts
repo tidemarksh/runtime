@@ -1485,14 +1485,6 @@ export function makeSupervisorAbiStubs(
       && targetValue > 65_536 / 2
       && sourceValue < 65_536 / 2
     );
-  const pipeGenerationAhead = (sourceValue: number, targetValue: number): boolean =>
-    targetValue === 0
-    || sourceValue > targetValue
-    || (
-      sourceValue < targetValue
-      && targetValue > 0x80000000
-      && sourceValue < 0x80000000
-    );
   const pipeSlotSnapshotMergeAction = (
     context: number,
     mode: number,
@@ -1520,37 +1512,20 @@ export function makeSupervisorAbiStubs(
       context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_process;
     const kernelWorkerCanonical =
       context === DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_context_kernel_worker_canonical;
-    const syncGenerationWithoutApply = sharedState || kernelWorkerProcess || kernelWorkerCanonical;
     let targetHead = targetHeadInput;
     let targetTail = targetTailInput;
+    if (sourceGeneration === 0 && targetGeneration !== 0) {
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
+    }
     if (sourceGeneration !== 0 && sourceGeneration !== targetGeneration) {
-      if (
-        sourceHead === 0
-        && sourceTail === 0
-        && !pipeGenerationAhead(sourceGeneration, targetGeneration)
-      ) {
-        if (kernelWorkerCanonical) {
-          if (targetReadOpen > 0 && targetWriteOpen > 0 && targetHead !== targetTail) {
-            return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
-              | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
-          }
-        } else if (targetHead !== targetTail && !fresh) {
-          return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
-            | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
-        }
+      if (!fresh && targetGeneration !== 0) {
+        return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_skip
+          | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
       }
-      let action = DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
-      if (
-        fresh
-        || pipeGenerationAhead(sourceGeneration, targetGeneration)
-        || (targetReadOpen <= 0 && targetWriteOpen <= 0)
-      ) {
-        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
-          | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
-      } else if (syncGenerationWithoutApply) {
-        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
-      }
-      return action;
+      return DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_apply_slot
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation
+        | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_stop;
     }
     if (
       (
@@ -1623,18 +1598,6 @@ export function makeSupervisorAbiStubs(
       targetHead = sourceHead;
       targetTail = sourceTail;
     }
-    if (
-      writeMode
-      && !readMode
-      && sourceHead === 0
-      && sourceTail !== 0
-      && targetHead !== 0
-      && (targetHead === targetTail || targetTail === 0)
-      && pipeCounterAhead(sourceTail, targetTail)
-    ) {
-      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_zero;
-      targetHead = 0;
-    }
     if (sharedState) {
       let readHeadAdvanced = false;
       if (readMode) {
@@ -1680,8 +1643,6 @@ export function makeSupervisorAbiStubs(
       if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
         action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
           | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
-      } else if (writeMode && sourceTail === targetTail && sourceHead !== sourceTail) {
-        action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
       }
       return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
     }
@@ -1705,25 +1666,16 @@ export function makeSupervisorAbiStubs(
         if (pipeCounterAhead(sourceTail, targetTail) || (repairedHead && sourceHead !== sourceTail)) {
           action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
             | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
-        } else if (sourceTail === targetTail && sourceHead !== sourceTail) {
-          action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
         }
       }
       return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
     }
-    if (readMode && pipeCounterAhead(sourceHead, targetHead) && (sourceHead !== sourceTail || targetTail === sourceTail)) {
+    if (readMode && pipeCounterAhead(sourceHead, targetHead)) {
       action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_head_to_source;
     }
     if (writeMode && pipeCounterAhead(sourceTail, targetTail)) {
       action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_set_tail_to_source
         | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_tail_delta;
-    } else if (
-      writeMode
-      && sourceTail === targetTail
-      && sourceHead !== sourceTail
-      && !(readMode && pipeCounterAhead(targetHead, sourceHead))
-    ) {
-      action |= DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_copy_full;
     }
     return action | DEFAULT_NUMERIC_EXPORTS.supervisor_pipe_slot_snapshot_action_sync_generation;
   };

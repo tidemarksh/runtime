@@ -24,6 +24,7 @@ import {
 } from "../../../../src/worker/network-socket-state.js";
 import { setProcessDebugCommand } from "../../../../src/worker/process-debug-state.js";
 import { setProcessStdioState } from "../../../../src/worker/process-stdio-state.js";
+import { processMemfsDeletedPathSet } from "../../../../src/worker/process-memfs-state.js";
 import type { KernelRuntimeState } from "../../../../src/abi.js";
 import type { ProcessHandle } from "../../../../src/worker/types.js";
 import { seedProcessKernelWorkerRequestFixture } from "../support/kernel-worker-request-fixture.js";
@@ -884,6 +885,22 @@ test("fork-shared sync keeps a pipe reader target that also owns runtime network
     type: "sync-fork-shared-state",
     targetPids: [3],
   }));
+});
+
+test("fork-shared sync without memfs does not reapply local deletion tombstones", async () => {
+  const child = makeHandle(7, new Map([[5, 8]]));
+  processMemfsDeletedPathSet(child).add("/tmp/stale-output");
+  child.kernel.memfs_resolve_path = vi.fn(() => {
+    throw new Error("memfs must not be touched by an OFD-only sync");
+  });
+
+  await syncForkSharedStateViaKernelWorker(child, [], {
+    cause: { kind: "syscall", nr: -1n, name: "test-ofd-only-sync" },
+    includeMemfs: false,
+    sourceVmPtr: child.vmPtr,
+  });
+
+  expect(child.kernel.memfs_resolve_path).not.toHaveBeenCalled();
 });
 
 test("fork-shared sync publishes inherited child stdout without making stdin syncable", async () => {

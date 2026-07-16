@@ -14,6 +14,7 @@ import {
 } from "../../../../src/worker/thread-host-state.js";
 import {
   getPendingKernelStateForNextStep,
+  setPendingKernelStateForNextStep,
   snapshotPendingGuestMemoryWritesForNextStep,
 } from "../../../../src/worker/thread-step-payload.js";
 import { setProcessKernelWorkerRequest } from "../../../../src/worker/process-kernel-worker-request-state.js";
@@ -1559,6 +1560,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   const childKernelState = {
     ...initialKernelState,
     heapPtr: initialKernelState.heapPtr + 0x4000,
+    memStatePtr: initialKernelState.memStatePtr + 0x1000,
     socketUsed: 7,
     pipeUsed: 11n,
     netBufUsed: 13n,
@@ -1566,6 +1568,7 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   const localChildKernelState = {
     ...initialKernelState,
     heapPtr: initialKernelState.heapPtr + 0x8000,
+    memStatePtr: initialKernelState.memStatePtr + 0x2000,
     socketUsed: 17,
     pipeUsed: 19n,
     netBufUsed: 23n,
@@ -1693,6 +1696,10 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
     initialized: true,
     waitingInWorkerStatus: null,
   });
+  setPendingKernelStateForNextStep(
+    threadWorkerStates.get(worker) as ThreadWorkerState,
+    localChildKernelState,
+  );
   const enqueueWorker = vi.fn();
 
   const helpers = createWorkerKernelRpcHelpers({
@@ -1725,7 +1732,13 @@ test("resumeFsViaKernelWorker does not adopt failed execve child state into the 
   expect(handle.kernelState).toEqual(initialKernelState);
   expect(handle.kernelState).not.toEqual(localChildKernelState);
   expect(threadResumeFs).not.toHaveBeenCalled();
-  expect(getPendingKernelStateForNextStep(threadWorkerStates.get(worker) as ThreadWorkerState)).toEqual(childKernelState);
+  expect(getPendingKernelStateForNextStep(threadWorkerStates.get(worker) as ThreadWorkerState)).toEqual({
+    ...localChildKernelState,
+    heapBase: childKernelState.heapBase,
+    socketUsed: childKernelState.socketUsed,
+    pipeUsed: childKernelState.pipeUsed,
+    netBufUsed: childKernelState.netBufUsed,
+  });
   expect(kernel.kernel_attach_runtime_state).not.toHaveBeenCalledWith(
     childKernelState.heapBase,
     childKernelState.heapPtr,

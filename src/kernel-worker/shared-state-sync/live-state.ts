@@ -2,8 +2,14 @@ import {
   attachKernelRuntimeState,
   readKernelRuntimeState,
   supervisorOfdFdType,
+  supervisorOfdIno,
   type KernelExports,
 } from "../../abi.js";
+import {
+  kernelNetBufferSlotBytes,
+  kernelSocketSlotBytes,
+  requireKernelSocketCount,
+} from "../../kernel-socket-layout.js";
 import { copyMemoryRange } from "../common.js";
 import type {
   KernelWorkerFdEntrySnapshot,
@@ -17,11 +23,124 @@ import {
   PIPE_SLOT_MODE_READ,
   PIPE_SLOT_MODE_WRITE,
 } from "../../layout/pipe.js";
+import {
+  SOCKET_SLOT_COOKIE_OFFSET,
+  SOCKET_SLOT_RECV_BUF_IDX_OFFSET,
+} from "../../layout/socket.js";
 import type { KernelWorkerSharedStateSyncDeps, KernelRuntimeState } from "./types.js";
 
 const PIPE_BUF_SIZE = PIPE_BUFFER_BYTES;
 
 export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyncDeps) {
+  function processHeldSocketSlots(processExports: KernelExports, vmPtr: number): Set<number> {
+    const readHeldOfd = processExports.supervisor_process_socket_held_ofd;
+    if (!readHeldOfd || vmPtr === 0) {
+      return new Set();
+    }
+    const slots = new Set<number>();
+    const maxSockets = requireKernelSocketCount(processExports);
+    for (let index = 0; index < processExports.abi_max_fds(); index += 1) {
+      const ofdId = readHeldOfd.call(processExports, vmPtr, index);
+      if (ofdId === 0) {
+        break;
+      }
+      const socketIdx = supervisorOfdIno(processExports, ofdId);
+      if (socketIdx >= 0 && socketIdx < maxSockets) {
+        slots.add(socketIdx);
+      }
+    }
+    return slots;
+  }
+
+  function preserveCanonicalSocketSlots(
+    canonicalExports: KernelExports,
+    canonicalState: KernelRuntimeState,
+    sourceExports: KernelExports,
+    sourceState: KernelRuntimeState,
+    socketSlots: ReadonlySet<number>,
+  ): {
+    restore(): KernelRuntimeState;
+  } {
+    const socketSlotBytes = kernelSocketSlotBytes(canonicalExports);
+    const netBufferSlotBytes = kernelNetBufferSlotBytes(canonicalExports);
+    const memory = new Uint8Array(canonicalExports.memory.buffer);
+    const sourceMemory = new Uint8Array(sourceExports.memory.buffer);
+    const slots = [...socketSlots].flatMap((socketIdx) => {
+      const offset = canonicalState.socketTablePtr + socketIdx * socketSlotBytes;
+      const sourceOffset = sourceState.socketTablePtr + socketIdx * socketSlotBytes;
+      const data = memory.slice(offset, offset + socketSlotBytes);
+      if (socketSlotBytes >= SOCKET_SLOT_COOKIE_OFFSET + 8) {
+        const canonicalCookie = new DataView(data.buffer, data.byteOffset, data.byteLength)
+          .getBigUint64(SOCKET_SLOT_COOKIE_OFFSET, true);
+        const sourceCookie = new DataView(
+          sourceMemory.buffer,
+          sourceMemory.byteOffset + sourceOffset,
+          socketSlotBytes,
+        ).getBigUint64(SOCKET_SLOT_COOKIE_OFFSET, true);
+        if (canonicalCookie === sourceCookie) {
+          return [];
+        }
+      }
+      const recvBufferIdx = socketSlotBytes >= SOCKET_SLOT_RECV_BUF_IDX_OFFSET + 4
+        ? new DataView(data.buffer, data.byteOffset, data.byteLength)
+            .getInt32(SOCKET_SLOT_RECV_BUF_IDX_OFFSET, true)
+        : -1;
+      const netBuffer = recvBufferIdx >= 0 && netBufferSlotBytes > 0
+        ? memory.slice(
+            canonicalState.netBufBase + recvBufferIdx * netBufferSlotBytes,
+            canonicalState.netBufBase + (recvBufferIdx + 1) * netBufferSlotBytes,
+          )
+        : undefined;
+      return [{ socketIdx, offset, data, recvBufferIdx, netBuffer }];
+    });
+
+    return {
+      restore(): KernelRuntimeState {
+        let socketUsed = canonicalExports.kernel_socket_used();
+        let netBufUsed = canonicalExports.kernel_net_buf_used();
+        for (const slot of slots) {
+          memory.set(slot.data, slot.offset);
+          socketUsed |= 1 << slot.socketIdx;
+          if (slot.netBuffer && slot.recvBufferIdx >= 0) {
+            memory.set(
+              slot.netBuffer,
+              canonicalState.netBufBase + slot.recvBufferIdx * netBufferSlotBytes,
+            );
+            netBufUsed |= 1n << BigInt(slot.recvBufferIdx);
+          }
+        }
+        attachKernelRuntimeState(canonicalExports, {
+          ...readKernelRuntimeState(canonicalExports),
+          socketUsed,
+          netBufUsed,
+        });
+        return readKernelRuntimeState(canonicalExports);
+      },
+    };
+  }
+
+  function reconcileCanonicalSocketOfds(canonicalExports: KernelExports): void {
+    const socketType = canonicalExports.abi_fd_type_socket?.();
+    if (socketType === undefined) {
+      return;
+    }
+    const socketOfdIds: number[] = [];
+    for (let ofdId = 1; ofdId < canonicalExports.abi_max_fds(); ofdId += 1) {
+      if (supervisorOfdFdType(canonicalExports, ofdId) === socketType) {
+        socketOfdIds.push(ofdId);
+      }
+    }
+    if (socketOfdIds.length === 0) {
+      return;
+    }
+    const memberPids = new Set(deps.processKernels.keys());
+    const memberVmPtrs = new Map<number, number>();
+    for (const memberPid of memberPids) {
+      memberVmPtrs.set(memberPid, deps.getCanonicalProcessVmPtr(memberPid));
+    }
+    deps.reconcileCanonicalOfdRefcounts(memberPids, memberVmPtrs, socketOfdIds);
+  }
+
   function copyTimeState(
     sourceExports: KernelExports,
     sourceState: KernelRuntimeState,
@@ -399,7 +518,30 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
 
     const sourceState = readKernelRuntimeState(processExports);
     const canonicalState = readKernelRuntimeState(canonicalExports);
+    const sourceVmPtr = deps.getCanonicalProcessVmPtr(pid);
+    const sourceHeldSlots = processHeldSocketSlots(processExports, sourceVmPtr);
+    const protectedSlots = new Set<number>();
+    for (const [memberPid, memberExports] of deps.processKernels) {
+      if (memberPid === pid) {
+        continue;
+      }
+      const memberVmPtr = deps.getCanonicalProcessVmPtr(memberPid);
+      for (const socketIdx of processHeldSocketSlots(memberExports, memberVmPtr)) {
+        if (!sourceHeldSlots.has(socketIdx)) {
+          protectedSlots.add(socketIdx);
+        }
+      }
+    }
+    const preserved = preserveCanonicalSocketSlots(
+      canonicalExports,
+      canonicalState,
+      processExports,
+      sourceState,
+      protectedSlots,
+    );
     deps.copySocketState(processExports, sourceState, canonicalExports, canonicalState);
+    preserved.restore();
+    reconcileCanonicalSocketOfds(canonicalExports);
     const syncedCanonicalState = readKernelRuntimeState(canonicalExports);
 
     for (const [memberPid, memberExports] of deps.processKernels) {
@@ -433,10 +575,7 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     processExports.process_release_host_stdio(vmPtr);
     if (releasedPrivatePipeSlots.size > 0) {
       const processState = readKernelRuntimeState(processExports);
-      const canonicalExports = deps.getCanonicalExports();
-      const canonicalState = readKernelRuntimeState(canonicalExports);
       deps.clearSelectedPipeSlots(processExports, processState, releasedPrivatePipeSlots);
-      deps.clearSelectedPipeSlots(canonicalExports, canonicalState, releasedPrivatePipeSlots);
     }
     return syncPipeState(pid, readKernelRuntimeState(processExports)).kernelState;
   }

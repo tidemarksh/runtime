@@ -9,7 +9,6 @@ import {
 import {
   kernelShareOtherMembers,
   kernelShareSharedOfdIdList,
-  reconcileKernelSharePipeControl,
 } from "./kernel-share.js";
 import type { KernelRpcResumeOutcome } from "./kernel-rpc/outcomes.js";
 import { collectProcessHeldOfds } from "./ownership/ofd-table.js";
@@ -224,9 +223,6 @@ export function createWorkerLifecycleHelpers(deps: WorkerLifecycleDeps) {
         + `:${handle.kernel.debug_memory_mmap_next?.() ?? "n/a"}`,
     );
     await syncOwnedStateBeforeExit(handle);
-    if (processHasKernelWorkerOwnership(handle)) {
-      reconcileKernelSharePipeControl(handle);
-    }
     await deps.workerExitCompleteProcessExit(handle, exitCode, termSignal, exitVmPtr);
   }
 

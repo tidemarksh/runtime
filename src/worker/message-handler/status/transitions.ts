@@ -466,6 +466,15 @@ export function createWorkerStatusTransitionHandler(deps: WorkerMessageHandlerDe
               wakeRuntimeBridge(handle.runtimeBridge);
               wakeTransportedSignalTargets(handle);
             }
+            if (shouldSyncPipeState) {
+              const pipeSlotsForNextStep = snapshotProcessPipeSlotsForThreadStep(
+                handle,
+                thread.vmPtr,
+              );
+              if (pipeSlotsForNextStep.length > 0) {
+                appendPendingPipeSlotsForNextStep(thread, pipeSlotsForNextStep);
+              }
+            }
             deps.notifyWorkerStatusProgress(handle);
             if (shouldSyncPipeState) {
               for (const member of kernelShareOtherMembers(handle)) {

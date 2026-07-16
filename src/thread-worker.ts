@@ -33,10 +33,6 @@ import {
   type ThreadWorkerPrepareInputs,
 } from "./thread-worker/session.js";
 import {
-  restoreThreadWorkerPrepareMemory,
-  snapshotThreadWorkerPrepareMemory,
-} from "./thread-worker/prepare-memory.js";
-import {
   publishThreadWorkerStatusOutcome,
   type ThreadWorkerBoundaryOutcome,
 } from "./thread-worker/outcomes.js";
@@ -126,25 +122,16 @@ function requireExports(): KernelExports {
 
 async function prepare(
   inputs: ThreadWorkerPrepareInputs,
-  kernelState: KernelRuntimeState | undefined,
-  preserveBytes: number,
+  _kernelState: KernelRuntimeState | undefined,
+  _preserveBytes: number,
   _notifySab: SharedArrayBuffer,
   _stateSab: SharedArrayBuffer,
   kernelStackSlot: number,
-  preserveMemoryRanges?: readonly ThreadWorkerMemoryPreserveRange[],
+  _preserveMemoryRanges?: readonly ThreadWorkerMemoryPreserveRange[],
 ): Promise<void> {
-  // Instantiation replays active data segments into imported memory. Preserve
-  // the static prefix and explicit runtime overlays; mutable heap allocations
-  // such as AddressSpaceState/VMA Vec contents must remain live process state.
-  const hasExplicitPreserveRanges = (preserveMemoryRanges?.length ?? 0) > 0;
-  const effectivePreserveBytes = hasExplicitPreserveRanges ? 0 : preserveBytes;
-  const preservedMemory = snapshotThreadWorkerPrepareMemory(
-    inputs.memory,
-    exports,
-    kernelState,
-    effectivePreserveBytes,
-    { preserveRanges: preserveMemoryRanges },
-  );
+  // The Kernel start function atomically initializes shared data once per
+  // memory. Restoring a pre-instantiation guest snapshot here can overwrite
+  // writes made by already-running sibling threads.
   const instance = await WebAssembly.instantiate(inputs.wasmModule, {
     env: createKernelEnv(inputs.memory, {
       sabPageCache: inputs.sabPageCache,
@@ -158,7 +145,6 @@ async function prepare(
       statusCodes: readStatusCodes(nextExports),
     })
     : undefined;
-  restoreThreadWorkerPrepareMemory(inputs.memory, preservedMemory);
   configureKernelInstanceStack(nextExports, kernelStackSlot);
   wasmFeatures = detectWasmFeatures();
   preparedInputs = inputs;

@@ -306,7 +306,6 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       if (includeMemfs) {
         deps.clearMemfsState(targetExports, targetState);
       }
-      deps.clearSelectedPipeSlots(targetExports, targetState, sharedPipeSlots);
       clearMemoryRange(
         targetExports.memory,
         targetState.socketTablePtr,
@@ -326,7 +325,14 @@ export function createKernelWorkerForkSharedStateSync(deps: KernelWorkerSharedSt
       if (procSelfExe !== null) {
         deps.restoreProcSelfExe(targetExports, procSelfExe);
       }
-      deps.copySelectedPipeSlots(canonicalExports, canonicalState, targetExports, targetState, sharedPipeSlots);
+      deps.mergePipeSlotsFromCanonical(
+        canonicalExports,
+        canonicalState,
+        targetExports,
+        targetState,
+        targetVmPtrByPid.get(targetPid) ?? 0,
+        sharedPipeSlots,
+      );
       deps.applyPipeControlState(
         targetExports,
         targetState,

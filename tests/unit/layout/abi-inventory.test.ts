@@ -386,6 +386,7 @@ const inventory: readonly InventoryEntry[] = [
   { module: "socket", name: "SOCKET_SLOT_STATE_OFFSET", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },
   { module: "socket", name: "SOCKET_SLOT_EXTERNAL_PEER_OFFSET", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },
   { module: "socket", name: "SOCKET_SLOT_RECV_BUF_IDX_OFFSET", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },
+  { module: "socket", name: "SOCKET_SLOT_COOKIE_OFFSET", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },
   { module: "socket", name: "SOCKET_SLOT_SHUTDOWN_MASK_OFFSET", classification: "abi-test-covered", protectedBy: [kernelObjectsTest] },
 ];
 
