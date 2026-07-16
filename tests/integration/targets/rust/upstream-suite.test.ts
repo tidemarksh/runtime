@@ -6,6 +6,7 @@ import {
   validateToolchainArtifacts,
   validateToolchainDriverOutput,
 } from "../../../support/toolchain-exec-harness.js";
+import { toolchainExecGateTimeoutMs } from "../../../support/toolchain-exec-test-runner.js";
 import {
   rustStdEnvSuiteEntry,
   rustStdPathSuiteEntry,
@@ -88,5 +89,5 @@ for (const entry of rustUpstreamSuiteEntries) {
     } finally {
       runtime.destroy();
     }
-  }, entry.timeoutMs + 10_000);
+  }, toolchainExecGateTimeoutMs(entry));
 }

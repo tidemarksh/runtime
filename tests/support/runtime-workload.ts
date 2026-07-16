@@ -243,9 +243,35 @@ export async function spawnWithOutput(
   const proc = await runtime.spawn(new Uint8Array(elfBytes), argv, env, options);
   let output = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let progressId: ReturnType<typeof setInterval> | null = null;
   proc.onStdout((data) => {
     output += decoder.decode(data);
   });
+
+  const progressIntervalMs = Number(process.env.TIDEMARK_TEST_RUNTIME_PROGRESS_INTERVAL_MS ?? 0);
+  if (Number.isFinite(progressIntervalMs) && progressIntervalMs > 0) {
+    const startedAt = Date.now();
+    progressId = setInterval(() => {
+      const stats = runtime.debugExecutionStats().map((entry) => ({
+        pid: entry.pid,
+        running: entry.running,
+        activeChildren: entry.activeChildren,
+        workers: entry.workers.map((worker) => ({
+          vmPtr: worker.vmPtr,
+          ownerState: worker.ownerState,
+          stepCount: worker.stepCount,
+          totalStepBudget: worker.totalStepBudget,
+          totalStepWallMs: worker.totalStepWallMs,
+          lastStepAtMs: worker.lastStepAtMs,
+          lastStatus: worker.lastStatus,
+        })),
+      }));
+      console.error(`runtime-progress:${Date.now() - startedAt}:${JSON.stringify(stats)}`);
+    }, progressIntervalMs);
+    if (typeof progressId === "object" && progressId !== null && "unref" in progressId) {
+      progressId.unref();
+    }
+  }
 
   try {
     const exitCode = await Promise.race([
@@ -271,6 +297,9 @@ export async function spawnWithOutput(
   } finally {
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
+    }
+    if (progressId !== null) {
+      clearInterval(progressId);
     }
   }
 }

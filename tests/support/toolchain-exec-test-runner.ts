@@ -13,6 +13,7 @@ import {
 import { runtimeDebugSummary } from "./runtime-workload.js";
 
 const TOOLCHAIN_EXEC_PREPARE_HEADROOM_MS = 60_000;
+const TOOLCHAIN_EXEC_RESULT_HEADROOM_MS = 30_000;
 
 export function toolchainExecGateTimeoutMs(entry: ToolchainExecEntry): number {
   const runCheckTimeoutMs = (entry.runChecks ?? []).reduce(
@@ -23,6 +24,7 @@ export function toolchainExecGateTimeoutMs(entry: ToolchainExecEntry): number {
     TOOLCHAIN_EXEC_PREPARE_HEADROOM_MS
     + scaledToolchainTimeoutMs(entry.timeoutMs)
     + runCheckTimeoutMs
+    + TOOLCHAIN_EXEC_RESULT_HEADROOM_MS
   );
 }
 

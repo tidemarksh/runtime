@@ -7,6 +7,10 @@ const rustToolchainDir = process.env.TIDEMARK_TEST_RUST_TOOLCHAIN_DIR ?? "";
 const rustUpstreamSuiteDir = process.env.TIDEMARK_TEST_RUST_UPSTREAM_SUITE_DIR ?? "";
 const cToolchainDir = process.env.TIDEMARK_TEST_C_TOOLCHAIN_DIR ?? "";
 const glibcSysrootDir = process.env.TIDEMARK_TEST_GLIBC_SYSROOT_DIR ?? "";
+const rustUpstreamGuestMemoryPolicyBytes = Number(
+  process.env.TIDEMARK_TEST_RUST_UPSTREAM_GUEST_MEMORY_POLICY_BYTES ?? 1024 * 1024 * 1024,
+);
+const rustUpstreamTimeoutMs = Number(process.env.TIDEMARK_TEST_RUST_UPSTREAM_TIMEOUT_MS ?? 120_000);
 
 const GLIBC_RUNTIME_LIBS = [
   "ld-linux-riscv64-lp64d.so.1",
@@ -51,14 +55,16 @@ function rustStdSuiteEntry(
       "HOME=/tmp",
       "CARGO_HOME=/tmp/cargo-home",
       "CARGO_TARGET_DIR=/tmp/cargo-target",
+      "CARGO_NET_OFFLINE=true",
       "RUSTUP_HOME=/tmp/rustup",
+      "RUSTC_BOOTSTRAP=1",
       "RUST_TEST_THREADS=1",
       "RUSTFLAGS=-C linker=/usr/bin/riscv64-linux-gnu-gcc-16",
       "LD_LIBRARY_PATH=/toolchain/lib:/usr/lib/riscv64-linux-gnu:/usr/lib:/lib",
     ],
-    cwd: "/rust-src/lib/rustlib/src/rust/library",
+    cwd: "/rust-src/library",
     timeoutMs,
-    guestMemoryPolicyLimitBytes: 1024 * 1024 * 1024,
+    guestMemoryPolicyLimitBytes: rustUpstreamGuestMemoryPolicyBytes,
     snapshotSources: rustUpstreamSnapshotSources([
       { kind: "dir", guestPath: "/tmp/cargo-home" },
       { kind: "dir", guestPath: "/tmp/cargo-target" },
@@ -69,16 +75,16 @@ function rustStdSuiteEntry(
   };
 }
 
-export const rustStdEnvSuiteEntry = rustStdSuiteEntry("rust-upstream-std-env", "env", 120_000);
-export const rustStdPathSuiteEntry = rustStdSuiteEntry("rust-upstream-std-path", "path", 120_000);
-export const rustStdThreadSuiteEntry = rustStdSuiteEntry("rust-upstream-std-thread", "thread", 120_000);
+export const rustStdEnvSuiteEntry = rustStdSuiteEntry("rust-upstream-std-env", "env", rustUpstreamTimeoutMs);
+export const rustStdPathSuiteEntry = rustStdSuiteEntry("rust-upstream-std-path", "path", rustUpstreamTimeoutMs);
+export const rustStdThreadSuiteEntry = rustStdSuiteEntry("rust-upstream-std-thread", "thread", rustUpstreamTimeoutMs);
 export const rustStdProcessSpawningSuiteEntry = rustStdSuiteEntry(
   "rust-upstream-std-process-spawning",
   "process_spawning",
-  120_000,
+  rustUpstreamTimeoutMs,
 );
 export const rustStdPipeSubprocessSuiteEntry = rustStdSuiteEntry(
   "rust-upstream-std-pipe-subprocess",
-  "pipe_subprocess",
-  120_000,
+  "pipe-subprocess",
+  rustUpstreamTimeoutMs,
 );

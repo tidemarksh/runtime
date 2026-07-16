@@ -7,7 +7,10 @@ const GCC_TRIPLE = "riscv64-linux-gnu";
 const GCC_VERSION = "16";
 
 const C_LINKER_BINARIES = [
+  "ld",
+  "ld.bfd",
   "riscv64-linux-gnu-gcc-16",
+  "riscv64-linux-gnu-ld",
   "riscv64-linux-gnu-ld.bfd",
 ] as const;
 
@@ -36,16 +39,26 @@ const GLIBC_LINKER_FILES = [
   "crti.o",
   "crtn.o",
   "ld-linux-riscv64-lp64d.so.1",
+  "libbfd-2.46.50-system.20260617.so",
   "libc.so",
   "libc.so.6",
   "libc_nonshared.a",
+  "libctf.so.0",
+  "libdl.a",
   "libdl.so.2",
   "libgcc_s.so.1",
+  "libjansson.so.4",
   "libm.so",
   "libm.so.6",
+  "libpthread.a",
   "libpthread.so.0",
+  "librt.a",
   "librt.so.1",
+  "libsframe.so.3",
+  "libutil.a",
   "libutil.so.1",
+  "libz.so.1",
+  "libzstd.so.1",
 ] as const;
 
 const RUST_HOST_LIB_PREFIXES = [
@@ -170,5 +183,10 @@ export function rustCLinkerSnapshotSources(cToolchainDir: string): SnapshotSourc
       GCC_LIBEXEC_FILES,
     ),
     ...fileSources(glibcLibDir, `/usr/lib/${GCC_TRIPLE}`, GLIBC_LINKER_FILES),
+    {
+      kind: "tree",
+      hostPath: resolve(glibcLibDir, "ldscripts"),
+      guestPath: `/usr/lib/${GCC_TRIPLE}/ldscripts`,
+    },
   ];
 }

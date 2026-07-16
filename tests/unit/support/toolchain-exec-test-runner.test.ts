@@ -22,5 +22,5 @@ test("toolchain exec gate timeout includes fixture preparation and artifact run 
     }],
   };
 
-  expect(toolchainExecGateTimeoutMs(entry)).toBe(90_000);
+  expect(toolchainExecGateTimeoutMs(entry)).toBe(120_000);
 });
