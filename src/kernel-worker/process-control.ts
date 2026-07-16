@@ -687,26 +687,35 @@ export function createKernelWorkerProcessControl(deps: KernelWorkerProcessContro
     }
     debug?.("publish-backing-resident-publish-start");
     const sab = deps.getSabPageCache();
-    for (let pageStart = span.offset; pageStart < span.end; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
-      const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
-      if (pageLen <= 0 || readResidentFileData(sab, request.ino, pageStart, pageLen)) {
-        continue;
+    const publishAndVerifyRange = (): boolean => {
+      for (let pageStart = span.offset; pageStart < span.end; pageStart += DEFAULT_RESIDENT_PAGE_SIZE) {
+        const pageLen = Math.min(DEFAULT_RESIDENT_PAGE_SIZE, request.expectedSize - pageStart);
+        if (pageLen <= 0 || readResidentFileData(sab, request.ino, pageStart, pageLen)) {
+          continue;
+        }
+        const backingOffset = pageStart - span.offset;
+        const page = alignedRange.subarray(backingOffset, backingOffset + pageLen);
+        if (page.length !== pageLen) {
+          return false;
+        }
+        if (!publishResidentPageWithPressure(
+          processExports,
+          request.ino,
+          pageStart / DEFAULT_RESIDENT_PAGE_SIZE,
+          page,
+        )) {
+          return false;
+        }
       }
-      const backingOffset = pageStart - span.offset;
-      const page = alignedRange.subarray(backingOffset, backingOffset + pageLen);
-      if (page.length !== pageLen) {
-        return false;
-      }
-      if (!publishResidentPageWithPressure(
-        processExports,
-        request.ino,
-        pageStart / DEFAULT_RESIDENT_PAGE_SIZE,
-        page,
-      )) {
-        return false;
-      }
-    }
-    if (!ensureRequestedResidentRange(processExports, request, span.offset, alignedRange)) {
+      return ensureRequestedResidentRange(processExports, request, span.offset, alignedRange);
+    };
+    if (
+      !publishAndVerifyRange()
+      && (
+        deps.flushDirtyResidentFilesUnderPressure?.() !== true
+        || !publishAndVerifyRange()
+      )
+    ) {
       return false;
     }
     debug?.("publish-backing-resident-publish-done");

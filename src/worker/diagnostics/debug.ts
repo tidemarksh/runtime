@@ -2038,7 +2038,7 @@ export function formatAllLiveThreadDebug(
 export function assertProcessStandardFdIntegrity(
   handle: ProcessHandle,
   context: string,
-  debugSnapshot: string,
+  debugSnapshot: () => string,
   formatPipeCounterDebug: (handle: ProcessHandle, fd: number) => string,
 ): void {
   const selfFdSummary = (): string => Array.from({ length: 16 }, (_value, fd) => {
@@ -2062,7 +2062,7 @@ export function assertProcessStandardFdIntegrity(
         `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} type=${type}`
         + ` self_fds=[${selfFdSummary()}]`
         + ` self_syscalls=[${formatProcessSyscallTrace(handle)}]`
-        + ` self_riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]\n${debugSnapshot}`,
+        + ` self_riscv_syscalls=[${formatProcessRiscvSyscallTrace(handle)}]\n${debugSnapshot()}`,
       );
     }
     if (type !== handle.kernel.abi_fd_type_pipe()) {
@@ -2079,7 +2079,7 @@ export function assertProcessStandardFdIntegrity(
     throw new Error(
       `${context}: pid=${handle.pid} fd=${fd} ofd=${ofdId} pipe=${pipeSlot} ro=${readOpen} wo=${writeOpen}\n`
       + `${formatPipeCounterDebug(handle, fd)}\n`
-      + debugSnapshot,
+      + debugSnapshot(),
     );
   }
 }

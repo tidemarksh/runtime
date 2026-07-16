@@ -254,7 +254,11 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
 
   function appendRuntimeLifecycleEvent(runtimeId: number, event: string): void {
     const events = runtimeLifecycleEvents.get(runtimeId) ?? [];
-    runtimeLifecycleEvents.set(runtimeId, retainRuntimeLifecycleEvents([...events, event]));
+    events.push(event);
+    runtimeLifecycleEvents.set(
+      runtimeId,
+      events.length > 5000 ? retainRuntimeLifecycleEvents(events) : events,
+    );
   }
 
   function debugRuntimeWorkerLogFocus(runtimeId: number) {
@@ -296,7 +300,7 @@ export function createWorkerRuntimeContext(deps: WorkerRuntimeContextDeps) {
     assertProcessStandardFdIntegrityImpl(
       handle,
       context,
-      debugRuntimeProcessHandles(handle.runtimeId),
+      () => debugRuntimeProcessHandles(handle.runtimeId),
       deps.formatPipeCounterDebug,
     );
   }
