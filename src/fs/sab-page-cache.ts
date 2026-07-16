@@ -429,6 +429,41 @@ export function publishInode(
   }
 }
 
+export function updateInodeMode(
+  sab: SharedArrayBuffer,
+  ino: number,
+  mode: number,
+): "updated" | "missing" | "contended" {
+  if (!Number.isInteger(ino) || ino <= 0 || ino >= MAX_INODES) {
+    return "missing";
+  }
+  const u32 = new Uint32Array(sab);
+  const base = inodeOffset(ino);
+  if (base < INODE_TABLE_OFFSET || base + INODE_ENTRY_SIZE > sab.byteLength) {
+    return "missing";
+  }
+  const base32 = base >>> 2;
+  const versionIndex = base32 + (INODE_OFF_VERSION >>> 2);
+
+  for (let retry = 0; retry < 16; retry += 1) {
+    const currentVersion = Atomics.load(u32, versionIndex);
+    if (currentVersion === 0) {
+      return "missing";
+    }
+    if ((currentVersion & 1) !== 0) {
+      continue;
+    }
+    const oddVersion = (currentVersion + 1) >>> 0;
+    if (Atomics.compareExchange(u32, versionIndex, currentVersion, oddVersion) !== currentVersion) {
+      continue;
+    }
+    Atomics.store(u32, base32 + (INODE_OFF_MODE >>> 2), mode >>> 0);
+    Atomics.store(u32, versionIndex, (oddVersion + 1) >>> 0);
+    return "updated";
+  }
+  return "contended";
+}
+
 export function publishedInodeUpperBound(sab: SharedArrayBuffer): number {
   const u32 = new Uint32Array(sab);
   return Math.min(MAX_INODES, Atomics.load(u32, OFF_INODE_COUNT >>> 2));

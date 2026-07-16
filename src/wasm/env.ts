@@ -1,6 +1,7 @@
 import {
   readInodeMeta,
   readCleanResidentFileData,
+  updateInodeMode,
 } from "../fs/sab-page-cache.js";
 
 export interface KernelEnvImports {
@@ -9,6 +10,7 @@ export interface KernelEnvImports {
   tidemark_memory_atomic_notify(ptr: number | bigint, maxWake: number | bigint): number;
   tidemark_page_cache_read(ino: number, offset: bigint, dstPtr: number | bigint, dstLen: number): bigint;
   tidemark_page_cache_stat(ino: number, outPtr: number | bigint): number;
+  tidemark_page_cache_set_mode(ino: number, mode: number): number;
   tidemark_page_cache_flush(ino: number): number;
   tidemark_page_cache_truncate(ino: number, size: bigint): number;
   tidemark_page_cache_write(ino: number, offset: bigint, srcPtr: number | bigint, srcLen: number): bigint;
@@ -131,6 +133,16 @@ export function createKernelEnv(
       view.setUint32(outRange.ptr, meta.mode, true);
       view.setBigUint64(outRange.ptr + 8, BigInt(meta.size), true);
       return 1;
+    },
+    tidemark_page_cache_set_mode(ino, mode) {
+      if (!sabPageCache) {
+        return 0;
+      }
+      const result = updateInodeMode(sabPageCache, ino, mode);
+      if (result === "updated") {
+        return 1;
+      }
+      return result === "missing" ? 0 : -11;
     },
     tidemark_page_cache_flush(ino) {
       if (!sabPageCache || !flushResidentFileDataByInode) {

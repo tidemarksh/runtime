@@ -15,6 +15,7 @@ import {
   readResidentFileData,
   type ResidentDirtyPageAuthority,
   truncateDirtyResidentFileData,
+  updateInodeMode,
   writeDirtyResidentFileData,
 } from "../../../src/fs/sab-page-cache.js";
 import { createKernelEnv } from "../../../src/wasm/env.js";
@@ -41,6 +42,45 @@ test("published inode upper bound follows the highest published inode", () => {
   });
 
   expect(publishedInodeUpperBound(sab)).toBe(8);
+});
+
+test("page-cache mode updates preserve inode backing metadata", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+  publishInode(sab, 7, {
+    mode: 0o100644,
+    size: 123,
+    parentIno: 1,
+    name: new TextEncoder().encode("generated"),
+    nextSibling: 0,
+    fileObjectId: 91,
+    generation: 4,
+  });
+
+  expect(updateInodeMode(sab, 7, 0o100755)).toBe("updated");
+  expect(readInodeMeta(sab, 7)).toEqual({
+    dataOff: 0,
+    size: 123,
+    mode: 0o100755,
+    fileObjectId: 91,
+    generation: 4,
+  });
+});
+
+test("kernel page-cache mode import updates published metadata", () => {
+  const sab = new SharedArrayBuffer(DATA_REGION_OFFSET + 128);
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const env = createKernelEnv(memory, { sabPageCache: sab });
+  publishInode(sab, 7, {
+    mode: 0o100644,
+    size: 0,
+    parentIno: 1,
+    name: new Uint8Array(),
+    nextSibling: 0,
+  });
+
+  expect(env.tidemark_page_cache_set_mode(7, 0o100755)).toBe(1);
+  expect(readInodeMeta(sab, 7)?.mode).toBe(0o100755);
+  expect(env.tidemark_page_cache_set_mode(8, 0o100755)).toBe(0);
 });
 
 const fakeSupervisorDirtyPageAuthority: ResidentDirtyPageAuthority = {
