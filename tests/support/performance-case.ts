@@ -1,5 +1,6 @@
 export const CASE_RESULT_SCHEMA = "execution-case-result-v1";
 const MAX_U64 = 18_446_744_073_709_551_615n;
+const acceptedResultBrand: unique symbol = Symbol("accepted-execution-case-result");
 
 export type CaseClass = "semantic" | "diagnostic";
 
@@ -45,6 +46,7 @@ export interface CounterResult {
 }
 
 export interface RawCaseResult {
+  readonly [acceptedResultBrand]: true;
   case: ExecutionCase;
   execution: ExecutionIdentity;
   elapsedNs: bigint;
@@ -111,6 +113,7 @@ export function acceptCaseResult(args: {
     throw new Error("elapsed duration must be positive");
   }
   return {
+    [acceptedResultBrand]: true,
     case: args.observedCase,
     execution: args.observedExecution,
     elapsedNs: args.elapsedNs,
@@ -121,6 +124,9 @@ export function acceptCaseResult(args: {
 }
 
 export function rawCaseResultJson(result: RawCaseResult): string {
+  if (result[acceptedResultBrand] !== true) {
+    throw new Error("case result was not accepted");
+  }
   return JSON.stringify({
     schema: CASE_RESULT_SCHEMA,
     technical_name: result.case.technicalName,

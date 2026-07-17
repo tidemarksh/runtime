@@ -6,6 +6,7 @@ import {
   type ExecutionCase,
   type ExecutionIdentity,
   type OperationObservation,
+  type RawCaseResult,
 } from "../../support/performance-case.js";
 
 const digest = (character: string) => character.repeat(64);
@@ -105,4 +106,17 @@ test("rejects oracle, counter, case, and execution identity drift", () => {
   expect(() => accept({
     observedExecution: { ...identity(), engine: "alternate-interpreter" },
   })).toThrow("identity drift");
+});
+
+test("rejects incomplete results before raw emission", () => {
+  expect(() => accept({
+    observedCase: { ...executionCase(), usefulWorkCount: 0n },
+    expectedCase: { ...executionCase(), usefulWorkCount: 0n },
+  })).toThrow("usefulWorkCount");
+  expect(() => accept({ elapsedNs: 0n })).toThrow("elapsed duration");
+  expect(() => accept({
+    countersExpected: [],
+    observation: { ...observation(), counters: [] },
+  })).toThrow("at least one exact counter");
+  expect(() => rawCaseResultJson({} as RawCaseResult)).toThrow("not accepted");
 });
