@@ -70,6 +70,21 @@ export function measureCase<Output>(args: {
   return acceptCaseResult({ ...args, elapsedNs, observation });
 }
 
+export async function measureAsyncCase<Output>(args: {
+  expectedCase: ExecutionCase;
+  observedCase: ExecutionCase;
+  expectedExecution: ExecutionIdentity;
+  observedExecution: ExecutionIdentity;
+  oracleExpected: string;
+  countersExpected: ExpectedCounter[];
+}, operation: () => Promise<Output>, observe: (output: Output) => OperationObservation): Promise<RawCaseResult> {
+  const started = process.hrtime.bigint();
+  const output = await operation();
+  const elapsedNs = process.hrtime.bigint() - started;
+  const observation = observe(output);
+  return acceptCaseResult({ ...args, elapsedNs, observation });
+}
+
 export function acceptCaseResult(args: {
   expectedCase: ExecutionCase;
   observedCase: ExecutionCase;
