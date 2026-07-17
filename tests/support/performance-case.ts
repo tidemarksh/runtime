@@ -55,17 +55,18 @@ export interface RawCaseResult {
   counters: CounterResult[];
 }
 
-export function measureCase(args: {
+export function measureCase<Output>(args: {
   expectedCase: ExecutionCase;
   observedCase: ExecutionCase;
   expectedExecution: ExecutionIdentity;
   observedExecution: ExecutionIdentity;
   oracleExpected: string;
   countersExpected: ExpectedCounter[];
-}, operation: () => OperationObservation): RawCaseResult {
+}, operation: () => Output, observe: (output: Output) => OperationObservation): RawCaseResult {
   const started = process.hrtime.bigint();
-  const observation = operation();
+  const output = operation();
   const elapsedNs = process.hrtime.bigint() - started;
+  const observation = observe(output);
   return acceptCaseResult({ ...args, elapsedNs, observation });
 }
 

@@ -77,7 +77,7 @@ test("accepts an exact native case and emits its raw result", () => {
 test("times only the supplied production operation", () => {
   const expectedCase = executionCase();
   const expectedExecution = identity();
-  let calls = 0;
+  let stage = 0;
   const result = measureCase({
     expectedCase,
     observedCase: { ...expectedCase },
@@ -86,10 +86,16 @@ test("times only the supplied production operation", () => {
     oracleExpected: "responses=4",
     countersExpected: [{ name: "responses", value: 4n }],
   }, () => {
-    calls += 1;
+    expect(stage).toBe(0);
+    stage = 1;
+    return 4;
+  }, value => {
+    expect(value).toBe(4);
+    expect(stage).toBe(1);
+    stage = 2;
     return observation();
   });
-  expect(calls).toBe(1);
+  expect(stage).toBe(2);
   expect(result.elapsedNs).toBeGreaterThan(0n);
 });
 
