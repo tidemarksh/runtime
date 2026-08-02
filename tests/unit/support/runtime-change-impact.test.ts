@@ -37,7 +37,7 @@ function definition(name: string, unit: string, usefulWorkCount: number): Execut
 }
 
 test("benchmarks supervisor resume polling when no resume ABI is present", () => {
-  const repetitions = 1_000_000;
+  const repetitions = 10_000_000;
   const executionCase = definition("supervisor-resume-empty-poll", "resume-poll", repetitions);
   const boundary = createSupervisorResumeHostBoundary({
     threadWorkerStates: new WeakMap(),
@@ -96,7 +96,7 @@ test("benchmarks status processing with no descriptor changes", () => {
 });
 
 test("benchmarks one event descriptor state synchronization", async () => {
-  const repetitions = 2_000;
+  const repetitions = 20_000;
   const executionCase = definition("event-ofd-state-sync", "ofd-sync", repetitions);
   const kernel = makeKernel({
     kernel_ofd_fd_type: (ofdId: number) => ofdId === 7 ? 9 : 0,
