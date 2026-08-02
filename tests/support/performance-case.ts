@@ -55,6 +55,19 @@ export interface RawCaseResult {
   counters: CounterResult[];
 }
 
+export interface BenchmarkCaseResult {
+  case: ExecutionCase;
+  execution: ExecutionIdentity;
+  warmupRuns: number;
+  measurementRuns: number;
+  elapsedNs: bigint[];
+  meanUsefulWorkPerSecond: number;
+  medianUsefulWorkPerSecond: number;
+  minUsefulWorkPerSecond: number;
+  maxUsefulWorkPerSecond: number;
+  coefficientOfVariation: number;
+}
+
 export function measureCase<Output>(args: {
   expectedCase: ExecutionCase;
   observedCase: ExecutionCase;
@@ -169,6 +182,122 @@ export function rawCaseResultJson(result: RawCaseResult): string {
       observed: counter.observed.toString(),
     })),
   });
+}
+
+export function benchmarkCase<Output>(args: {
+  expectedCase: ExecutionCase;
+  observedCase: ExecutionCase;
+  expectedExecution: ExecutionIdentity;
+  observedExecution: ExecutionIdentity;
+  oracleExpected: string;
+  countersExpected: ExpectedCounter[];
+  warmupRuns?: number;
+  measurementRuns?: number;
+}, operation: () => Output, observe: (output: Output) => OperationObservation): BenchmarkCaseResult {
+  const warmupRuns = args.warmupRuns ?? 1;
+  const measurementRuns = args.measurementRuns ?? 5;
+  validateRunCounts(warmupRuns, measurementRuns);
+  for (let index = 0; index < warmupRuns; index += 1) {
+    measureCase(args, operation, observe);
+  }
+  const results = Array.from(
+    { length: measurementRuns },
+    () => measureCase(args, operation, observe),
+  );
+  return summarizeBenchmarkResults(results, warmupRuns);
+}
+
+export async function benchmarkAsyncCase<Output>(args: {
+  expectedCase: ExecutionCase;
+  observedCase: ExecutionCase;
+  expectedExecution: ExecutionIdentity;
+  observedExecution: ExecutionIdentity;
+  oracleExpected: string;
+  countersExpected: ExpectedCounter[];
+  warmupRuns?: number;
+  measurementRuns?: number;
+}, operation: () => Promise<Output>, observe: (output: Output) => OperationObservation): Promise<BenchmarkCaseResult> {
+  const warmupRuns = args.warmupRuns ?? 1;
+  const measurementRuns = args.measurementRuns ?? 5;
+  validateRunCounts(warmupRuns, measurementRuns);
+  for (let index = 0; index < warmupRuns; index += 1) {
+    await measureAsyncCase(args, operation, observe);
+  }
+  const results: RawCaseResult[] = [];
+  for (let index = 0; index < measurementRuns; index += 1) {
+    results.push(await measureAsyncCase(args, operation, observe));
+  }
+  return summarizeBenchmarkResults(results, warmupRuns);
+}
+
+export function benchmarkCaseResultJson(result: BenchmarkCaseResult): string {
+  return JSON.stringify({
+    schema: "execution-benchmark-result-v1",
+    technical_name: result.case.technicalName,
+    repository_owner: result.case.repositoryOwner,
+    protocol_key: [
+      result.case.definitionSourceDigest,
+      result.case.inputDigest,
+      result.case.oracleContractDigest,
+      result.case.counterContractDigest,
+      result.case.caseScheduleDigest,
+      result.case.usefulWorkUnit,
+      result.case.usefulWorkCount.toString(),
+      result.warmupRuns.toString(),
+      result.measurementRuns.toString(),
+    ].join(":"),
+    useful_work_unit: result.case.usefulWorkUnit,
+    useful_work_count: result.case.usefulWorkCount.toString(),
+    warmup_runs: result.warmupRuns,
+    measurement_runs: result.measurementRuns,
+    elapsed_ns: result.elapsedNs.map(value => value.toString()),
+    mean_useful_work_per_second: result.meanUsefulWorkPerSecond,
+    median_useful_work_per_second: result.medianUsefulWorkPerSecond,
+    min_useful_work_per_second: result.minUsefulWorkPerSecond,
+    max_useful_work_per_second: result.maxUsefulWorkPerSecond,
+    coefficient_of_variation: result.coefficientOfVariation,
+    correctness: "pass",
+  });
+}
+
+function validateRunCounts(warmupRuns: number, measurementRuns: number): void {
+  if (!Number.isSafeInteger(warmupRuns) || warmupRuns < 0) {
+    throw new Error("warmup run count must be a non-negative safe integer");
+  }
+  if (!Number.isSafeInteger(measurementRuns) || measurementRuns < 2) {
+    throw new Error("measurement run count must be a safe integer of at least two");
+  }
+}
+
+function summarizeBenchmarkResults(results: RawCaseResult[], warmupRuns: number): BenchmarkCaseResult {
+  const [first] = results;
+  if (first === undefined) {
+    throw new Error("benchmark requires measured results");
+  }
+  const rates = results.map(result =>
+    Number(result.case.usefulWorkCount) * 1_000_000_000 / Number(result.elapsedNs)
+  );
+  const mean = rates.reduce((sum, value) => sum + value, 0) / rates.length;
+  const sorted = [...rates].sort((left, right) => left - right);
+  const midpoint = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0
+    ? (sorted[midpoint - 1] + sorted[midpoint]) / 2
+    : sorted[midpoint];
+  const sampleVariance = rates.length > 1
+    ? rates.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (rates.length - 1)
+    : 0;
+  return {
+    case: first.case,
+    execution: first.execution,
+    warmupRuns,
+    measurementRuns: results.length,
+    elapsedNs: results.map(result => result.elapsedNs),
+    meanUsefulWorkPerSecond: mean,
+    medianUsefulWorkPerSecond: median,
+    minUsefulWorkPerSecond: sorted[0],
+    maxUsefulWorkPerSecond: sorted[sorted.length - 1],
+    coefficientOfVariation: mean === 0 ? 0 : Math.sqrt(sampleVariance) / mean,
+  };
 }
 
 function validateCase(value: ExecutionCase): void {
