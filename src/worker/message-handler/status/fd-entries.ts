@@ -123,7 +123,11 @@ export function applyStatusFdEntries(
   for (const fd of changedFds) {
     publishRuntimeFdAuthorityEpoch(handle.runtimeBridge, fd);
   }
-  if (changedFds.some((fd) => fd === 1 || fd === 2)) {
+  const faultStatus = handle.kernel.abi_status_fault?.();
+  if (
+    (faultStatus === undefined || msg.status !== faultStatus)
+    && changedFds.some((fd) => fd === 1 || fd === 2)
+  ) {
     setProcessInheritedParentOutput(handle, false);
   }
   return changedFds;

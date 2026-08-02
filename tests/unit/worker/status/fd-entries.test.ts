@@ -88,6 +88,30 @@ test("authoritative status fd changes propagate after shared memory already refl
   expect(changedFds).toEqual([11]);
 });
 
+test("terminal fd teardown preserves fork-time inherited output", () => {
+  const handle = makeHandle({
+    kernel: makeKernel({
+      abi_max_fds: () => 16,
+      abi_status_fault: () => 3,
+      process_fd_ofd_id: () => 0,
+      supervisor_process_ofd_for_fd: () => 0,
+      process_fd_flags: () => 0,
+      supervisor_process_fd_flags_for_fd: () => 0,
+    }),
+  });
+  setProcessInheritedParentOutput(handle as never, true);
+
+  const changedFds = applyStatusFdEntries(
+    handle as never,
+    makeStatusMessage({ status: 3, fdEntries: [{ fd: 1, ofdId: 0, fdFlags: 0 }] }) as never,
+    new Set([1]),
+    new Map([[1, { fd: 1, ofdId: 2, fdFlags: 0 }]]),
+  );
+
+  expect(changedFds).toEqual([1]);
+  expect(processInheritedParentOutput(handle as never)).toBe(true);
+});
+
 test("status fd output redirection invalidates fork-time inherited output", () => {
   const fdEntries = new Map<number, number>([[1, 2]]);
   const handle = makeHandle({
