@@ -240,6 +240,7 @@ test("host boundary retries a deferred resume after owner async clears", async (
     const queue = makeQueue(threadWorkerStates, []);
 
     queue.pumpProcess(handle);
+    expect(kernel.supervisor_process_resume).not.toHaveBeenCalled();
     clearThreadOwnerAsyncStatus(thread as never);
     await vi.advanceTimersByTimeAsync(10);
 

@@ -495,6 +495,11 @@ export function createSupervisorResumeHostBoundary(
   }
 
   function selectSupervisorProcessResumeWorker(handle: ProcessHandle): SelectedSupervisorResumeWorker | null | undefined {
+    const deferred = deferredResumeRecords.get(handle);
+    if (deferred !== undefined && deferred.length > 0) {
+      scheduleDeferredResumeRetry(handle);
+      return null;
+    }
     const processResume = handle.kernel.supervisor_process_resume;
     if (processResume === undefined) {
       return undefined;
