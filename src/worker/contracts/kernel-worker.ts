@@ -236,6 +236,7 @@ export type KernelWorkerRequest =
       type: "sync-ofd-state";
       pid: number;
       ofdIds: number[];
+      ofdSlots?: KernelWorkerOfdSlotSnapshot[];
       mode?: "push" | "pull";
       kernelState: KernelRuntimeState;
     }
@@ -449,6 +450,7 @@ export type KernelWorkerResponse =
       type: "ofd-state-synced";
       requestId: number;
       kernelState: KernelRuntimeState;
+      ofdSlots?: KernelWorkerOfdSlotSnapshot[];
     }
   | {
       type: "socket-state-synced";

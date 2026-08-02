@@ -4795,7 +4795,7 @@ test("epoll kernel-worker retry syncs watched timerfd OFD after the timer fd is 
   expect(kernel.thread_resume_epoll_wait_timeout).not.toHaveBeenCalled();
 });
 
-test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent eventfd", async () => {
+test("epoll kernel-worker retry syncs watched pipe and epoll table, then pulls dependent eventfd", async () => {
   const blockedWorker = {
     postMessage: vi.fn(),
   } as unknown as Worker;
@@ -4896,7 +4896,8 @@ test("epoll kernel-worker retry syncs watched pipe, epoll table, then dependent 
     }
     if (message.type === "sync-ofd-state") {
       expect(message.ofdIds).toEqual([7]);
-      expect(message.mode).toBeUndefined();
+      expect(message.mode).toBe("pull");
+      expect(message.ofdSlots).toBeUndefined();
       return {
         type: "ofd-state-synced",
         requestId: 0,

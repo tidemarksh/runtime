@@ -261,6 +261,35 @@ test("kernel-worker eventfd sync propagates shared eventfd OFDs by shared OFD id
   expect(eventfdMarker(canonicalMemory, 7)).toBe(0xcc);
 });
 
+test("kernel-worker eventfd sync applies transported source state before readiness propagation", () => {
+  const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const childMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
+  const canonicalExports = makeKernelExports(canonicalMemory);
+  const parentExports = makeKernelExports(parentMemory);
+  const childExports = makeKernelExports(childMemory);
+  const sharedStateSync = makeSharedStateSync(parentExports, childExports, canonicalExports);
+
+  seedEventfdOfd(parentMemory, 7, 0);
+  seedEventfdOfd(childMemory, 7, 0);
+  parentExports.setFdMap(new Map([[4, 7]]));
+  childExports.setFdMap(new Map([[4, 7]]));
+  const state = makeKernelState();
+  const slot = new Uint8Array(childMemory.buffer, state.ofdTablePtr + 7 * 32, 32).slice();
+  new DataView(slot.buffer, slot.byteOffset, slot.byteLength).setBigInt64(16, 1n, true);
+
+  const result = sharedStateSync.syncOfdState(2, [7], state, "push", [{ ofdId: 7, slot }]);
+
+  expect(eventfdMarker(childMemory, 7)).toBe(1);
+  expect(eventfdMarker(parentMemory, 7)).toBe(1);
+  expect(eventfdMarker(canonicalMemory, 7)).toBe(1);
+  expect(new DataView(
+    result.ofdSlots[0].slot.buffer,
+    result.ofdSlots[0].slot.byteOffset,
+    result.ofdSlots[0].slot.byteLength,
+  ).getBigInt64(16, true)).toBe(1n);
+});
+
 test("kernel-worker eventfd pull sync preserves canonical eventfd state", () => {
   const canonicalMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });
   const parentMemory = new WebAssembly.Memory({ initial: 256, maximum: 512, shared: true });

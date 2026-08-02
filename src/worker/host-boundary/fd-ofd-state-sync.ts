@@ -9,6 +9,7 @@ import { adoptKernelStateForHandle } from "../kernel-state.js";
 import {
   collectHeldEpollOfdIds,
   collectProcessHeldOfds,
+  snapshotLocalOfdSlots,
 } from "../ownership/ofd-table.js";
 import {
   ofdIdsFromFdEntries,
@@ -16,6 +17,7 @@ import {
 } from "../ownership/fd-table.js";
 import { snapshotKernelShareOfdSlots } from "../fork-shared.js";
 import { requireKernelWorkerOwnership } from "../kernel-worker-ownership.js";
+import { restoreLocalOfdSlots } from "../kernel-share/sync.js";
 import type {
   KernelWorkerFdEntrySnapshot,
   KernelWorkerOfdSlotSnapshot,
@@ -87,10 +89,15 @@ export async function syncOfdStateViaKernelWorker(
   );
   let response: Awaited<ReturnType<typeof kernelWorkerRequest>>;
   try {
+    const ofdSlots = options.mode === "pull"
+      ? undefined
+      : [...snapshotLocalOfdSlots(handle, ofdIds)]
+        .map(([ofdId, slot]) => ({ ofdId, slot }));
     response = await kernelWorkerRequest({
       type: "sync-ofd-state",
       pid: handle.pid,
       ofdIds,
+      ofdSlots,
       mode: options.mode,
       kernelState: handle.kernelState,
     });
@@ -101,6 +108,10 @@ export async function syncOfdStateViaKernelWorker(
     throw new Error(`unexpected kernel-worker response for sync-ofd-state: ${response.type}`);
   }
   handle.kernelState = adoptKernelStateForHandle(handle, response.kernelState);
+  restoreLocalOfdSlots(
+    handle,
+    new Map((response.ofdSlots ?? []).map(({ ofdId, slot }) => [ofdId, slot])),
+  );
   restoreNetworkBridgeSocketState(networkSocketSnapshots);
   attachKernelRuntimeState(handle.kernel, handle.kernelState);
 }

@@ -148,7 +148,8 @@ interface KernelWorkerMessageHandlerDeps {
     ofdIds: number[],
     kernelState: KernelRuntimeState,
     mode?: "push" | "pull",
-  ): KernelRuntimeState;
+    ofdSlots?: KernelWorkerOfdSlotSnapshot[],
+  ): { kernelState: KernelRuntimeState; ofdSlots: KernelWorkerOfdSlotSnapshot[] };
   syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState;
   applySocketStateSnapshot(pid: number, kernelState: KernelRuntimeState, snapshot: KernelWorkerSocketStateSnapshot): KernelRuntimeState;
   snapshotSocketState(pid: number, kernelState: KernelRuntimeState): KernelWorkerSocketStateSnapshot | undefined;
@@ -509,12 +510,16 @@ export function createKernelWorkerMessageHandler(deps: KernelWorkerMessageHandle
           });
           break;
         case "sync-ofd-state":
-          deps.postResponse({
-            type: "ofd-state-synced",
-            requestId: msg.requestId,
-            kernelState: deps.syncOfdState(msg.pid, msg.ofdIds, msg.kernelState, msg.mode),
-          });
-          break;
+          {
+            const result = deps.syncOfdState(msg.pid, msg.ofdIds, msg.kernelState, msg.mode, msg.ofdSlots);
+            deps.postResponse({
+              type: "ofd-state-synced",
+              requestId: msg.requestId,
+              kernelState: result.kernelState,
+              ofdSlots: result.ofdSlots,
+            });
+            break;
+          }
         case "sync-socket-state":
           {
             const inputState = msg.socketState

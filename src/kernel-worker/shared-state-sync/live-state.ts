@@ -470,15 +470,19 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
     ofdIds: number[],
     kernelState: KernelRuntimeState,
     mode: "push" | "pull" = "push",
-  ): KernelRuntimeState {
+    ofdSlots: KernelWorkerOfdSlotSnapshot[] = [],
+  ): { kernelState: KernelRuntimeState; ofdSlots: KernelWorkerOfdSlotSnapshot[] } {
     const canonicalExports = deps.getCanonicalExports();
     const processExports = deps.processKernels.get(pid);
     if (!processExports || ofdIds.length === 0) {
-      return kernelState;
+      return { kernelState, ofdSlots: [] };
     }
     attachKernelRuntimeState(processExports, kernelState);
 
     const sourceState = readKernelRuntimeState(processExports);
+    if (mode !== "pull" && ofdSlots.length > 0) {
+      deps.applySelectedOfdSnapshots(processExports, sourceState, ofdSlots);
+    }
     const canonicalState = readKernelRuntimeState(canonicalExports);
     const syncTimerfdState = ofdIdsIncludeTimerfd(processExports, ofdIds);
     if (mode !== "pull") {
@@ -505,7 +509,24 @@ export function createKernelWorkerLiveStateSync(deps: KernelWorkerSharedStateSyn
       }
     }
 
-    return readKernelRuntimeState(processExports);
+    const maxFds = canonicalExports.abi_max_fds();
+    const slotBytes = canonicalExports.kernel_ofd_table_bytes() / maxFds;
+    const canonicalBytes = new Uint8Array(canonicalExports.memory.buffer);
+    const syncedOfdSlots = Number.isInteger(slotBytes) && slotBytes > 0
+      ? [...new Set(ofdIds)]
+        .filter((ofdId) => ofdId > 0 && ofdId < maxFds)
+        .map((ofdId) => ({
+          ofdId,
+          slot: canonicalBytes.slice(
+            canonicalState.ofdTablePtr + ofdId * slotBytes,
+            canonicalState.ofdTablePtr + (ofdId + 1) * slotBytes,
+          ),
+        }))
+      : [];
+    return {
+      kernelState: readKernelRuntimeState(processExports),
+      ofdSlots: syncedOfdSlots,
+    };
   }
 
   function syncSocketState(pid: number, kernelState: KernelRuntimeState): KernelRuntimeState {

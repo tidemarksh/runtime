@@ -439,7 +439,7 @@ export function createWorkerSchedulerStateSyncHelpers(
       }
     }
 
-    const shouldStart = supervisorStateSyncRequest(
+    supervisorStateSyncRequest(
       handle.kernel,
       handle.vmPtr,
       "epoll",
@@ -447,12 +447,10 @@ export function createWorkerSchedulerStateSyncHelpers(
     );
     const activeSync = getRuntimeStateSyncPromise(handle, "epoll");
     if (activeSync !== null) {
-      return activeSync;
+      return retryWaiters
+        ? activeSync.then(() => requestEpollStateSync(handle, retryWaiters))
+        : activeSync;
     }
-    if (!shouldStart) {
-      return Promise.resolve();
-    }
-
     const syncPromise = (async () => {
       try {
         for (;;) {

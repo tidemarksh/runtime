@@ -233,6 +233,7 @@ export function executeKernelWorkerBlockedEpollRetry(
     .then(() => deps.requestEpollDependentOfdStateSync(
       handle,
       dependentOfdIds,
+      { mode: "pull" },
     ))
     .then(() => {
       const latestBlocked = deps.finishBlockedRpc(handle, worker, blocked.vmPtr, rpcGeneration);

@@ -672,6 +672,58 @@ test("requestEpollStateSync delegates no-ofd retry action to supervisor", async 
   expect(appendRuntimeLifecycleEvent).toHaveBeenCalledWith(1, "epoll-sync-skip-no-ofd:1:retry=1");
 });
 
+test("requestEpollStateSync restarts when Kernel opens a run as the active Promise finishes", async () => {
+  let finishFirstSync: (() => void) | undefined;
+  const firstSync = new Promise<void>((resolve) => {
+    finishFirstSync = resolve;
+  });
+  let handle: ReturnType<typeof makeHandle>;
+  const kernelWorkerRequest = vi.fn(async (message) => {
+    expect(message.type).toBe("sync-epoll-state");
+    if (kernelWorkerRequest.mock.calls.length === 1) {
+      await firstSync;
+    }
+    return {
+      type: "epoll-state-synced" as const,
+      requestId: 0,
+      kernelState: handle.kernelState,
+    };
+  });
+  handle = makeHandle({
+    vmPtr: 0x1234,
+    kernelWorkerRequest,
+  });
+  handle.kernel.process_fd_ofd_id = (_vmPtr: number, fd: number) => fd === 3 ? 5 : 0;
+  handle.kernel.kernel_ofd_fd_type = (ofdId: number) => ofdId === 5
+    ? handle.kernel.abi_fd_type_epoll()
+    : 0;
+  handle.kernel.supervisor_state_sync_start_action = () =>
+    handle.kernel.supervisor_state_sync_start_action_request_sync!();
+  const requestSync = vi.fn(() => 1);
+  handle.kernel.supervisor_state_sync_request = requestSync;
+  handle.kernel.supervisor_state_sync_next_run_flags = () =>
+    handle.kernel.supervisor_state_sync_run_flag_run!()
+      | handle.kernel.supervisor_state_sync_run_flag_wake_waiters!();
+  handle.kernel.supervisor_state_sync_complete = () => 0;
+
+  const helpers = createWorkerSchedulerStateSyncHelpers({
+    appendRuntimeLifecycleEvent: () => {},
+    drainProcessOutput: vi.fn(() => false),
+    drainHiddenProcessOutput: vi.fn(() => false),
+    threadWorkerStates: new WeakMap(),
+    retryHostBlockedWorker: vi.fn(),
+  });
+
+  const firstRequest = helpers.requestEpollStateSync(handle, true);
+  await vi.waitFor(() => expect(kernelWorkerRequest).toHaveBeenCalledTimes(1));
+  const boundaryRequest = helpers.requestEpollStateSync(handle, true);
+  finishFirstSync?.();
+  await Promise.all([firstRequest, boundaryRequest]);
+
+  expect(kernelWorkerRequest).toHaveBeenCalledTimes(2);
+  expect(requestSync).toHaveBeenCalledTimes(3);
+});
+
 test("requestSocketStateSync applies socket payload state to fork-share members before wake", async () => {
   const retryHostBlockedWorker = vi.fn();
   const socketTable = new Uint8Array(16 * 384);
@@ -773,6 +825,7 @@ test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerf
   const eventfdType = 41;
   const timerfdType = 42;
   const syncedOfdIds: number[][] = [];
+  const syncedOfdSlots: Array<Array<{ ofdId: number; slot: Uint8Array }>> = [];
   const handle = makeHandle({
     pid: 1,
     vmPtr: 0x1234,
@@ -780,10 +833,24 @@ test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerf
     kernelWorkerRequest: vi.fn(async (msg) => {
       expect(msg.type).toBe("sync-ofd-state");
       syncedOfdIds.push([...msg.ofdIds]);
+      syncedOfdSlots.push(msg.ofdSlots ?? []);
+      const returnedOfdSlots = (msg.ofdSlots ?? []).map(({ ofdId, slot }) => ({
+        ofdId,
+        slot: slot.slice(),
+      }));
+      const returnedEventfd = returnedOfdSlots.find(({ ofdId }) => ofdId === 11);
+      if (returnedEventfd) {
+        new DataView(
+          returnedEventfd.slot.buffer,
+          returnedEventfd.slot.byteOffset,
+          returnedEventfd.slot.byteLength,
+        ).setBigInt64(16, 3n, true);
+      }
       return {
         type: "ofd-state-synced",
         requestId: 0,
         kernelState: msg.kernelState,
+        ofdSlots: returnedOfdSlots,
       };
     }),
   });
@@ -821,6 +888,7 @@ test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerf
     }
     return 0;
   };
+  new DataView(handle.memory.buffer).setBigInt64(11 * 32 + 16, 1n, true);
 
   const helpers = createWorkerSchedulerStateSyncHelpers({
     appendRuntimeLifecycleEvent: () => {},
@@ -833,6 +901,9 @@ test("requestEpollDependentOfdStateSync uses ABI fd types for eventfd and timerf
   await helpers.requestEpollDependentOfdStateSync(handle);
 
   expect(syncedOfdIds).toEqual([[11, 12]]);
+  expect(syncedOfdSlots.map((slots) => slots.map(({ ofdId }) => ofdId))).toEqual([[11, 12]]);
+  expect(new DataView(syncedOfdSlots[0][0].slot.buffer).getBigInt64(16, true)).toBe(1n);
+  expect(new DataView(handle.memory.buffer).getBigInt64(11 * 32 + 16, true)).toBe(3n);
   expect(processKernelWorkerRequest(handle)).toHaveBeenCalledTimes(1);
   expect(retryHostBlockedWorker).not.toHaveBeenCalled();
 });
