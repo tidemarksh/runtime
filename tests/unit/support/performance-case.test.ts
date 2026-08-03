@@ -74,6 +74,12 @@ test("accepts an exact native case and emits its raw result", () => {
   });
 });
 
+test("emits the canonical cross-language raw-case golden bytes", () => {
+  expect(rawCaseResultJson(accept())).toBe(
+    "{\"schema\":\"execution-case-result-v1\",\"technical_name\":\"runtime/worker/roundtrip-contract\",\"class\":\"diagnostic\",\"repository_owner\":\"runtime\",\"definition_source_digest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"input_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"useful_work_unit\":\"worker-roundtrip\",\"useful_work_count\":\"4\",\"calibrated_repetition_count\":\"1\",\"oracle_contract_digest\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"counter_contract_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"case_schedule_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"engine\":\"interpreter\",\"configuration_digest\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"artifact_digest\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"elapsed_ns\":\"125\",\"correctness\":\"pass\",\"oracle_expected\":\"responses=4\",\"oracle_observed\":\"responses=4\",\"counters\":[{\"name\":\"responses\",\"expected\":\"4\",\"observed\":\"4\"}]}",
+  );
+});
+
 test("times only the supplied production operation", () => {
   const expectedCase = executionCase();
   const expectedExecution = identity();
