@@ -292,6 +292,7 @@ export interface InterleavedAsyncBenchmarkCase<Output> {
     metricsExpected?: MetricContract[];
   };
   operation: () => Promise<Output>;
+  cleanup?: () => Promise<void>;
   observe: (output: Output) => OperationObservation;
 }
 
@@ -311,7 +312,12 @@ export async function benchmarkInterleavedAsyncCases<Output>(
     if (cycle % 2 === 1) indexes.reverse();
     for (const index of indexes) {
       const entry = cases[index];
-      const result = await measureAsyncCase(entry.args, entry.operation, entry.observe);
+      let result: RawCaseResult;
+      try {
+        result = await measureAsyncCase(entry.args, entry.operation, entry.observe);
+      } finally {
+        await entry.cleanup?.();
+      }
       if (record) measured[index].push(result);
     }
   };

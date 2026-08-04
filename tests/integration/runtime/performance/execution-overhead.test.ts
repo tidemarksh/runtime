@@ -134,7 +134,7 @@ function definition(mode: CaseMode): ExecutionCase {
       "completed-operations",
       ...METRIC_CONTRACTS.flatMap(metric => [metric.name, metric.unit]),
     ),
-    caseScheduleDigest: digest("one-warmup-five-measurements-interleaved-forward-reverse-v1"),
+    caseScheduleDigest: digest("one-warmup-five-measurements-interleaved-forward-reverse-settled-v2"),
   };
 }
 
@@ -160,6 +160,7 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
       if (!runtime) throw new Error(`missing runtime: ${mode}`);
       const executionCase = definition(mode);
       const marker = expectedMarker(mode);
+      let activeProcess: Awaited<ReturnType<Runtime["spawn"]>> | undefined;
       return {
         args: {
           expectedCase: executionCase,
@@ -178,6 +179,7 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
           ["LC_ALL=C", "LANG=C"],
           { cwd: "/" },
         );
+        activeProcess = process;
         let output = "";
         let timeoutId: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -213,8 +215,26 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
           };
         } finally {
           if (timeoutId !== undefined) clearTimeout(timeoutId);
-          runtime.kill(process.pid);
         }
+        },
+        cleanup: async () => {
+          const process = activeProcess;
+          activeProcess = undefined;
+          if (!process) return;
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          try {
+            if (!process.exited) process.writeStdin(Uint8Array.of(0));
+            const exitCode = await Promise.race([
+              process.waitForExit(),
+              new Promise<never>((_, reject) => {
+                timeoutId = setTimeout(() => reject(new Error(`cleanup timeout: ${mode}`)), 5_000);
+              }),
+            ]);
+            if (exitCode !== 0) throw new Error(`probe cleanup failed: ${mode}: exit=${exitCode}`);
+          } finally {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+            runtime.kill(process.pid);
+          }
         },
         observe: (observation: { output: string; metrics: Array<{ name: string; unit: string; value: bigint }> }) => ({
           oracle: observation.output.slice(-marker.length),

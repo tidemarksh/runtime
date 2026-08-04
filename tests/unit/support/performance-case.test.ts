@@ -140,6 +140,9 @@ test("interleaves async cases and reverses alternate measurement cycles", async 
       order.push(label);
       return 4;
     },
+    cleanup: async () => {
+      order.push(`${label}-cleanup`);
+    },
     observe: () => observation(),
   });
 
@@ -148,7 +151,11 @@ test("interleaves async cases and reverses alternate measurement cycles", async 
     makeEntry("second", second),
   ], { warmupRuns: 1, measurementRuns: 2 });
 
-  expect(order).toEqual(["first", "second", "first", "second", "second", "first"]);
+  expect(order).toEqual([
+    "first", "first-cleanup", "second", "second-cleanup",
+    "first", "first-cleanup", "second", "second-cleanup",
+    "second", "second-cleanup", "first", "first-cleanup",
+  ]);
   expect(results.map(result => ({
     name: result.case.technicalName,
     runs: result.measurementRuns,
