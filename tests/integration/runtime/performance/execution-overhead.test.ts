@@ -26,6 +26,7 @@ const METRIC_CONTRACTS: MetricContract[] = [
   { name: "dispatched-step-elapsed", unit: "millisecond" },
   { name: "fs-resume-calls", unit: "call" },
   { name: "pipe-sync-requests", unit: "request" },
+  { name: "process-cpu-elapsed", unit: "microsecond" },
   { name: "requested-step-budget", unit: "instruction" },
   { name: "step-count", unit: "step" },
   { name: "worker-messages", unit: "message" },
@@ -163,6 +164,7 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
         warmupRuns: 1,
         measurementRuns: 5,
       }, async () => {
+        const cpuStarted = globalThis.process.cpuUsage();
         const process = await runtime.spawn(
           new Uint8Array(probeBytes),
           ["/execution-overhead", mode],
@@ -189,12 +191,14 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
           const stepElapsedMs = stats.workers.reduce((sum, worker) => sum + worker.totalStepWallMs, 0);
           const stepCount = stats.workers.reduce((sum, worker) => sum + worker.stepCount, 0);
           const stepBudget = stats.workers.reduce((sum, worker) => sum + worker.totalStepBudget, 0);
+          const cpuElapsed = globalThis.process.cpuUsage(cpuStarted);
           return {
             output,
             metrics: [
               { name: "dispatched-step-elapsed", unit: "millisecond", value: BigInt(Math.round(stepElapsedMs)) },
               { name: "fs-resume-calls", unit: "call", value: BigInt(stats.transferDebugStats.fsResumeCalls) },
               { name: "pipe-sync-requests", unit: "request", value: BigInt(stats.transferDebugStats.pipeSyncRequests) },
+              { name: "process-cpu-elapsed", unit: "microsecond", value: BigInt(cpuElapsed.user + cpuElapsed.system) },
               { name: "requested-step-budget", unit: "instruction", value: BigInt(stepBudget) },
               { name: "step-count", unit: "step", value: BigInt(stepCount) },
               { name: "worker-messages", unit: "message", value: BigInt(stats.workerMessageDebugStats.received) },
