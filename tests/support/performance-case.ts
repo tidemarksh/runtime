@@ -335,6 +335,9 @@ export function benchmarkCaseResultJson(result: BenchmarkCaseResult): string {
     schema: "execution-benchmark-result-v1",
     technical_name: result.case.technicalName,
     repository_owner: result.case.repositoryOwner,
+    engine: result.execution.engine,
+    configuration_digest: result.execution.configurationDigest,
+    artifact_digest: result.execution.artifactDigest,
     protocol_key: [
       result.case.definitionSourceDigest,
       result.case.inputDigest,

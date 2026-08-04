@@ -11,10 +11,11 @@ import {
   type ExecutionIdentity,
   type MetricContract,
 } from "../../../support/performance-case.js";
+import { runtimeExecutionArtifactDigest } from "../../../support/execution-artifacts.js";
 import {
   decoder,
   readKernelWasm,
-  RUNTIME_DIST_PATH,
+  RUNTIME_WORKER_DIST_DIR,
   Runtime,
 } from "../../../support/runtime-workload.js";
 
@@ -145,7 +146,11 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
   const execution: ExecutionIdentity = {
     engine: "interpreter",
     configurationDigest: digest("runtime-default-memory-policy-static-probe-tmp-dir-v1"),
-    artifactDigest: digest(wasmBytes, new Uint8Array(readFileSync(RUNTIME_DIST_PATH))),
+    artifactDigest: runtimeExecutionArtifactDigest({
+      distDirectory: RUNTIME_WORKER_DIST_DIR,
+      kernelWasm: wasmBytes,
+      probe: probeBytes,
+    }),
   };
   const modes = ["cpu", "fs", "pipe"] as const;
   const runtimes = new Map<CaseMode, Runtime>();

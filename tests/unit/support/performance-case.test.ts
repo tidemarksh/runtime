@@ -118,7 +118,13 @@ test("retains per-run diagnostic metric values in benchmark output", () => {
     ...observation(),
     metrics: [{ name: "worker-messages", unit: "message", value: current }],
   }));
-  expect(JSON.parse(benchmarkCaseResultJson(result)).metrics).toEqual([
+  const output = JSON.parse(benchmarkCaseResultJson(result));
+  expect(output).toMatchObject({
+    engine: "interpreter",
+    configuration_digest: digest("6"),
+    artifact_digest: digest("7"),
+  });
+  expect(output.metrics).toEqual([
     { name: "worker-messages", unit: "message", values: ["1", "2"] },
   ]);
 });
