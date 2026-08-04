@@ -281,6 +281,49 @@ export async function benchmarkAsyncCase<Output>(args: {
   return summarizeBenchmarkResults(results, warmupRuns);
 }
 
+export interface InterleavedAsyncBenchmarkCase<Output> {
+  args: {
+    expectedCase: ExecutionCase;
+    observedCase: ExecutionCase;
+    expectedExecution: ExecutionIdentity;
+    observedExecution: ExecutionIdentity;
+    oracleExpected: string;
+    countersExpected: ExpectedCounter[];
+    metricsExpected?: MetricContract[];
+  };
+  operation: () => Promise<Output>;
+  observe: (output: Output) => OperationObservation;
+}
+
+export async function benchmarkInterleavedAsyncCases<Output>(
+  cases: readonly InterleavedAsyncBenchmarkCase<Output>[],
+  options: { warmupRuns?: number; measurementRuns?: number } = {},
+): Promise<BenchmarkCaseResult[]> {
+  const warmupRuns = options.warmupRuns ?? 1;
+  const measurementRuns = options.measurementRuns ?? 5;
+  validateRunCounts(warmupRuns, measurementRuns);
+  if (cases.length < 2) {
+    throw new Error("interleaved benchmark requires at least two cases");
+  }
+  const measured = cases.map(() => [] as RawCaseResult[]);
+  const runCycle = async (cycle: number, record: boolean): Promise<void> => {
+    const indexes = cases.map((_, index) => index);
+    if (cycle % 2 === 1) indexes.reverse();
+    for (const index of indexes) {
+      const entry = cases[index];
+      const result = await measureAsyncCase(entry.args, entry.operation, entry.observe);
+      if (record) measured[index].push(result);
+    }
+  };
+  for (let cycle = 0; cycle < warmupRuns; cycle += 1) {
+    await runCycle(cycle, false);
+  }
+  for (let cycle = 0; cycle < measurementRuns; cycle += 1) {
+    await runCycle(cycle, true);
+  }
+  return measured.map(results => summarizeBenchmarkResults(results, warmupRuns));
+}
+
 export function benchmarkCaseResultJson(result: BenchmarkCaseResult): string {
   return JSON.stringify({
     schema: "execution-benchmark-result-v1",

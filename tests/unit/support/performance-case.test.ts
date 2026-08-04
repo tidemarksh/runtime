@@ -3,6 +3,7 @@ import {
   acceptCaseResult,
   benchmarkCase,
   benchmarkCaseResultJson,
+  benchmarkInterleavedAsyncCases,
   measureCase,
   rawCaseResultJson,
   type ExecutionCase,
@@ -119,6 +120,41 @@ test("retains per-run diagnostic metric values in benchmark output", () => {
   }));
   expect(JSON.parse(benchmarkCaseResultJson(result)).metrics).toEqual([
     { name: "worker-messages", unit: "message", values: ["1", "2"] },
+  ]);
+});
+
+test("interleaves async cases and reverses alternate measurement cycles", async () => {
+  const first = executionCase();
+  const second = { ...executionCase(), technicalName: "runtime/worker/second-roundtrip-contract" };
+  const order: string[] = [];
+  const makeEntry = (label: string, expectedCase: ExecutionCase) => ({
+    args: {
+      expectedCase,
+      observedCase: { ...expectedCase },
+      expectedExecution: identity(),
+      observedExecution: identity(),
+      oracleExpected: "responses=4",
+      countersExpected: [{ name: "responses", value: 4n }],
+    },
+    operation: async () => {
+      order.push(label);
+      return 4;
+    },
+    observe: () => observation(),
+  });
+
+  const results = await benchmarkInterleavedAsyncCases([
+    makeEntry("first", first),
+    makeEntry("second", second),
+  ], { warmupRuns: 1, measurementRuns: 2 });
+
+  expect(order).toEqual(["first", "second", "first", "second", "second", "first"]);
+  expect(results.map(result => ({
+    name: result.case.technicalName,
+    runs: result.measurementRuns,
+  }))).toEqual([
+    { name: first.technicalName, runs: 2 },
+    { name: second.technicalName, runs: 2 },
   ]);
 });
 

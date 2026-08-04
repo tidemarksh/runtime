@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vite-plus/test";
 import {
-  benchmarkAsyncCase,
   benchmarkCaseResultJson,
+  benchmarkInterleavedAsyncCases,
   type ExecutionCase,
   type ExecutionIdentity,
   type MetricContract,
@@ -134,7 +134,7 @@ function definition(mode: CaseMode): ExecutionCase {
       "completed-operations",
       ...METRIC_CONTRACTS.flatMap(metric => [metric.name, metric.unit]),
     ),
-    caseScheduleDigest: digest("one-warmup-five-measurements-single-runtime-v1"),
+    caseScheduleDigest: digest("one-warmup-five-measurements-interleaved-forward-reverse-v1"),
   };
 }
 
@@ -147,23 +147,30 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
     configurationDigest: digest("runtime-default-memory-policy-static-probe-tmp-dir-v1"),
     artifactDigest: digest(wasmBytes, new Uint8Array(readFileSync(RUNTIME_DIST_PATH))),
   };
-  for (const mode of ["cpu", "fs", "pipe"] as const) {
-    const runtime = await Runtime.create({ wasmBytes });
-    try {
+  const modes = ["cpu", "fs", "pipe"] as const;
+  const runtimes = new Map<CaseMode, Runtime>();
+  try {
+    for (const mode of modes) {
+      const runtime = await Runtime.create({ wasmBytes });
       await runtime.fs.mkdir("/tmp", 0o777).catch(() => {});
+      runtimes.set(mode, runtime);
+    }
+    const results = await benchmarkInterleavedAsyncCases(modes.map(mode => {
+      const runtime = runtimes.get(mode);
+      if (!runtime) throw new Error(`missing runtime: ${mode}`);
       const executionCase = definition(mode);
       const marker = expectedMarker(mode);
-      const result = await benchmarkAsyncCase({
-        expectedCase: executionCase,
-        observedCase: { ...executionCase },
-        expectedExecution: execution,
-        observedExecution: { ...execution },
-        oracleExpected: marker,
-        countersExpected: [{ name: "completed-operations", value: BigInt(usefulWork(mode)) }],
-        metricsExpected: METRIC_CONTRACTS,
-        warmupRuns: 1,
-        measurementRuns: 5,
-      }, async () => {
+      return {
+        args: {
+          expectedCase: executionCase,
+          observedCase: { ...executionCase },
+          expectedExecution: execution,
+          observedExecution: { ...execution },
+          oracleExpected: marker,
+          countersExpected: [{ name: "completed-operations", value: BigInt(usefulWork(mode)) }],
+          metricsExpected: METRIC_CONTRACTS,
+        },
+        operation: async () => {
         const cpuStarted = globalThis.process.cpuUsage();
         const process = await runtime.spawn(
           new Uint8Array(probeBytes),
@@ -208,15 +215,19 @@ test("reports fixed end-to-end CPU, filesystem, and pipe execution cases", async
           if (timeoutId !== undefined) clearTimeout(timeoutId);
           runtime.kill(process.pid);
         }
-      }, observation => ({
-        oracle: observation.output.slice(-marker.length),
-        counters: [{ name: "completed-operations", value: BigInt(usefulWork(mode)) }],
-        metrics: observation.metrics,
-      }));
+        },
+        observe: (observation: { output: string; metrics: Array<{ name: string; unit: string; value: bigint }> }) => ({
+          oracle: observation.output.slice(-marker.length),
+          counters: [{ name: "completed-operations", value: BigInt(usefulWork(mode)) }],
+          metrics: observation.metrics,
+        }),
+      };
+    }), { warmupRuns: 1, measurementRuns: 5 });
+    for (const result of results) {
       console.log(`TIDEMARK_RUNTIME_BENCHMARK ${benchmarkCaseResultJson(result)}`);
       expect(result.metrics).toHaveLength(METRIC_CONTRACTS.length);
-    } finally {
-      runtime.destroy();
     }
+  } finally {
+    for (const runtime of runtimes.values()) runtime.destroy();
   }
 }, 180_000);
