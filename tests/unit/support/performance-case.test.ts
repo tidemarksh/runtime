@@ -1,6 +1,8 @@
 import { expect, test } from "vite-plus/test";
 import {
   acceptCaseResult,
+  benchmarkCase,
+  benchmarkCaseResultJson,
   measureCase,
   rawCaseResultJson,
   type ExecutionCase,
@@ -74,6 +76,52 @@ test("accepts an exact native case and emits its raw result", () => {
   });
 });
 
+test("retains declared diagnostic metrics with their units", () => {
+  const raw = JSON.parse(rawCaseResultJson(accept({
+    metricsExpected: [
+      { name: "dispatched-step-elapsed", unit: "millisecond" },
+      { name: "worker-messages", unit: "message" },
+    ],
+    observation: {
+      ...observation(),
+      metrics: [
+        { name: "dispatched-step-elapsed", unit: "millisecond", value: 17n },
+        { name: "worker-messages", unit: "message", value: 23n },
+      ],
+    },
+  })));
+  expect(raw.metrics).toEqual([
+    { name: "dispatched-step-elapsed", unit: "millisecond", value: "17" },
+    { name: "worker-messages", unit: "message", value: "23" },
+  ]);
+});
+
+test("retains per-run diagnostic metric values in benchmark output", () => {
+  const expectedCase = executionCase();
+  const expectedExecution = identity();
+  let value = 0n;
+  const result = benchmarkCase({
+    expectedCase,
+    observedCase: { ...expectedCase },
+    expectedExecution,
+    observedExecution: { ...expectedExecution },
+    oracleExpected: "responses=4",
+    countersExpected: [{ name: "responses", value: 4n }],
+    metricsExpected: [{ name: "worker-messages", unit: "message" }],
+    warmupRuns: 0,
+    measurementRuns: 2,
+  }, () => {
+    value += 1n;
+    return value;
+  }, current => ({
+    ...observation(),
+    metrics: [{ name: "worker-messages", unit: "message", value: current }],
+  }));
+  expect(JSON.parse(benchmarkCaseResultJson(result)).metrics).toEqual([
+    { name: "worker-messages", unit: "message", values: ["1", "2"] },
+  ]);
+});
+
 test("emits the canonical cross-language raw-case golden bytes", () => {
   expect(rawCaseResultJson(accept())).toBe(
     "{\"schema\":\"execution-case-result-v1\",\"technical_name\":\"runtime/worker/roundtrip-contract\",\"class\":\"diagnostic\",\"repository_owner\":\"runtime\",\"definition_source_digest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"input_digest\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"useful_work_unit\":\"worker-roundtrip\",\"useful_work_count\":\"4\",\"calibrated_repetition_count\":\"1\",\"oracle_contract_digest\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"counter_contract_digest\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"case_schedule_digest\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"engine\":\"interpreter\",\"configuration_digest\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"artifact_digest\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"elapsed_ns\":\"125\",\"correctness\":\"pass\",\"oracle_expected\":\"responses=4\",\"oracle_observed\":\"responses=4\",\"counters\":[{\"name\":\"responses\",\"expected\":\"4\",\"observed\":\"4\"}]}",
@@ -118,6 +166,16 @@ test("rejects oracle, counter, case, and execution identity drift", () => {
   expect(() => accept({
     observedExecution: { ...identity(), engine: "alternate-interpreter" },
   })).toThrow("identity drift");
+  expect(() => accept({
+    metricsExpected: [{ name: "worker-messages", unit: "message" }],
+  })).toThrow("metric count mismatch");
+  expect(() => accept({
+    metricsExpected: [{ name: "worker-messages", unit: "message" }],
+    observation: {
+      ...observation(),
+      metrics: [{ name: "worker-messages", unit: "call", value: 1n }],
+    },
+  })).toThrow("metric contract mismatch");
 });
 
 test("rejects incomplete results before raw emission", () => {

@@ -34,9 +34,19 @@ export interface ObservedCounter {
   value: bigint;
 }
 
+export interface MetricContract {
+  name: string;
+  unit: string;
+}
+
+export interface ObservedMetric extends MetricContract {
+  value: bigint;
+}
+
 export interface OperationObservation {
   oracle: string;
   counters: ObservedCounter[];
+  metrics?: ObservedMetric[];
 }
 
 export interface CounterResult {
@@ -44,6 +54,8 @@ export interface CounterResult {
   expected: bigint;
   observed: bigint;
 }
+
+export interface MetricResult extends ObservedMetric {}
 
 export interface RawCaseResult {
   readonly [acceptedResultBrand]: true;
@@ -53,6 +65,11 @@ export interface RawCaseResult {
   oracleExpected: string;
   oracleObserved: string;
   counters: CounterResult[];
+  metrics: MetricResult[];
+}
+
+export interface BenchmarkMetricResult extends MetricContract {
+  values: bigint[];
 }
 
 export interface BenchmarkCaseResult {
@@ -66,6 +83,7 @@ export interface BenchmarkCaseResult {
   minUsefulWorkPerSecond: number;
   maxUsefulWorkPerSecond: number;
   coefficientOfVariation: number;
+  metrics: BenchmarkMetricResult[];
 }
 
 export function measureCase<Output>(args: {
@@ -75,6 +93,7 @@ export function measureCase<Output>(args: {
   observedExecution: ExecutionIdentity;
   oracleExpected: string;
   countersExpected: ExpectedCounter[];
+  metricsExpected?: MetricContract[];
 }, operation: () => Output, observe: (output: Output) => OperationObservation): RawCaseResult {
   const started = process.hrtime.bigint();
   const output = operation();
@@ -90,6 +109,7 @@ export async function measureAsyncCase<Output>(args: {
   observedExecution: ExecutionIdentity;
   oracleExpected: string;
   countersExpected: ExpectedCounter[];
+  metricsExpected?: MetricContract[];
 }, operation: () => Promise<Output>, observe: (output: Output) => OperationObservation): Promise<RawCaseResult> {
   const started = process.hrtime.bigint();
   const output = await operation();
@@ -107,6 +127,7 @@ export function acceptCaseResult(args: {
   oracleExpected: string;
   observation: OperationObservation;
   countersExpected: ExpectedCounter[];
+  metricsExpected?: MetricContract[];
 }): RawCaseResult {
   validateCase(args.expectedCase);
   validateCase(args.observedCase);
@@ -138,6 +159,26 @@ export function acceptCaseResult(args: {
     }
     return { name: expected.name, expected: expected.value, observed: observed.value };
   });
+  const metricsExpected = args.metricsExpected ?? [];
+  const metricsObserved = args.observation.metrics ?? [];
+  validateMetricContracts(metricsExpected);
+  if (metricsExpected.length !== metricsObserved.length) {
+    throw new Error(
+      `metric count mismatch: expected ${metricsExpected.length}, observed ${metricsObserved.length}`,
+    );
+  }
+  const metrics = metricsExpected.map((expected, index) => {
+    const observed = metricsObserved[index];
+    if (expected.name !== observed.name || expected.unit !== observed.unit) {
+      throw new Error(
+        `metric contract mismatch: expected ${expected.name}/${expected.unit}, observed ${observed.name}/${observed.unit}`,
+      );
+    }
+    if (observed.value < 0n || observed.value > MAX_U64) {
+      throw new Error("metric value must fit u64");
+    }
+    return { ...observed };
+  });
   if (args.elapsedNs <= 0n || args.elapsedNs > MAX_U64) {
     throw new Error("elapsed duration must be positive");
   }
@@ -149,6 +190,7 @@ export function acceptCaseResult(args: {
     oracleExpected: args.oracleExpected,
     oracleObserved: args.observation.oracle,
     counters,
+    metrics,
   };
 }
 
@@ -181,6 +223,13 @@ export function rawCaseResultJson(result: RawCaseResult): string {
       expected: counter.expected.toString(),
       observed: counter.observed.toString(),
     })),
+    ...(result.metrics.length === 0 ? {} : {
+      metrics: result.metrics.map(metric => ({
+        name: metric.name,
+        unit: metric.unit,
+        value: metric.value.toString(),
+      })),
+    }),
   });
 }
 
@@ -191,6 +240,7 @@ export function benchmarkCase<Output>(args: {
   observedExecution: ExecutionIdentity;
   oracleExpected: string;
   countersExpected: ExpectedCounter[];
+  metricsExpected?: MetricContract[];
   warmupRuns?: number;
   measurementRuns?: number;
 }, operation: () => Output, observe: (output: Output) => OperationObservation): BenchmarkCaseResult {
@@ -214,6 +264,7 @@ export async function benchmarkAsyncCase<Output>(args: {
   observedExecution: ExecutionIdentity;
   oracleExpected: string;
   countersExpected: ExpectedCounter[];
+  metricsExpected?: MetricContract[];
   warmupRuns?: number;
   measurementRuns?: number;
 }, operation: () => Promise<Output>, observe: (output: Output) => OperationObservation): Promise<BenchmarkCaseResult> {
@@ -257,6 +308,13 @@ export function benchmarkCaseResultJson(result: BenchmarkCaseResult): string {
     max_useful_work_per_second: result.maxUsefulWorkPerSecond,
     coefficient_of_variation: result.coefficientOfVariation,
     correctness: "pass",
+    ...(result.metrics.length === 0 ? {} : {
+      metrics: result.metrics.map(metric => ({
+        name: metric.name,
+        unit: metric.unit,
+        values: metric.values.map(value => value.toString()),
+      })),
+    }),
   });
 }
 
@@ -297,6 +355,11 @@ function summarizeBenchmarkResults(results: RawCaseResult[], warmupRuns: number)
     minUsefulWorkPerSecond: sorted[0],
     maxUsefulWorkPerSecond: sorted[sorted.length - 1],
     coefficientOfVariation: mean === 0 ? 0 : Math.sqrt(sampleVariance) / mean,
+    metrics: first.metrics.map((metric, index) => ({
+      name: metric.name,
+      unit: metric.unit,
+      values: results.map(result => result.metrics[index].value),
+    })),
   };
 }
 
@@ -346,6 +409,18 @@ function validateExpectedCounters(counters: ExpectedCounter[]): void {
       throw new Error("counter names must be sorted and unique");
     }
     previous = counter.name;
+  }
+}
+
+function validateMetricContracts(metrics: MetricContract[]): void {
+  let previous: string | undefined;
+  for (const metric of metrics) {
+    validateTechnicalName(metric.name, "metric name");
+    validateTechnicalName(metric.unit, "metric unit");
+    if (previous !== undefined && previous >= metric.name) {
+      throw new Error("metric names must be sorted and unique");
+    }
+    previous = metric.name;
   }
 }
 
