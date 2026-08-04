@@ -19,7 +19,7 @@ import {
 } from "../../../support/runtime-workload.js";
 
 const hostRiscvGcc = process.env.TIDEMARK_TEST_HOST_RISCV_GCC ?? "riscv64-linux-gnu-gcc";
-const CPU_OPERATIONS = 10_000_000;
+const CPU_OPERATIONS = 85_000_000;
 const FS_OPERATIONS = 64;
 const PIPE_OPERATIONS = 64;
 const METRIC_CONTRACTS: MetricContract[] = [
@@ -112,7 +112,7 @@ function usefulWork(mode: CaseMode): number {
 
 function expectedMarker(mode: CaseMode): string {
   switch (mode) {
-    case "cpu": return "done:cpu:50000005000000\n";
+    case "cpu": return "done:cpu:3612500042500000\n";
     case "fs": return `done:fs:${FS_OPERATIONS * 64}\n`;
     case "pipe": return `done:pipe:${PIPE_OPERATIONS}\n`;
   }
