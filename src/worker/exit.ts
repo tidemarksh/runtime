@@ -1968,7 +1968,11 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     const exitMessage =
       `exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`;
     if (exitCode === 0 && termSignal === 0) {
-      setProcessLastDebugMessage(handle, exitMessage);
+      const previousDebugMessage = processLastDebugMessage(handle);
+      setProcessLastDebugMessage(
+        handle,
+        previousDebugMessage ? `${exitMessage} ${previousDebugMessage}` : exitMessage,
+      );
     } else {
       setProcessLastDebugMessage(handle, [
         exitMessage,

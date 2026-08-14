@@ -19,6 +19,7 @@ import {
 import {
   processLastDebugMessage,
   setProcessDebugCommand,
+  setProcessLastDebugMessage,
 } from "../../../../src/worker/process-debug-state.js";
 import { drainProcessOutput } from "../../../../src/worker/stdio.js";
 import {
@@ -1826,6 +1827,7 @@ test("completeProcessExit skips exhaustive failure diagnostics for a successful 
   const child = makeHandle({
     parentPid: null,
   });
+  setProcessLastDebugMessage(child, 'proc_self_exe="/usr/bin/ruby3.3"');
   const debugRuntimeProcessHandles = vi.fn(() => "pid=3");
   const formatAllLiveThreadDebug = vi.fn(() => "threads");
   const helpers = createWorkerExitHelpers({
@@ -1849,7 +1851,9 @@ test("completeProcessExit skips exhaustive failure diagnostics for a successful 
 
   expect(debugRuntimeProcessHandles).not.toHaveBeenCalled();
   expect(formatAllLiveThreadDebug).not.toHaveBeenCalled();
-  expect(lastDebug(child)).toBe('exit:3:"/bin/sh":0:0');
+  expect(lastDebug(child)).toBe(
+    'exit:3:"/bin/sh":0:0 proc_self_exe="/usr/bin/ruby3.3"',
+  );
 });
 
 test("completeProcessExit keeps execve stage summary without dispatch trace noise", async () => {
