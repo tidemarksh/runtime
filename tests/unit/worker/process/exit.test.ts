@@ -1822,6 +1822,36 @@ test("completeProcessExit still destroys the handle when cleanup fails", async (
   expect(order).toContain('exit-cleanup-error:3:"release failed"');
 });
 
+test("completeProcessExit skips exhaustive failure diagnostics for a successful exit", async () => {
+  const child = makeHandle({
+    parentPid: null,
+  });
+  const debugRuntimeProcessHandles = vi.fn(() => "pid=3");
+  const formatAllLiveThreadDebug = vi.fn(() => "threads");
+  const helpers = createWorkerExitHelpers({
+    processHandles: new Map<number, ProcessHandle>([[3, child]]),
+    appendRuntimeLifecycleEvent: () => {},
+    appendWorkerDebugLog: () => {},
+    captureRuntimeFailureSnapshot: () => {},
+    debugRuntimeProcessHandles,
+    drainHiddenProcessOutput: () => false,
+    drainProcessOutput: () => false,
+    destroyProcessHandle: () => {},
+    formatAllLiveThreadDebug,
+    notifyProcessExitProgress: () => {},
+    recordChildExitViaKernelWorker: async () => {},
+    releaseSharedHostStdio: async () => {},
+    requestPipeStateSync: async () => {},
+    unregisterProcessWithKernelWorker: async () => {},
+  });
+
+  await helpers.completeProcessExit(child, 0, 0);
+
+  expect(debugRuntimeProcessHandles).not.toHaveBeenCalled();
+  expect(formatAllLiveThreadDebug).not.toHaveBeenCalled();
+  expect(lastDebug(child)).toBe('exit:3:"/bin/sh":0:0');
+});
+
 test("completeProcessExit keeps execve stage summary without dispatch trace noise", async () => {
   const child = makeHandle({
     parentPid: null,

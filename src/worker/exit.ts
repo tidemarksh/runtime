@@ -1965,18 +1965,24 @@ export function createWorkerExitHelpers(deps: WorkerExitDeps) {
     termSignal: number,
     exitVmPtr: number,
   ): Promise<void> {
-    setProcessLastDebugMessage(handle, [
-      `exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`,
-      `exit_trace=${formatExitTrace(handle, exitVmPtr)}`,
-      `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
-      `cmd=${JSON.stringify(processDebugCommand(handle))}`,
-      `worker_log=[${workerDebugLog(handle).join(", ")}]`,
-      `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
-      processLastDebugMessage(handle) ?? "debug=n/a",
-    ].join(" "));
+    const exitMessage =
+      `exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`;
+    if (exitCode === 0 && termSignal === 0) {
+      setProcessLastDebugMessage(handle, exitMessage);
+    } else {
+      setProcessLastDebugMessage(handle, [
+        exitMessage,
+        `exit_trace=${formatExitTrace(handle, exitVmPtr)}`,
+        `live_processes=${safeDebugRuntimeProcessHandles(handle.runtimeId)}`,
+        `cmd=${JSON.stringify(processDebugCommand(handle))}`,
+        `worker_log=[${workerDebugLog(handle).join(", ")}]`,
+        `thread_debugs=[${safeFormatAllLiveThreadDebug(handle)}]`,
+        processLastDebugMessage(handle) ?? "debug=n/a",
+      ].join(" "));
+    }
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
-      `exit:${handle.pid}:${JSON.stringify(processDebugCommand(handle))}:${exitCode}:${termSignal}`,
+      exitMessage,
     );
     deps.appendRuntimeLifecycleEvent(
       handle.runtimeId,
